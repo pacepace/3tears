@@ -34,7 +34,6 @@ from uuid import UUID, uuid7
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.core.keyed import (
-    AnyOf,
     Fragment,
     Max,
     Sort,
@@ -300,8 +299,6 @@ class Sha256Mismatch(RuntimeError):
 #: other one -- the broker rewrites no table reference, so the statement can
 #: only fail there. What puts those tables on the path is the
 #: :data:`PLATFORM_RBAC_READ_NAMESPACE` binding the one caller passes.
-#: Both row scopes and the id: the whole primary key ``(row_scope, namespace_id)``, two point reads.
-_NAMESPACE_ROW_SCOPES = AnyOf(("platform", "customer"), cast=None)
 
 
 async def authorize_workspace(
@@ -471,7 +468,8 @@ async def enrich_workspace_identity(
     row = await read_row(
         with_options(db_pool, namespace=PLATFORM_RBAC_READ_NAMESPACE),
         "namespaces",
-        by={"row_scope": _NAMESPACE_ROW_SCOPES, "namespace_id": workspace.id},
+        # the row's key (agent_acl v007): one point read
+        by={"namespace_id": workspace.id},
         columns=("customer_id",),
         records=True,
     )

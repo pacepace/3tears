@@ -98,7 +98,12 @@ async def test_v006_stamps_each_existing_table_its_backfill_keyed() -> None:
     }
     store = MigrationStore(keys)
     await access_tables_carry_their_epoch(store)  # type: ignore[arg-type]
-    assert_migration_stamps(store, STAMPED_TABLES, _SCHEMAS)
+    # namespaces is stamped by v006 with the key it had then, (row_scope, namespace_id); v007 keys it by namespace_id
+    # and rebuilds its bucket (test_namespaces_keyed_by_id), so its declaration is held to v007's frozen table
+    [frozen_namespaces] = [table for table in STAMPED_TABLES if table.name == "namespaces"]
+    assert frozen_namespaces.key_columns == ("row_scope", "namespace_id")
+    rest = [table for table in STAMPED_TABLES if table.name != "namespaces"]
+    assert_migration_stamps(store, rest, [schema for schema in _SCHEMAS if schema.name != "namespaces"])
 
 
 @pytest.mark.parametrize("cls", _COLLECTIONS, ids=lambda cls: cls.schema.name)
@@ -225,7 +230,7 @@ async def test_a_namespace_delete_marks_it_and_its_grants_gone() -> None:
     assignments.invalidate_cache_many = AsyncMock()
     namespaces = _collection(NamespaceCollection, pool, {"role_assignments": assignments})
     before = next_epoch()
-    await namespaces.delete(("customer", namespace_id))
+    await namespaces.delete(namespace_id)
     assert not [sql for sql, _ in pool.sent if sql.upper().startswith("DELETE")], pool.sent
     marks = {sql.split('"', 2)[1]: params for sql, params in pool.sent if sql.startswith("UPDATE")}
     assert set(marks) == {"namespaces", "role_assignments"}, pool.sent

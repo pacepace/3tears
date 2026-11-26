@@ -1,18 +1,15 @@
 """a namespace row that gains (or loses) a customer, against a real database.
 
-``namespaces`` is keyed ``(row_scope, namespace_id)`` and ``row_scope`` is
-DERIVED from ``customer_id`` (``platform`` <-> ``customer_id IS NULL``), so a
-row that gains a customer changes its own PRIMARY KEY. The generated upsert
-nominates ``(row_scope, namespace_id)`` as its conflict arbiter and therefore
-does not match the existing row -- while the separate ``UNIQUE (namespace_id)``
-index DOES, which turns the write into an unretryable
-:class:`asyncpg.exceptions.UniqueViolationError`.
+``namespaces`` is keyed by ``namespace_id`` alone (agent_acl v007) and
+``row_scope`` is DERIVED from ``customer_id`` (``platform`` <-> ``customer_id
+IS NULL``), a moveable column: a rescope is an in-place UPDATE that records the
+scope the row left (``row_scope_moved_from`` / ``_moved_epoch``).
 
-That is not reproducible against a double. Every assertion here runs against a
-real Postgres carrying the real composite primary key, the real secondary
-unique index, and the real ``role_assignments.scope_namespace_id`` foreign key
-with ``ON DELETE CASCADE`` -- which is what makes the "grants survive the move"
-claim a measurement rather than a hope.
+Every assertion here runs against a real Postgres carrying the real primary
+key, the real unique index the foreign key references, and the real
+``role_assignments.scope_namespace_id`` foreign key with ``ON DELETE CASCADE``
+-- which is what makes the "grants survive the move" claim a measurement
+rather than a hope.
 """
 
 from __future__ import annotations
@@ -35,11 +32,11 @@ from threetears.core.config import DefaultCoreConfig
 pytestmark = pytest.mark.integration
 
 
-#: the real shape, not a paraphrase: composite primary key on
-#: ``(row_scope, namespace_id)``, a SEPARATE unique index on ``namespace_id``
-#: alone, and the derived-partition CHECK that ties ``row_scope`` to whether
-#: ``customer_id`` is null. Take any one of the three away and the hazard this
-#: module is about stops reproducing.
+#: the real shape, as agent_acl v007 leaves it: the primary key on
+#: ``namespace_id``, the unique index on it the foreign key references, the
+#: derived-scope CHECK that ties ``row_scope`` to whether ``customer_id`` is
+#: null, the row's epoch and gone flag (ROW_STAMPED), and the moveable scope's
+#: two L3-only columns.
 _NAMESPACES_DDL = """
 CREATE TABLE namespaces (
     row_scope varchar(8) NOT NULL,
@@ -60,12 +57,17 @@ CREATE TABLE namespaces (
     face_rest_declaration jsonb,
     date_created timestamptz NOT NULL,
     date_updated timestamptz NOT NULL,
+    epoch bigint NOT NULL DEFAULT 0,
+    gone boolean NOT NULL DEFAULT false,
+    row_scope_moved_from text,
+    row_scope_moved_epoch bigint,
     CONSTRAINT namespaces_row_scope_ck CHECK (row_scope IN ('platform', 'customer')),
     CONSTRAINT namespaces_row_scope_customer_ck CHECK (
         (row_scope = 'platform' AND customer_id IS NULL
             AND namespace_type IN ('system', 'model', 'tool', 'tool_provider', 'shared', 'knowledge'))
      OR (row_scope = 'customer' AND customer_id IS NOT NULL)),
-    CONSTRAINT namespaces_pkey PRIMARY KEY (row_scope, namespace_id)
+    CONSTRAINT namespaces_pkey PRIMARY KEY (namespace_id),
+    CONSTRAINT uq_namespaces_namespace_id UNIQUE (namespace_id)
 )
 """
 
@@ -404,23 +406,30 @@ class TestRescopeMovesTheRow:
         finally:
             l1.reset()
 
-    async def test_the_old_partition_key_leaves_l1_and_l2(self, pg_pool: asyncpg.Pool) -> None:
-        """a cached row under the OLD composite key would outlive the move."""
+    async def test_the_moved_row_leaves_l1_and_l2(self, pg_pool: asyncpg.Pool) -> None:
+        """a row cached before the move would outlive it; the move is recorded on the row."""
         collection, nats, l1 = _build_collection(pg_pool)
         namespace_id = uuid.uuid4()
         customer_id = uuid.uuid4()
         try:
             await _seed_platform_tool(pg_pool, namespace_id=namespace_id)
             # warm both tiers under the pre-move key
-            before = await collection.get(("platform", namespace_id))
+            before = await collection.get(namespace_id)
             assert before is not None
-            assert collection.get_row_sync(("platform", namespace_id)) is not None
+            assert collection.get_row_sync(namespace_id) is not None
             assert any(f"{namespace_id}" in key for key in nats.kv)
 
             await collection.rescope(namespace_id, customer_id=customer_id)
 
-            assert collection.get_row_sync(("platform", namespace_id)) is None
-            assert not [key for key in nats.kv if "platform" in key]
+            assert collection.get_row_sync(namespace_id) is None
+            assert not [key for key in nats.kv if f"{namespace_id}" in key]
+            async with pg_pool.acquire() as conn:
+                moved = await conn.fetchrow(
+                    "SELECT epoch, row_scope_moved_from, row_scope_moved_epoch FROM namespaces WHERE namespace_id = $1",
+                    namespace_id,
+                )
+            assert moved is not None and moved["row_scope_moved_from"] == "platform"
+            assert moved["row_scope_moved_epoch"] == moved["epoch"]
         finally:
             l1.reset()
 

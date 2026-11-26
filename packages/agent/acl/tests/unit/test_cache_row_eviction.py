@@ -220,7 +220,9 @@ class TestAnUnknownReachEmptiesOnlyItsTablesLayer:
         ns, other_ns, group = uuid4(), uuid4(), uuid4()
         cache.put_group_namespace(GroupNamespaceKey(group, ns), frozenset(), (), role_ids=frozenset())
         cache.put_group_namespace(GroupNamespaceKey(group, other_ns), frozenset(), (), role_ids=frozenset())
-        registry.tell_derived_caches(CacheInvalidationMessage(table="namespaces", ids=["customer", f"{ns}"]))
+        registry.tell_derived_caches(
+            CacheInvalidationMessage(table="namespaces", ids=[f"{ns}"], columns={"row_scope": "customer"})
+        )
         assert cache.get_group_namespace(GroupNamespaceKey(group, ns)) is None
         assert cache.get_group_namespace(GroupNamespaceKey(group, other_ns)) is not None
 

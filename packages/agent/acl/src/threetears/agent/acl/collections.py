@@ -2407,63 +2407,22 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     # table carries a write generation like the four access tables, and ``AclCache`` is evicted
     # by its rows (epoch-task-06)
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
-    primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
+    # keyed by ``namespace_id`` alone (agent_acl v007): ``row_scope`` is a column a rescope changes in place, declared
+    # moveable, so the move is recorded on the row and heard live and by a restore (tenant_moves). WHY not the old
+    # composite ``(row_scope, namespace_id)``: a rescope changed half the key in place, and with the change-note ring
+    # retired a restore never heard the old key go away; and gone-plus-new is not possible, as ``namespace_id`` and
+    # ``name`` are unique and foreign-key targets (Pace, 2026-11-25)
+    primary_key_column: str = "namespace_id"
     # role_assignments.scope_namespace_id cascades (v001): a namespace's grants go with it, and
     # every cached decision about them must go too
     delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
         DeleteCascade("role_assignments", "scope_namespace_id", "CASCADE", parent_column="namespace_id"),
     )
-    partition_exempt_methods = frozenset(
-        {
-            "delete_from_store",
-            "save_entity",
-            "create",
-            "find_by_type_and_customer",
-            "list_ids_by_customer_and_type",
-            "list_ids_under_name",
-            # a type's rows may sit in both partitions ('tool' rows are platform and customer alike), so the
-            # by-type read names both; idx_namespaces_type keys it
-            "type_rows",
-            "list_by_type",
-            # the ids of both partitions a page at a time, each page bound to one partition (the cursor names it)
-            "page_ids",
-            # a tool provider's nodes are written in the platform partition alone (each read pins it)
-            "tool_provider_nodes",
-            "tool_provider_ownership",
-            "tool_provider_names",
-            # an owner's rows sit in both partitions (a customer-scoped channel
-            # beside a platform-scoped tool), so the by-owner walk names both.
-            "list_owned_by",
-            # a schema is named from either partition, so "is anyone left" asks both.
-            "schema_in_use",
-            "get_by_name",
-            "get_by_agent_id",
-            "get_by_owner_and_customer",
-            "find_by_id",
-            # ``get_many`` is ``find_by_id`` for many ids: ``namespace_id`` is unique platform-wide,
-            # so the partition adds nothing to the lookup.
-            "get_many",
-            # ``ensure_namespace`` DERIVES the partition from ``customer_id`` (``create`` does) and
-            # addresses the existing row by ``namespace_id``, unique platform-wide; a ``row_scope``
-            # argument would let a caller name a partition that contradicts the customer.
-            "ensure_namespace",
-            "list_tool_namespaces_for_actor",
-            "list_skill_eligible_tool_namespaces",
-            # ``rescope`` is cross-partition BY CONSTRUCTION rather than by
-            # accident: it reads a row in one partition and writes it into the
-            # other. It is addressed by ``namespace_id`` -- the column the
-            # separate ``UNIQUE (namespace_id)`` index makes unambiguous
-            # platform-wide -- so there is no ``row_scope`` argument for the
-            # guard to find, and adding one would let a caller name a partition
-            # the row is not in.
-            "rescope",
-        }
-    )
     # v0.8.0 hygiene enrichment: ``metadata`` carries the test
     # fixture's ``DEFAULT '{}'::jsonb`` server default (line 144).
     # Most columns on this table are platform-managed (the deploying
-    # app owns the canonical DDL); the ``row_scope`` partition column
-    # is 3tears-side only.
+    # app owns the canonical DDL); the ``row_scope`` column is
+    # 3tears-side only.
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``namespace_id``
     # to standardize on ``<entity>_id`` across all entity tables. The
     # rename happens at the platform DDL side (outside 3tears); the
@@ -2486,9 +2445,15 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
         # hears it. Stamped, not versioned: a namespace is edited and rescoped in place, a key at a time. agent_acl v006 stamps it
         row_epoch=ROW_STAMPED,
-        primary_key=("row_scope", "namespace_id"),
+        primary_key="namespace_id",
+        # a rescope moves a row between the platform and customer scopes in place (:meth:`NamespaceCollection.rescope`):
+        # the write records the scope it left on the row (row_scope_moved_from, _moved_epoch, agent_acl v007), and every
+        # record of a change names the row's scope, so a write that moved it names both, live and restored
+        moveable=("row_scope",),
+        invalidation_columns=("row_scope",),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
+            # derived from ``customer_id`` (``platform`` <-> ``customer_id IS NULL``), a plain column since v007
+            Column("row_scope", STRING_TYPE, server_default="'customer'"),
             Column("namespace_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),
@@ -2615,19 +2580,20 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         *,
         customer_id: UUID | None,
     ) -> NamespaceRescope:
-        """move one namespace row between the ``platform`` and ``customer`` partitions.
+        """move one namespace row between the ``platform`` and ``customer`` scopes, in place.
 
-        **Why this cannot be the ordinary upsert.** ``row_scope`` is DERIVED
-        from ``customer_id`` (``platform`` <-> ``customer_id IS NULL``) and it
-        is half the PRIMARY KEY, so a row that gains a customer changes its own
-        key. :meth:`save_entity`'s generated statement nominates
-        ``(row_scope, namespace_id)`` as its ``ON CONFLICT`` arbiter, which no
-        longer matches the stored row -- while the separate
-        ``UNIQUE (namespace_id)`` index the deploying app declares DOES. The
-        write is therefore not a conflict the upsert resolves; it is an
-        unretryable ``UniqueViolationError``, and re-issuing it never converges.
-        ``customer_id`` is additionally declared ``immutable=True``, so even a
-        matching arbiter would leave the column where it was.
+        **Why this is not the ordinary upsert.** ``row_scope`` is DERIVED from
+        ``customer_id`` (``platform`` <-> ``customer_id IS NULL``), and
+        ``customer_id`` is declared ``immutable=True``: :meth:`save_entity`
+        leaves it where it was. This is the one write that changes it.
+
+        **The move is recorded and heard.** The row is keyed by
+        ``namespace_id`` alone (agent_acl v007) and ``row_scope`` is declared
+        moveable (:mod:`~threetears.core.ddl.tenant_moves`): the keyed UPDATE
+        sets ``row_scope_moved_from`` / ``row_scope_moved_epoch`` from the row
+        as it was, in the same statement (``stamped_values``), so a restore of
+        a lost change log reads the row back under the scope it left as well
+        as its own; and the write's record names the key under both scopes.
 
         **It is an UPDATE, never a delete-and-reinsert, and that is the whole
         safety argument.** Grants reach a namespace by reference:
@@ -2646,7 +2612,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         every grant, schema name and audit record already written against the
         row names the customer it would be moved away from.
 
-        **Concurrency.** The UPDATE fences on the partition this call read, so
+        **Concurrency.** The UPDATE fences on the scope this call read, so
         two replicas converging on the same destination produce one write and
         one no-op rather than two. The loser reports ``moved=False``, which is
         the same answer it gets for "already in place" -- deliberately, because
@@ -2654,12 +2620,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         be". Nothing here retries: the caller re-attempts its own write, and
         the row is already correct.
 
-        The pre-move composite key is evicted from L1 and L2 and announced to
-        other pods; leaving it would let a read addressed at the OLD partition
-        keep answering with the pre-move row for the life of the process.
+        The key is evicted from L1 and L2 and announced to other pods, once
+        under the scope the row joined and once under the scope it left, in
+        one advance: a cache derived from the row (its customer decides
+        access) hears the move whichever scope it held the row under.
 
-        :param namespace_id: the row to move, addressed by the column the
-            secondary unique index makes unique platform-wide
+        :param namespace_id: the row to move, by its key
         :ptype namespace_id: UUID
         :param customer_id: the customer the row should belong to, or ``None``
             to return it to the platform partition
@@ -2684,7 +2650,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             row = await read_row(
                 self.l3_pool,
                 "namespaces",
-                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "namespace_id": namespace_id},
+                by={"namespace_id": namespace_id},
                 columns=("row_scope", "customer_id"),
                 records=True,
             )
@@ -2739,6 +2705,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # reaches this method having READ a row through the pool, so a
             # ``None`` here would be a wiring change that broke the read too,
             # and it names that rather than raising an attribute error.
+            # by its key, fenced on the scope read; ``stamped_values`` records the move (``row_scope`` is moveable)
             written = (
                 await update_keyed(
                     self.required_l3_pool,
@@ -2746,7 +2713,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                     values=self.stamped_values(
                         {"row_scope": target_scope, "customer_id": customer_id, "date_updated": datetime.now(UTC)}
                     ),
-                    by={"namespace_id": namespace_id, "row_scope": previous_scope},
+                    by={"namespace_id": namespace_id},
+                    where=[Fragment('"row_scope" = $1', (previous_scope,))],
                     returning=("namespace_id",),
                 )
             ).row
@@ -2761,11 +2729,13 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         )
         if moved:
             try:
-                # the row's key changed with its partition: both keys go, in the one advance the
-                # UPDATE owes, so a cache derived from the row (its customer decides access) hears it
-                await self.invalidate_cache_many([(previous_scope, namespace_id), (target_scope, namespace_id)])
+                # the key under the scope it joined and the scope it left, in the one advance the UPDATE owes, as a
+                # save that moves a row names it (tenant_moves): a follower evicting by either scope hears it
+                await self.invalidate_cache_many(
+                    [namespace_id, namespace_id], rows=[{"row_scope": target_scope}, {"row_scope": previous_scope}]
+                )
             except GenerationUnavailableError as exc:
-                # the move committed and both keys were evicted and announced; only the advance
+                # the move committed and the key was evicted and announced under both scopes; only the advance
                 # failed. The caller still owes the moved row its own tail, so it gets the outcome
                 raise NamespaceRescopeNotAdvanced(str(exc), outcome=outcome) from exc
         return outcome
@@ -2776,12 +2746,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     ) -> NamespaceEntity | None:
         """resolve namespace by ``namespace_id`` alone (v0.8.0 shard 04.6).
 
-        callers know the namespace's id (often computed
-        deterministically from the owning agent_id / customer_id) but
-        not the partition column ``row_scope``. uniqueness is
-        preserved by the ``UNIQUE (namespace_id)`` constraint
-        (renamed from bare ``id`` in v0.8.0 shard 04.6) so a single-
-        column fetch is unambiguous.
+        the row's key (agent_acl v007): one point read straight from L3,
+        promoted into L1/L2.
 
         :param namespace_id: namespace UUID
         :ptype namespace_id: UUID
@@ -2791,13 +2757,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
-            # both row scopes and the id: the whole primary key, two point reads
-            row = await read_row(
-                self.l3_pool,
-                "namespaces",
-                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "namespace_id": namespace_id},
-                records=True,
-            )
+            row = await read_row(self.l3_pool, "namespaces", by={"namespace_id": namespace_id}, records=True)
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -2822,10 +2782,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             rows = await read_by(
                 self.l3_pool,
                 "namespaces",
-                by={
-                    "row_scope": AnyOf(("platform", "customer"), cast=None),
-                    "namespace_id": AnyOf(list(namespace_ids), cast="uuid"),
-                },
+                by={"namespace_id": AnyOf(list(namespace_ids), cast="uuid")},
                 records=True,
             )
             for row in rows:
@@ -2838,7 +2795,6 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
 
     async def _revive_gone_namespace(
         self,
-        row_scope: str,
         namespace_id: UUID,
         *,
         name: str,
@@ -2853,7 +2809,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         """the namespace a delete marked gone that absorbed :meth:`ensure_namespace`'s insert, made live again in place
         as the new row: a delete marks the row gone (``ROW_STAMPED``), never deletes it, so its key absorbs an insert
         of the same id until quiet-time cleanup removes it. One keyed ``UPDATE`` by the key, only of a gone row, its
-        epoch risen past a fresh stamp (``stamped_values``).
+        epoch risen past a fresh stamp (``stamped_values``). The gone row may have been of the other scope: its scope is
+        set from the new customer like every other column, and a scope it changes is recorded as a move (``row_scope``
+        is moveable), so a restore hears the scope it left.
 
         :return: whether a gone row was made live
         :rtype: bool
@@ -2865,6 +2823,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 values=self.stamped_values(
                     {
                         "gone": False,
+                        "row_scope": row_scope_for_customer(customer_id),
                         "name": name,
                         "namespace_type": namespace_type,
                         "owner_agent_id": owner_agent_id,
@@ -2876,7 +2835,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                         "date_updated": now,
                     }
                 ),
-                by={"row_scope": row_scope, "namespace_id": namespace_id},
+                by={"namespace_id": namespace_id},
                 where=[Fragment('"gone"')],
                 returning=("namespace_id",),
             )
@@ -2963,10 +2922,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
             # advanced the table's write generation either way, and an advance no row is heard for
             # drops the table on every follower
-            await self.invalidate_cache(("platform" if customer_id is None else "customer", namespace_id))
+            await self.invalidate_cache_many([namespace_id], rows=[{"row_scope": row_scope}])
             existing = await self.find_by_id(namespace_id)
             if existing is None and await self._revive_gone_namespace(
-                row_scope,
                 namespace_id,
                 name=name,
                 namespace_type=namespace_type,
@@ -2977,7 +2935,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 metadata=metadata,
                 now=now,
             ):
-                await self.invalidate_cache((row_scope, namespace_id))
+                await self.invalidate_cache_many([namespace_id], rows=[{"row_scope": row_scope}])
                 existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the
@@ -3023,7 +2981,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         key = ScanCacheKey("namespaces", "by_name", name)
         held = None if cache is None else cache.get(key)
         if held:
-            found = await self.get((held[0]["row_scope"], UUID(held[0]["namespace_id"])))
+            found = await self.get(UUID(held[0]["namespace_id"]))
             if found is not None and found.name == name:
                 result = found
         if result is None and self.l3_pool is not None:
@@ -3037,7 +2995,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 if cache is not None and token is not None:
                     cache.put(
                         key,
-                        [{"row_scope": data["row_scope"], "namespace_id": str(data["namespace_id"])}],
+                        [{"namespace_id": str(data["namespace_id"])}],
                         token=token,
                     )
         return result
@@ -3363,12 +3321,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         return result
 
     async def page_ids(self, *, limit: int, cursor: str | None = None) -> KeyPage:
-        """one page of every namespace id, a partition at a time (``platform``, then ``customer``), each by its
-        primary key (row_scope, namespace_id): the bounded form of :meth:`list_all_ids`.
+        """one page of every namespace id, a scope at a time (``platform``, then ``customer``), each through
+        ``idx_namespaces_scope_id`` (row_scope, namespace_id): the bounded form of :meth:`list_all_ids`.
 
-        The cursor names the partition it stopped in (``<row_scope>:<the page's own cursor>``); a page that ends
-        a partition answers the next partition's start, so a walk reads every id once. A page holds at most
-        ``limit`` rows, fewer where a partition ends.
+        WHY by scope, not by the key alone: the key ``namespace_id`` is hashed on YugabyteDB, so a page past a cursor
+        over it would read and sort the whole table (``threetears.core.keyset``, "A hashed lead"); the scope index
+        (row_scope hashed, namespace_id in order) is the old primary key's shape, one range a page (agent_acl v007).
+
+        The cursor names the scope it stopped in (``<row_scope>:<the page's own cursor>``); a page that ends
+        a scope answers the next scope's start, so a walk reads every id once. A page holds at most
+        ``limit`` rows, fewer where a scope ends.
 
         :param limit: the most ids a page holds, at least one
         :ptype limit: int

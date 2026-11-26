@@ -29,7 +29,7 @@ class _Pool:
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         # the row's scope read: a keyed point read (threetears.core.keyed.read_row) by its key
         if sql.startswith('SELECT t."row_scope", t."customer_id" FROM "namespaces"'):
-            assert params[1] == self.namespace_id, params
+            assert params[0] == self.namespace_id, params
             return [{"row_scope": "platform", "customer_id": None}]
         # the move: a keyed write (threetears.core.keyed.update_keyed) returning the row it moved
         assert sql.startswith('UPDATE "namespaces"') and sql.endswith('RETURNING "namespace_id"'), sql
@@ -65,5 +65,11 @@ async def test_a_failed_advance_carries_the_outcome_after_the_row_was_announced(
         "customer",
         customer_id,
     )
-    announced = [row.ids for m in bus.published if isinstance(m, CacheInvalidationMessage) for row in m.each_row()]
-    assert announced == [["platform", f"{namespace_id}"], ["customer", f"{namespace_id}"]]
+    announced = [
+        (row.ids, row.columns) for m in bus.published if isinstance(m, CacheInvalidationMessage) for row in m.each_row()
+    ]
+    # the key under the scope it joined and the scope it left (agent_acl v007: namespace_id alone)
+    assert announced == [
+        ([f"{namespace_id}"], {"row_scope": "customer"}),
+        ([f"{namespace_id}"], {"row_scope": "platform"}),
+    ]
