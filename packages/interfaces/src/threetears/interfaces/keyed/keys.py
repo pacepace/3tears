@@ -65,7 +65,17 @@ __all__ = [
     "DeclaredIndex",
     "TableKey",
     "VersionedTable",
-    "newest_guard",
+    "NEWEST_FETCH_ROW_LIMIT",
+    "NEWEST_FIRST_KEYS",
+    "NEWEST_LIVE",
+    "NEWEST_ROWS_A_READ",
+    "NEWEST_VERSIONS",
+    "NEWEST_WORK_MEM",
+    "key_only",
+    "newest_lateral",
+    "newest_relation",
+    "newest_settings",
+    "next_newest_keys",
     "prefix_text",
     "register_versioned_table",
     "versioned_table",
@@ -645,7 +655,7 @@ _TIMESTAMPTZ: Final = frozenset({"timestamp with time zone", "timestamptz"})
 def prefix_text(term: str, declared: str) -> str:
     """a key value as a run marker's text holds it, cast by the database from its column's own type: the one spelling
     the marker's write (``threetears.core.ddl.run_markers.run_marker_insert_sql``, ``term`` a bound value) and a
-    read's probe of it (:func:`newest_guard`, ``term`` the row's column) both use, so the two texts are the same.
+    read's probe of it (:func:`newest_relation`, ``term`` the row's column) both use, so the two texts are the same.
 
     :param term: the SQL term, a bound placeholder (``$3``) or a row's column (``t."state"``)
     :ptype term: str
@@ -715,7 +725,7 @@ _VERSIONED: tuple[tuple[Relation, VersionedTable], ...] = ()
 
 def register_versioned_table(table: VersionedTable) -> None:
     """record that the L3 table ``table.name`` names keeps a version of a key a write: every keyed read of it then sees
-    only each key's newest live version (:func:`versioned_table`, :func:`newest_guard`).
+    only each key's newest live version (:func:`versioned_table`, :func:`newest_relation`).
 
     :param table: the declaration
     :ptype table: VersionedTable
@@ -751,57 +761,275 @@ def versioned_table(table: Any, *, l3: bool) -> VersionedTable | None:
     return next((known for named, known in _VERSIONED if named == relation), None)
 
 
-def newest_guard(table: VersionedTable, row: str, *, read_as: str | None = None) -> str:
-    """the condition a row of a versioned table passes when it is its key's newest version and live: not a "gone"
-    marker, no newer version of its key held, and no run marker of a prefix of its key newer than it.
+#: the ``work_mem`` each newest read sets for its own transaction (:func:`newest_settings`). WHY 64 MB (measured
+#: 2026-11-25, scripts/measure-newest-reads.py, 2M rows, 50 versions a key): a keyed batch's ``DISTINCT ON`` sorts every
+#: version of its keys (YugabyteDB's batched nested loop answers them in no key order); 5,000 keys' 250,000 versions
+#: passed the default 4 MB and spilled on both engines (external merge, 20 MB on disk), and 64 MB held them in memory
+#: (quicksort). Pods have no scratch volume (no disk spill, by design): the work a read asks is bounded by
+#: :data:`NEWEST_ROWS_A_READ`, and this is the memory that bound is sized against.
+NEWEST_WORK_MEM: Final = "64MB"
 
-    ``NOT <row>.gone AND NOT EXISTS (SELECT 1 FROM <table> AS newer WHERE newer.<key> = <row>.<key> ... AND
-    newer.epoch > <row>.epoch) AND NOT EXISTS (SELECT 1 FROM <markers> AS gone_run WHERE gone_run.table_name = '<name>'
-    AND gone_run.scope = <scope text> AND gone_run.prefix IN (<each prefix's text>) AND gone_run.epoch > <row>.epoch)``.
+#: the ``yb_fetch_row_limit`` a newest read sets on YugabyteDB for its own transaction (:func:`newest_settings`). WHY
+#: 10,000 (measured 2026-11-25, 5,000-key batch): the default 1,024 rows a storage request made a batch of 50 versions a
+#: key 246 requests; 10,000 made it 30 (5 versions: 26 -> 6), each request a round trip to the tablets.
+NEWEST_FETCH_ROW_LIMIT: Final = 10_000
 
-    WHY a probe beside the read, not a ``DISTINCT ON`` relation read in its place: a read's conditions on columns past
-    the key (a status) hold only of the newest version, so they must be judged after it is chosen; and neither
-    PostgreSQL nor YugabyteDB pushes a join's keys (a keyed batch's ``IN (SELECT unnest ...)``) into a ``DISTINCT ON``
-    subquery, so a batch read through one would pick the newest version of every key of the table, a whole read. The
-    probe keeps the read's own shape (its keys, pins, order, cursor, ``LIMIT``, ``GROUP BY``) and adds, for each row it
-    reads, one seek of the stored key ``(key..., epoch DESC)`` that stops at its first entry: for the newest version no
-    entry newer, for an older one the first newer. The run markers are probed by their key ``(table_name, scope,
-    prefix, epoch)``.
+#: the most versions one newest read's statement reads: a fill page or a keyed batch asks for as many keys as hold
+#: this many versions at the versions a key its last statement read (:func:`next_newest_keys`), so no sort outgrows
+#: :data:`NEWEST_WORK_MEM`. WHY 100,000: 250,000 versions of the measured table's rows (about 70 bytes each) sorted in
+#: 64 MB; 100,000 leaves room for rows two and a half times as wide. A fill page streams its range in key order (no
+#: sort but its own page's), so for it the bound is the work one statement does, never memory alone.
+NEWEST_ROWS_A_READ: Final = 100_000
+
+#: the keys a read's first statement asks for when it knows nothing yet of its versions: as many as fill
+#: :data:`NEWEST_ROWS_A_READ` at 50 versions a key, the measured worst (a key rewritten 50 times in a burst, cleanup
+#: never relied on); each later statement asks by the versions the one before read
+NEWEST_FIRST_KEYS: Final = NEWEST_ROWS_A_READ // 50
+
+#: the column a fill page's statement answers beside each key's newest version: whether a read keeps it (not a gone
+#: marker, no newer run marker, the read's own filters past the key). The page keeps every key it read to step past
+#: the last, so it learns its cursor and whether more follows from them all
+NEWEST_LIVE: Final = "_newest_live"
+
+#: the column a newest read answers beside each key's newest version when it sizes its next statement: how many
+#: versions of the key it read (:func:`next_newest_keys`)
+NEWEST_VERSIONS: Final = "_newest_versions"
+
+
+def newest_settings(*, yugabyte: bool) -> tuple[tuple[str, str], ...]:
+    """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`NEWEST_WORK_MEM`, and on
+    YugabyteDB :data:`NEWEST_FETCH_ROW_LIMIT`.
+
+    :param yugabyte: whether the read runs on YugabyteDB
+    :ptype yugabyte: bool
+    :return: each setting's name and value
+    :rtype: tuple[tuple[str, str], ...]
+    """
+    settings: tuple[tuple[str, str], ...] = (("work_mem", NEWEST_WORK_MEM),)
+    if yugabyte:
+        settings += (("yb_fetch_row_limit", str(NEWEST_FETCH_ROW_LIMIT)),)
+    return settings
+
+
+def next_newest_keys(keys: int, versions: int, asked: int) -> int:
+    """how many keys a newest read's next statement asks for: as many as hold :data:`NEWEST_ROWS_A_READ` versions at the
+    versions a key the last statement read, at most ``asked``; at least one.
+
+    :param keys: the keys the last statement read
+    :ptype keys: int
+    :param versions: the versions it read of them
+    :ptype versions: int
+    :param asked: the most the caller asks a statement for (its page or batch)
+    :ptype asked: int
+    :return: the next statement's keys
+    :rtype: int
+    """
+    if keys <= 0 or versions <= 0:
+        return max(1, min(asked, NEWEST_FIRST_KEYS))
+    return max(1, min(asked, NEWEST_ROWS_A_READ * keys // versions))
+
+
+#: the words a condition may hold beside the key's own columns and still be judged by the key alone (:func:`key_only`)
+_KEY_ONLY_WORDS: Final = frozenset(
+    {"and", "or", "not", "is", "null", "in", "any", "between", "true", "false", "select", "unnest", "as"}
+)
+
+#: a SQL condition's tokens: a string literal, a quoted identifier, a cast's type, a placeholder, a word, the rest
+_CONDITION_TOKEN: Final = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")+\"|::\s*[A-Za-z_][A-Za-z0-9_ ]*(?:\[\])?|\$\d+|[A-Za-z_][A-Za-z0-9_$]*|\S"
+)
+
+
+def key_only(condition: str, key: Sequence[str], *, alias: str | None = None) -> bool:
+    """whether a read's condition names the key's columns and nothing past them, so it holds of every version of a key
+    alike and may be judged before each key's newest version is chosen (inside :func:`newest_relation`'s ``within``).
+
+    Conservative: any column past the key, any function but ``unnest``, any word it does not know, and it is judged
+    after (outside), which is always right and at worst reads more versions.
+
+    :param condition: the condition's SQL
+    :ptype condition: str
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :param alias: the alias the condition may name a column by (``t``); none when None
+    :ptype alias: str | None
+    :return: whether it names the key alone
+    :rtype: bool
+    """
+    columns = {column.lower() for column in key}
+    named = False
+    tokens = _CONDITION_TOKEN.findall(condition)
+    for index, token in enumerate(tokens):
+        if token.startswith("'") or token.startswith("::") or token.startswith("$"):
+            continue
+        if token.startswith('"'):
+            if token[1:-1].replace('""', '"').lower() not in columns:
+                return False
+            named = True
+            continue
+        if _COLUMN.fullmatch(token) is None:
+            if token not in "=<>!(),.":
+                return False
+            continue
+        lowered = token.lower()
+        if alias is not None and lowered == alias.lower() and index + 1 < len(tokens) and tokens[index + 1] == ".":
+            continue
+        if lowered in columns:
+            named = True
+            continue
+        if lowered not in _KEY_ONLY_WORDS:
+            return False
+    return named
+
+
+def _marker_join(table: VersionedTable, row: str, read_as: str) -> str:
+    """the run markers' ``LEFT JOIN`` naming a row of ``table`` read as ``row``: ``gone_run.table_name IS NULL`` when no
+    run marker of a prefix of its key is newer than it. WHY a join on the one row kept and never ``NOT EXISTS`` in the
+    select list: there it is a SubPlan, a storage request a row on YugabyteDB (19,821 requests for a 20,000-key fill,
+    31.8 s, measured 2026-11-25); joined, the table's markers are read once (one request, a hash join)."""
+
+    def column(name: str) -> str:
+        return f"{row}.{quote_identifier(name)}"
+
+    assert table.markers is not None
+    schema = read_as.rsplit(".", 1)[0] + "." if "." in read_as else ""
+    texts = [prefix_text(column(name), kind) for name, kind in zip(table.key, table.texts, strict=False)]
+    prefixes = ", ".join(
+        f"array_to_string(ARRAY[{', '.join(texts[:length])}], chr({_PREFIX_SEPARATOR_CODE}))"
+        for length in range(table.scope_at + 1, len(texts) + 1)
+    )
+    literal = "'" + table.name.replace("'", "''") + "'"
+    return (
+        f"LEFT JOIN {quoted_table(schema + table.markers)} AS gone_run ON gone_run.table_name = {literal} "
+        f"AND gone_run.scope = {texts[table.scope_at]} AND gone_run.prefix IN ({prefixes}) "
+        f"AND gone_run.epoch > {column(table.epoch)}"
+    )
+
+
+def _live(table: VersionedTable, row: str) -> str:
+    """the condition a kept newest version passes: not a gone marker, and no newer run marker joined."""
+    gone = f"NOT {row}.{quote_identifier(table.gone)}"
+    return gone if table.markers is None else f"{gone} AND gone_run.table_name IS NULL"
+
+
+def _kept(table: VersionedTable, read_as: str, chosen: str, *, flagged: bool) -> str:
+    """each key's chosen version (``chosen``, a relation answering one row a key) judged live: the live ones alone, or,
+    ``flagged``, every one with :data:`NEWEST_LIVE` saying which."""
+    joined = "" if table.markers is None else " " + _marker_join(table, "n", read_as)
+    if flagged:
+        return f"SELECT n.*, ({_live(table, 'n')}) AS {quote_identifier(NEWEST_LIVE)} FROM {chosen}{joined}"
+    return f"SELECT n.* FROM {chosen}{joined} WHERE {_live(table, 'n')}"
+
+
+def newest_relation(
+    table: VersionedTable,
+    read_as: str,
+    *,
+    within: Sequence[str] = (),
+    alias: str = "t",
+    limit: str | None = None,
+    counted: bool = False,
+    flagged: bool = False,
+) -> str:
+    """the ``SELECT`` answering each key's newest live version of a versioned table, read in its place:
+    ``DISTINCT ON (key...) ... ORDER BY key..., epoch DESC`` over the rows ``within`` names, then the gone flag and the
+    run markers (a ``LEFT JOIN``) judged on the one row each key keeps.
+
+    The read's conditions on the key's columns alone go ``within`` (:func:`key_only`): they hold of every version of a
+    key, so they narrow what is read. Its other conditions are judged on the newest version, after (a status an older
+    version held never makes a key read). A plain condition on a ``DISTINCT ON`` column the read puts outside the
+    relation, the planner pushes inside itself (PostgreSQL's and YugabyteDB's qual pushdown); a join's keys and a
+    ``LIMIT`` it never pushes, so a keyed batch and a fill page name theirs ``within``.
+
+    WHY this and not a probe beside each row read (the former ``newest_guard``, measured 2026-11-25 at 2M rows): the
+    probe read every version and sought each one's newer version, and on YugabyteDB a batch's probe planned as a scan
+    of the whole table (5,000 keys: 2,005,020 rows read at 1 version a key); a fill page here reads each version once
+    (20,000 keys at 5 versions: 101,880 rows, 105 requests, against the probe's 504,272 and 514).
 
     :param table: the declaration
     :ptype table: VersionedTable
-    :param row: how the statement names the row read: its alias (``t``), or the quoted relation where it is read with
-        none (``"results"``)
-    :ptype row: str
-    :param read_as: the table as the read names it (``schema.table`` or bare), so the probe reads the same relation;
-        the declared name when None
-    :ptype read_as: str | None
-    :return: the condition, one boolean expression binding no parameter
+    :param read_as: the table as the read names it (``schema.table`` or bare)
+    :ptype read_as: str
+    :param within: conditions on the key's columns, written on ``alias`` (or unqualified), binding the read's own
+        placeholders: they may name the same ``$n`` as the statement around them
+    :ptype within: Sequence[str]
+    :param alias: the alias the table is read by inside, the one ``within`` names
+    :ptype alias: str
+    :param limit: the most keys read (a fill page's ``LIMIT``, SQL text: a number or a placeholder); every key when None
+    :ptype limit: str | None
+    :param counted: also answer :data:`NEWEST_VERSIONS`, the versions read of each key
+    :ptype counted: bool
+    :param flagged: answer every key read, its :data:`NEWEST_LIVE` saying whether it is kept, never dropping one (a
+        fill page steps past every key it read)
+    :ptype flagged: bool
+    :return: the ``SELECT``, its columns the table's (and those asked)
     :rtype: str
     """
-    named = table.name if read_as is None else read_as
+    key = ", ".join(f"{alias}.{quote_identifier(column)}" for column in table.key)
+    epoch = f"{alias}.{quote_identifier(table.epoch)}"
+    versions = (
+        f", count(*) OVER (PARTITION BY {key} ORDER BY {epoch} DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED "
+        f"FOLLOWING) AS {quote_identifier(NEWEST_VERSIONS)}"
+        if counted
+        else ""
+    )
+    where = f" WHERE {' AND '.join(within)}" if within else ""
+    cut = f" LIMIT {limit}" if limit is not None else ""
+    chosen = (
+        f"(SELECT DISTINCT ON ({key}) {alias}.*{versions} FROM {quoted_table(read_as)} AS {alias}{where} "
+        f"ORDER BY {key}, {epoch} DESC{cut}) AS n"
+    )
+    return _kept(table, read_as, chosen, flagged=flagged)
 
-    def column(alias: str, name: str) -> str:
-        return f"{alias}.{quote_identifier(name)}"
 
-    same = " AND ".join(f"{column('newer', name)} = {column(row, name)}" for name in table.key)
-    epoch = column(row, table.epoch)
-    parts = [
-        f"NOT {column(row, table.gone)}",
-        f"NOT EXISTS (SELECT 1 FROM {quoted_table(named)} AS newer WHERE {same} "
-        f"AND {column('newer', table.epoch)} > {epoch})",
-    ]
-    if table.markers is not None:
-        schema = named.rsplit(".", 1)[0] + "." if "." in named else ""
-        texts = [prefix_text(column(row, name), kind) for name, kind in zip(table.key, table.texts, strict=False)]
-        prefixes = ", ".join(
-            f"array_to_string(ARRAY[{', '.join(texts[:length])}], chr({_PREFIX_SEPARATOR_CODE}))"
-            for length in range(table.scope_at + 1, len(texts) + 1)
-        )
-        literal = "'" + table.name.replace("'", "''") + "'"
-        parts.append(
-            f"NOT EXISTS (SELECT 1 FROM {quoted_table(schema + table.markers)} AS gone_run "
-            f"WHERE gone_run.table_name = {literal} AND gone_run.scope = {texts[table.scope_at]} "
-            f"AND gone_run.prefix IN ({prefixes}) AND gone_run.epoch > {epoch})"
-        )
-    return "(" + " AND ".join(parts) + ")"
+def newest_lateral(
+    table: VersionedTable,
+    read_as: str,
+    *,
+    keys: str,
+    joined: Sequence[tuple[str, str]],
+    within: Sequence[str] = (),
+    alias: str = "t",
+) -> str:
+    """the ``SELECT`` answering the newest live version of each key a batch names, on PostgreSQL: the batch's keys
+    (``keys``, a relation such as ``(SELECT unnest($1::text[]) AS k0, unnest($2::bigint[]) AS k1) AS k``), each joined ``LATERAL`` to its own
+    newest version, ``ORDER BY epoch DESC LIMIT 1`` (a backward seek of the key that stops at its first entry); a
+    batch of a prefix of the key takes each of its keys' newest by ``DISTINCT ON`` the rest of the key. The gone flag
+    and the run markers are judged on the one row kept, as :func:`newest_relation` judges them.
+
+    WHY on PostgreSQL alone (measured 2026-11-25, 5,000 keys, 2M rows): PostgreSQL seeks each key once whatever its
+    versions (5,000 rows read at 1, 5 and 50 versions, 98-129 ms), where a batched ``DISTINCT ON`` read and sorted
+    every version (250,000 rows at 50, 647-929 ms). On YugabyteDB each seek is a storage request (5,005 requests,
+    0.9-9.6 s), so it reads the batch by :func:`newest_relation` instead (6 to 246 requests).
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :param read_as: the table as the read names it
+    :ptype read_as: str
+    :param keys: the batch's keys as a relation, TRUSTED SQL binding the read's placeholders
+    :ptype keys: str
+    :param joined: each key column the batch names and the batch relation's column holding it (``("state",
+        "k.k0")``), a leading part of the key, in order
+    :ptype joined: Sequence[tuple[str, str]]
+    :param within: further conditions on the key's columns, written on ``alias``
+    :ptype within: Sequence[str]
+    :param alias: the alias the table is read by inside the lateral read
+    :ptype alias: str
+    :return: the ``SELECT``, its columns the table's
+    :rtype: str
+    :raises ValueError: when ``joined`` names no leading part of the key
+    """
+    named = tuple(column for column, _ in joined)
+    if not named or table.key[: len(named)] != named:
+        raise ValueError(f"a batch of {table.name!r} names a leading part of its key {table.key}, not {named}")
+    conditions = [f"{alias}.{quote_identifier(column)} = {source}" for column, source in joined]
+    where = " AND ".join([*conditions, *within])
+    epoch = f"{alias}.{quote_identifier(table.epoch)}"
+    rest = ", ".join(f"{alias}.{quote_identifier(column)}" for column in table.key[len(named) :])
+    head = f"SELECT DISTINCT ON ({rest}) {alias}.*" if rest else f"SELECT {alias}.*"
+    order = f"{rest}, {epoch} DESC" if rest else f"{epoch} DESC LIMIT 1"
+    chosen = (
+        f"{keys} CROSS JOIN LATERAL ({head} FROM {quoted_table(read_as)} AS {alias} WHERE {where} ORDER BY {order}) "
+        "AS n"
+    )
+    return _kept(table, read_as, chosen, flagged=False)

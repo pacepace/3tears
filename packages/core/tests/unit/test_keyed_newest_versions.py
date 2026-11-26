@@ -289,7 +289,7 @@ class TestCounts:
 
 
 class TestStoreStatements:
-    def test_the_store_s_key_reads_carry_the_newest_guard(self, db: duckdb.DuckDBPyConnection) -> None:
+    def test_the_store_s_key_reads_read_the_newest_relation(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if the store's point read or key-led read of a versioned table answers an older version or a gone
         key, or a read answers the marker flag as a column."""
         point = schema_sql.build_fetch_sql(_RESULTS)
@@ -299,7 +299,9 @@ class TestStoreStatements:
         assert db.execute(point, ["NV", 1]).fetchall() == []
         led = schema_sql.build_led_by_select_sql(_RESULTS, ["state", "id", "v"])
         assert sorted(db.execute(led, [["CA", "NV"]]).fetchall()) == [("CA", 1, 3), ("CA", 3, 30), ("NV", 2, 60)]
-        assert "NOT EXISTS" in schema_sql.build_whole_key_select_sql(_RESULTS)
+        # the whole-key batch names its keys inside the newest relation (no planner pushes a join's keys into it)
+        whole = schema_sql.build_whole_key_select_sql(_RESULTS)
+        assert "DISTINCT ON" in whole and whole.index("unnest") < whole.index(') AS "nv_results"')
 
 
 class TestSteps:

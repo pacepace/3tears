@@ -44,6 +44,9 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; reply_rows refu
 
 __all__ = [
     "ReplyNotArrowError",
+    "counted_type",
+    "flag_type",
+    "without_counted",
     "arrow_schema_text",
     "l3_fetch_arrow",
     "read_reply",
@@ -290,6 +293,46 @@ def _rail_arrow_table(rows: Sequence[Mapping[str, Any]], types: Mapping[str, Any
     schema = pa.schema([pa.field(name, kind) for name, kind in types.items()])
     columns = [pa.array([_rail_value(row.get(name), kind) for row in rows], kind) for name, kind in types.items()]
     return pa.Table.from_arrays(columns, schema=schema)
+
+
+def counted_type() -> Any:
+    """the Arrow type of a count a statement answers beside its rows (``count(*)``, a ``bigint``): a versioned read's
+    versions a key (``threetears.interfaces.keyed.keys.NEWEST_VERSIONS``).
+
+    :return: ``pyarrow.int64()``
+    :rtype: pyarrow.DataType
+    :raises RuntimeError: without pyarrow
+    """
+    if not _PYARROW:
+        raise RuntimeError("an Arrow read needs pyarrow (threetears-core[arrow])")
+    return pa.int64()
+
+
+def flag_type() -> Any:
+    """the Arrow type of a flag a statement answers beside its rows (a ``boolean``): a fill page's kept flag.
+
+    :return: ``pyarrow.bool_()``
+    :rtype: pyarrow.DataType
+    :raises RuntimeError: without pyarrow
+    """
+    if not _PYARROW:
+        raise RuntimeError("an Arrow read needs pyarrow (threetears-core[arrow])")
+    return pa.bool_()
+
+
+def without_counted(table: Any, column: str) -> tuple[Any, int]:
+    """``table`` without the count ``column`` a statement answered beside its rows, and that column's sum (Arrow's own
+    sum, no value made a Python object).
+
+    :param table: the rows read
+    :ptype table: pyarrow.Table
+    :param column: the count's column
+    :ptype column: str
+    :return: the rows without it, and its sum (0 for no rows)
+    :rtype: tuple[pyarrow.Table, int]
+    """
+    total = pc.sum(table.column(column)).as_py()
+    return table.drop_columns([column]), int(total or 0)
 
 
 async def l3_fetch_arrow(l3: Any, query: str, *params: Any, types: Mapping[str, Any]) -> Any:

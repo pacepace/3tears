@@ -36,7 +36,7 @@ from threetears.core.keyed._filters import (
     Selected,
     by_conditions,
     narrowing,
-    newest_only,
+    newest_read,
     reads_l3,
     relation,
     selected_column,
@@ -122,16 +122,9 @@ async def estimated_rows(
     return int(estimate)
 
 
-def _where(by: Mapping[str, Any], newest: Sequence[Fragment] = ()) -> tuple[str, list[Any]]:
+def _where(by: Mapping[str, Any]) -> tuple[str, list[Any]]:
     conditions, values = by_conditions(by)
-    conditions += [fragment.sql for fragment in newest]
     return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
-
-
-def _newest(conn: Any, table: Any) -> list[str]:
-    """the newest-version guard of a versioned L3 table read as ``r`` (:func:`~threetears.core.keyed.newest_only`):
-    one condition binding no parameter, or none."""
-    return [fragment.sql for fragment in newest_only(conn, table, row="r")]
 
 
 def _ordered(table: str | Derived, order: Sequence[str]) -> str:
@@ -178,9 +171,10 @@ async def count_at_most(
     """
     if at_most < 0:
         raise ValueError(f"a bounded count counts at least none, got {at_most}")
-    where, values = _where(by or {}, newest_only(conn, table, row="r"))
+    where, values = _where(by or {})
     ordered = _ordered(table, order)
-    source = relation(table, "r", values)
+    # a versioned table's newest live versions, read in its place (the pins pushed into its DISTINCT ON)
+    source = relation(newest_read(conn, table), "r", values)
     sql = f"SELECT count(*) AS held FROM (SELECT 1 FROM {source}{where}{ordered} LIMIT ${len(values) + 1}) AS held"
     rows = await sent_by(conn).fetch(sql, *values, at_most + 1)
     held = int(rows[0]["held"])
@@ -203,10 +197,16 @@ async def holds_any(
     :return: whether a row is held
     :rtype: bool
     """
-    where, values = _where(by or {}, newest_only(conn, table, row="r"))
-    source = relation(table, "r", values)
+    where, values = _where(by or {})
+    source = relation(newest_read(conn, table), "r", values)
     rows = await sent_by(conn).fetch(f"SELECT 1 AS held FROM {source}{where}{_ordered(table, order)} LIMIT 1", *values)
     return bool(rows)
+
+
+def _probed(conn: Any, table: str) -> str:
+    """how :func:`empty_tables` names a table it probes: quoted, or a versioned table's newest live versions."""
+    read = newest_read(conn, table)
+    return f"({read.sql})" if isinstance(read, Derived) else quote_identifier(table)
 
 
 async def empty_tables(conn: Any, tables: Sequence[str]) -> list[str]:
@@ -224,8 +224,7 @@ async def empty_tables(conn: Any, tables: Sequence[str]) -> list[str]:
     # a versioned table holding only "gone" markers (or rows under a newer run marker) holds no row a read sees: its
     # probe reads past them to the first live newest version
     probes = ", ".join(
-        f"NOT EXISTS (SELECT 1 FROM {quote_identifier(table)} AS r"
-        f"{''.join(f' WHERE {guard}' for guard in _newest(conn, table))} LIMIT 1) AS e{index}"
+        f"NOT EXISTS (SELECT 1 FROM {_probed(conn, table)} AS r LIMIT 1) AS e{index}"
         for index, table in enumerate(tables)
     )
     rows = await sent_by(conn).fetch(f"SELECT {probes}")
@@ -294,7 +293,7 @@ async def aggregate_keyed(
     merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for chunk in _value_chunks(pinned, batch):
         for row in await sent_by(conn).fetch(
-            *_aggregate_statement(table, aggregates, chunk, ranges, newest_only(conn, table, where), group)
+            *_aggregate_statement(newest_read(conn, table), aggregates, chunk, ranges, where, group)
         ):
             held = merged.setdefault(tuple(row[name] for name in names), {name: row[name] for name in names} | empty)
             for name, aggregate in aggregates.items():
@@ -491,15 +490,15 @@ async def _counts_paged(
     last: Any = None
     # the index holding (by, column) in the column's order, named to YugabyteDB (_COUNTED's why)
     hint = await yugabyte_index_hint(conn, table, by, [Sort(column)], alias="r")
+    read_from = newest_read(conn, table)
     while True:
         conditions, params = by_conditions(by)
-        conditions += _newest(conn, table)
         conditions.append(f"{quoted} IS NOT NULL")
         if last is not None:
             params.append(last)
             conditions.append(f"{quoted} > ${len(params)}{'' if cast is None else f'::{cast}'}")
         sql = hint + (
-            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)}"
+            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(read_from, 'r', params)} WHERE {' AND '.join(conditions)}"
             f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
         )
         rows = await sent_by(conn).fetch(sql, *params)
@@ -514,10 +513,10 @@ async def _counts_paged(
     # the NULL group, which no "> last" reaches: one keyed count of its own
     nulls = {**by, column: None}
     conditions, params = by_conditions(nulls)
-    conditions += _newest(conn, table)
     hint = await yugabyte_index_hint(conn, table, nulls, [], alias="r")
     rows = await sent_by(conn).fetch(
-        f"{hint}SELECT count(*) AS held FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)}", *params
+        f"{hint}SELECT count(*) AS held FROM {relation(read_from, 'r', params)} WHERE {' AND '.join(conditions)}",
+        *params,
     )
     if rows and int(rows[0]["held"]):
         counted[None] = int(rows[0]["held"])
@@ -721,9 +720,6 @@ async def counts_by_relations(
     labels = list(tables)
     counted: dict[str, dict[Any, int]] = {label: {} for label in labels}
     quoted = quote_identifier(column)
-    # each versioned table's rows are its keys' newest live versions alone: a count never counts an older version, a
-    # "gone" marker or a row under a newer run marker
-    newest = {label: _newest(conn, tables[label]) for label in labels}
     if packed_rows is not None:
         await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups, packed_as, own)
         return counted
@@ -750,9 +746,9 @@ async def counts_by_relations(
         for fragment in where:
             conditions.append(narrowing(fragment, len(params)))
             params += list(fragment.params)
-        clauses = _branch_clauses(labels, conditions, params, own, newest=newest)
+        clauses = _branch_clauses(labels, conditions, params, own)
         parts = [
-            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(tables[label], 'r', params)} "
+            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(newest_read(conn, tables[label]), 'r', params)} "
             f"WHERE {clauses[label]} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
@@ -792,18 +788,16 @@ def _branch_clauses(
     own: Mapping[str, Mapping[str, Any]],
     *,
     alias: str | None = None,
-    newest: Mapping[str, Sequence[str]] = MappingProxyType({}),
 ) -> dict[str, str]:
     """each relation's ``WHERE``: the shared ``conditions``, then its own pins (``pins=``), their values appended to
-    ``params`` (one list for the whole ``UNION ALL``) and numbered after them, then its newest-version guard where it
-    is a versioned table (``newest``: label -> its guard, binding nothing)."""
+    ``params`` (one list for the whole ``UNION ALL``) and numbered after them."""
     clauses: dict[str, str] = {}
     for label in labels:
         extra: list[str] = []
         if label in own:
             extra, values = by_conditions(own[label], first=len(params) + 1, alias=alias)
             params += values
-        clauses[label] = " AND ".join([*conditions, *extra, *newest.get(label, ())])
+        clauses[label] = " AND ".join([*conditions, *extra])
     return clauses
 
 
@@ -853,11 +847,10 @@ async def _counts_seeking(
             params,
             own,
             alias="r",
-            newest={label: _newest(conn, tables[label]) for label in labels},
         )
         parts = [
             f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
-            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r', params)} WHERE {clauses[label]}) AS c "
+            f"(SELECT count(*) AS held FROM {relation(newest_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]}) AS c "
             "WHERE c.held > 0"
             for index, label in enumerate(labels)
         ]
@@ -911,15 +904,13 @@ async def _counts_packed(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    clauses = _branch_clauses(
-        labels, conditions, params, own, newest={label: _newest(conn, tables[label]) for label in labels}
-    )
+    clauses = _branch_clauses(labels, conditions, params, own)
     quoted = quote_identifier(column)
     alias = quote_identifier(packed_as)
     texts = " UNION ALL ".join(
         f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS {_PACKED_TEXT}) "
         f"AS {alias} "
-        f"FROM {relation(tables[label], 'r', params)} WHERE {clauses[label]} GROUP BY {quoted}"
+        f"FROM {relation(newest_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
     for fields in await _packed_rows(conn, texts, params, items, packed_rows, alias):
@@ -1004,13 +995,13 @@ async def read_packed(
     if items == 0:
         return []
     conditions, params = by_conditions(dict(by or {}))
-    for fragment in newest_only(conn, relation, where, row="r"):
+    for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     alias = quote_identifier(packed_as)
     text = column.expression if isinstance(column, Selected) else f"r.{quote_identifier(column)}"
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    texts = f"SELECT CAST({text} AS {_PACKED_TEXT}) AS {alias} FROM {_filters.relation(relation, 'r', params)}{clause}"
+    texts = f"SELECT CAST({text} AS {_PACKED_TEXT}) AS {alias} FROM {_filters.relation(newest_read(conn, relation), 'r', params)}{clause}"
     return await _packed_cells(conn, texts, params, items, packed_rows, alias)
 
 
@@ -1114,8 +1105,8 @@ async def _counts_since(
         grouped = group.get(label)
         group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
         flag = "0" if fresh is None else f"max(CASE {fresh_when}ELSE 0 END)"
-        clause = " AND ".join([*conditions, past, *_newest(conn, tables[label])])
-        source = relation(tables[label], "r", params)
+        clause = " AND ".join([*conditions, past])
+        source = relation(newest_read(conn, tables[label]), "r", params)
         tail = f"FROM {source} WHERE {clause} GROUP BY {quoted}"
         extra = "" if grouped is None else f", {quote_identifier(grouped)}"
         parts.append((index, group_text, flag, tail, extra))

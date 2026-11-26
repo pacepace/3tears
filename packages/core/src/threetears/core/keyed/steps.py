@@ -420,7 +420,7 @@ def latest_per_key(
     With ``gone``, the newest live version of each key of a relation of versions (a versioned table's rows a change
     produced, ordered by the epoch descending): a key whose first row is a "gone" marker (``gone`` true) answers
     nothing, never the version behind it. A keyed read of a versioned L3 table itself takes the same rule as a probe
-    beside the read (:func:`~threetears.interfaces.keyed.keys.newest_guard`): a ``DISTINCT ON`` subquery takes no
+    beside the read (:func:`~threetears.interfaces.keyed.keys.newest_relation`): a ``DISTINCT ON`` subquery takes no
     key a join names, so read through one a table would be read whole.
 
     :param rel: the relation

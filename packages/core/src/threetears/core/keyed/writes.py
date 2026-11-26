@@ -65,7 +65,7 @@ __all__ = [
 def _refuse_in_place(conn: Any, table: Any, write: str) -> None:
     """refuse an in-place write of a versioned L3 table: its rows are versions, a write appends the key's new version
     and a delete a "gone" marker (``SqlL3Backend``, the collection's save and delete), never an ``UPDATE`` or a
-    ``DELETE`` of a version a read may be seeing (``threetears.interfaces.keyed.keys.newest_guard``).
+    ``DELETE`` of a version a read may be seeing (``threetears.interfaces.keyed.keys.newest_relation``).
 
     :param conn: the connection the write would run on
     :ptype conn: Any

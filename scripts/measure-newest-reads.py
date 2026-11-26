@@ -6,7 +6,7 @@ burst a key rewritten 50 times holds 50 versions. A read must answer only each k
 compares the mechanisms on one table, one database, one machine:
 
 ``guard``
-    the shipped ``keys.newest_guard`` beside the read: every version the read's range or keys name is read, and each
+    the retired ``keys.newest_guard`` (a frozen copy below) beside the read: every version the read's range or keys name is read, and each
     is dropped unless no newer version of its key exists (a seek of ``(key..., epoch DESC)``) and no newer run
     marker names it.
 ``distinct``
@@ -67,7 +67,8 @@ from typing import Any
 import asyncpg
 
 from threetears.core.keyed import Fragment, KeyBatch
-from threetears.interfaces.keyed.keys import VersionedTable, newest_guard
+from threetears.interfaces.keyed.filters import quote_identifier, quoted_table
+from threetears.interfaces.keyed.keys import VersionedTable, prefix_text
 from threetears.interfaces.keyed.rows import keyed_read_statement
 
 SCHEMA = "nr_measure"
@@ -76,6 +77,37 @@ PAGE = 5_000
 MARKERS = "threetears_run_markers"
 COLUMNS = ("state", "id", "v", "payload")
 BATCH_MECHANISMS = ("guard", "lateral", "distinct", "distinct_join")
+
+
+def newest_guard(table: VersionedTable, row: str, *, read_as: str | None = None) -> str:
+    """the newest-version guard as it shipped (02022c884) and was retired (2026-11-25): a probe beside each row read,
+    kept here only as the baseline the chosen reads were measured against."""
+    named = table.name if read_as is None else read_as
+
+    def column(alias: str, name: str) -> str:
+        return f"{alias}.{quote_identifier(name)}"
+
+    same = " AND ".join(f"{column('newer', name)} = {column(row, name)}" for name in table.key)
+    epoch = column(row, table.epoch)
+    parts = [
+        f"NOT {column(row, table.gone)}",
+        f"NOT EXISTS (SELECT 1 FROM {quoted_table(named)} AS newer WHERE {same} "
+        f"AND {column('newer', table.epoch)} > {epoch})",
+    ]
+    if table.markers is not None:
+        schema = named.rsplit(".", 1)[0] + "." if "." in named else ""
+        texts = [prefix_text(column(row, name), kind) for name, kind in zip(table.key, table.texts, strict=False)]
+        prefixes = ", ".join(
+            f"array_to_string(ARRAY[{', '.join(texts[:length])}], chr({31}))"
+            for length in range(table.scope_at + 1, len(texts) + 1)
+        )
+        literal = "'" + table.name.replace("'", "''") + "'"
+        parts.append(
+            f"NOT EXISTS (SELECT 1 FROM {quoted_table(schema + table.markers)} AS gone_run "
+            f"WHERE gone_run.table_name = {literal} AND gone_run.scope = {texts[table.scope_at]} "
+            f"AND gone_run.prefix IN ({prefixes}) AND gone_run.epoch > {epoch})"
+        )
+    return "(" + " AND ".join(parts) + ")"
 
 
 def table_name(versions: int) -> str:

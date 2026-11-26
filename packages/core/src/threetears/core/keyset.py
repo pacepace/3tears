@@ -68,11 +68,19 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, Final
 
-from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.arrow_reply import counted_type, flag_type, l3_fetch_arrow, without_counted
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
-from threetears.core.keyed._filters import Fragment, narrowing, newest_only, quoted_table
+from threetears.core.keyed._filters import Fragment, narrowing, newest_of, newest_sent
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
+from threetears.interfaces.keyed.keys import (
+    NEWEST_LIVE,
+    NEWEST_VERSIONS,
+    VersionedTable,
+    key_only,
+    newest_relation,
+    next_newest_keys,
+)
 from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.observe import get_logger
 
@@ -105,6 +113,10 @@ _MOST_LEADS_A_SEEK: Final = 200
 _MOST_LEADS: Final = 20_000
 
 _logger = get_logger(__name__)
+
+#: the column a versioned fill page's statement answers beside each key it read: whether the page keeps it (its
+#: newest version live, and the read's filters past the key holding of it)
+_KEPT: Final = "_newest_kept"
 
 
 def _next_rows(page: L3Page, rows: int, asked: int) -> int:
@@ -194,7 +206,7 @@ async def read_keyset_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
     :ptype table: str | None
     :return: the rows and the statement count (a hashed lead's walk counts the pages it read, not its reads of the
         lead's values)
@@ -274,13 +286,15 @@ async def keyset_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
     :ptype table: str | None
     :return: the pages, as they are read
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one
     """
-    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table))
+    shape = _ReadShape(
+        select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table, select_from)
+    )
     reads = _DictReads(l3, page_size)
     pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned.walk is not None:
@@ -353,13 +367,15 @@ async def keyset_arrow_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
     :ptype table: str | None
     :return: the pages, as they are read, each a ``pyarrow.Table``
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
     """
-    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table))
+    shape = _ReadShape(
+        select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table, select_from)
+    )
     reads = _ArrowReads(l3, page_size, types)
     pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned.walk is not None:
@@ -512,21 +528,22 @@ async def keyset_scope_values(
     values: list[Any] = []
     while taken := await leads.take(page_size):
         values.extend(taken)
-    newest = _newest(l3, table)
-    if not newest or not values:
+    newest = newest_of(l3, table)
+    if newest is None or not values:
         return values
     return await _live_scopes(l3, table, scope_column, scope_type, values, newest)
 
 
 async def _live_scopes(
-    l3: Any, table: str, scope_column: str, scope_type: Any, values: Sequence[Any], newest: Sequence[Fragment]
+    l3: Any, table: str, scope_column: str, scope_type: Any, values: Sequence[Any], newest: VersionedTable
 ) -> list[Any]:
     """the states of ``values`` a versioned table holds a live newest version of, in their order: a state holding only
     older versions, "gone" markers or rows under a newer run marker holds no row a read sees, so it is no state of the
-    table. One statement a page of states, each a keyed probe of the state's rows stopping at its first live one.
+    table. One statement a page of states, each state's probe its newest relation pinned to it (the pin pushed into
+    the relation's ``DISTINCT ON``, which walks the state's keys in order) stopping at its first live key.
 
     WHY apart from the walk: the walk's ``SELECT DISTINCT`` reads every version's state (YugabyteDB answers it from the
-    bucket heads, a row a state); guarded, it would read the table whole.
+    bucket heads, a row a state); read through the newest relation, it would read the table whole.
 
     :param l3: the reader
     :ptype l3: Any
@@ -538,43 +555,78 @@ async def _live_scopes(
     :ptype scope_type: pyarrow.DataType
     :param values: the states the walk found, in the database's order
     :ptype values: Sequence[Any]
-    :param newest: the table's newest-version guard, naming the row by the relation (:func:`_newest`)
-    :ptype newest: Sequence[Fragment]
+    :param newest: the table's versioned declaration
+    :ptype newest: VersionedTable
     :return: the states holding a live row, in that order
     :rtype: list[Any]
     """
     quoted = quote_identifier(scope_column)
-    relation = quoted_table(table)
-    guards = " AND ".join(fragment.sql for fragment in newest)
+    relation = newest_relation(newest, table)
     reads = _ArrowReads(l3, len(values), {scope_column: scope_type})
     live: set[Any] = set()
     for start in range(0, len(values), _MOST_LEADS_A_STATEMENT):
         page = list(values[start : start + _MOST_LEADS_A_STATEMENT])
-        # each state's probe one keyed read (state = the value, the guard, LIMIT 1) beside the others: a UNION ALL of
-        # them, each bound as its column is (a hashed lead seeks no set)
+        # each state's probe one keyed read beside the others: a UNION ALL of them, each bound as its column is (a
+        # hashed lead seeks no set)
         branches = [
-            f"(SELECT {relation}.{quoted} FROM {relation} WHERE {relation}.{quoted} = ${index + 1} AND {guards} LIMIT 1)"
+            f"(SELECT s.{quoted} FROM ({relation}) AS s WHERE s.{quoted} = ${index + 1} LIMIT 1)"
             for index in range(len(page))
         ]
         live.update(await reads.values(" UNION ALL ".join(branches), page, scope_column))
     return [value for value in values if value in live]
 
 
-def _newest(l3: Any, table: str | None) -> tuple[Fragment, ...]:
-    """the newest-version guard a keyset read of ``table`` carries where it is a versioned L3 table
-    (:func:`~threetears.core.keyed.newest_only`), naming the row by the relation itself (the pager's ``select_from``
-    reads it with no alias); none when no table is named.
+@dataclass(frozen=True)
+class _Newest:
+    """how a keyset read of a versioned L3 table reads each page: the table's newest versions over the page's key range
+    (:func:`~threetears.interfaces.keyed.keys.newest_relation`), the caller's projection of them.
+
+    :ivar table: the declaration
+    :ivar read_as: the table as ``select_from`` names it
+    :ivar projection: ``select_from``'s select list
+    :ivar alias: the alias the relation is read by: the table's own bare name, so a projection naming its columns by
+        the table still reads them
+    """
+
+    table: VersionedTable
+    read_as: str
+    projection: str
+    alias: str
+
+
+def _newest(l3: Any, table: str | None, select_from: str) -> _Newest | None:
+    """how a keyset read of ``table`` reads a versioned L3 table's pages; None when it names no table, or one not
+    versioned.
 
     :param l3: the reader
     :ptype l3: Any
     :param table: the table ``select_from`` reads, as it names it
     :ptype table: str | None
-    :return: the guard, or nothing
-    :rtype: tuple[Fragment, ...]
+    :param select_from: ``SELECT <projection> FROM <table>``
+    :ptype select_from: str
+    :return: the read's newest form, or None
+    :rtype: _Newest | None
+    :raises ValueError: when ``select_from`` is not ``SELECT <projection> FROM <table>`` of that one table, or selects
+        ``*`` (a versioned table's rows carry its epoch and gone flag, never a read's columns)
     """
     if table is None:
-        return ()
-    return newest_only(l3, table, row=quoted_table(table))
+        return None
+    versioned = newest_of(l3, table)
+    if versioned is None:
+        return None
+    spelled = select_from.strip()
+    cut = spelled.upper().rfind(" FROM ")
+    source = spelled[cut + len(" FROM ") :].strip() if cut > 0 else ""
+    if not spelled.upper().startswith("SELECT ") or source.replace('"', "") != table.replace('"', ""):
+        raise ValueError(
+            f"a keyset read of the versioned table {table} names it as SELECT <projection> FROM <table>, "
+            f"not {select_from!r}"
+        )
+    projection = spelled[len("SELECT ") : cut].strip()
+    if projection == "*":
+        raise ValueError(f"a keyset read of the versioned table {table} names its columns, never *")
+    bare = table.replace('"', "").rsplit(".", 1)[-1]
+    return _Newest(versioned, table, projection, quote_identifier(bare))
 
 
 @dataclass(frozen=True)
@@ -589,9 +641,9 @@ class _ReadShape:
     quote: Callable[[str], str]
     mark: Callable[[str, int], str] | None
     conditions: Sequence[Fragment]
-    #: a versioned table's newest-version guard (:func:`_newest`): every page statement carries it, so the cursor's key
-    #: is unique among the rows read; the walk's lead values do not (:class:`_LeadValues`)
-    newest: Sequence[Fragment] = ()
+    #: a versioned table's newest form (:func:`_newest`): every page statement reads its newest versions, so the
+    #: cursor's key is unique among the rows read; the walk's lead values do not (:class:`_LeadValues`)
+    newest: _Newest | None = None
 
     def statement(
         self,
@@ -609,7 +661,8 @@ class _ReadShape:
         :ptype conditions: Sequence[Fragment]
         :param row_seek: name the cursor by the row comparison alone (:meth:`_KeysetStatement._past`)
         :ptype row_seek: bool
-        :param newest: carry the newest-version guard (every page statement); False for a walk's lead values
+        :param newest: read a versioned table's newest versions (every page statement); False for a walk's lead
+            values
         :ptype newest: bool
         :return: the statement
         :rtype: _KeysetStatement
@@ -622,8 +675,9 @@ class _ReadShape:
             page_size=self.page_size,
             quote=self.quote,
             mark=self.mark,
-            conditions=[*self.conditions, *conditions, *(self.newest if newest else ())],
+            conditions=[*self.conditions, *conditions],
             row_seek=row_seek,
+            newest=self.newest if newest else None,
         )
 
     def placeholder(self, column: str, number: int) -> str:
@@ -639,6 +693,38 @@ class _ReadShape:
         return self.mark(column, number) if self.mark is not None else f"${number}"
 
 
+@dataclass(frozen=True)
+class _Read:
+    """one page read: the rows it keeps, whether more may follow, the rows the next asks for, and the last key it read
+    (kept or not: a versioned page steps past keys whose newest version it does not keep); None for no row read.
+
+    :ivar kept: the rows kept
+    :ivar more: whether more may follow
+    :ivar rows: the rows the next page asks for
+    :ivar last: the last key read, or None
+    """
+
+    kept: Any
+    more: bool
+    rows: int
+    last: tuple[Any, ...] | None
+
+
+async def _sender(l3: Any, statement: _KeysetStatement) -> Any:
+    """what a page's statement is sent through: a versioned page on a direct connection under its read's bounds
+    (:func:`~threetears.core.keyed.newest_sent`), any other as the reader itself."""
+    newest = statement.newest
+    if newest is None:
+        return l3
+    return newest_sent(l3, newest.table, await known_on_yugabyte(l3))
+
+
+def _next_keys(read: int, versions: int, rows: int, page_size: int) -> int:
+    """the rows (keys) a versioned page's next statement asks for: what the transport fits, at most as many keys as
+    hold :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key this page read."""
+    return min(rows, next_newest_keys(read, versions, page_size))
+
+
 class _DictReads:
     """one statement's page as dict rows: ``fetch_page`` on a transport that answers pages, else ``fetch``."""
 
@@ -648,8 +734,8 @@ class _DictReads:
         # looked up on the class: a mock's instance answers any name it is asked
         self._paged = callable(getattr(type(l3), "fetch_page", None))
 
-    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> tuple[Any, bool, int]:
-        """the rows a page keeps, whether more may follow, and how many rows the next page asks for.
+    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> _Read:
+        """the rows a page keeps, whether more may follow, how many rows the next page asks for, and its last key.
 
         :param statement: the statement
         :ptype statement: _KeysetStatement
@@ -657,20 +743,44 @@ class _DictReads:
         :ptype cursor: Sequence[Any] | None
         :param rows: the rows it asks for (a paged transport's)
         :ptype rows: int
-        :return: the kept rows, whether more may follow, the next page's rows
-        :rtype: tuple[list[dict[str, Any]], bool, int]
+        :return: the page read
+        :rtype: _Read
         """
+        if statement.newest is not None:
+            return await self._newest_page(statement, cursor, rows)
         if not self._paged:
             page = await self._l3.fetch(*statement.page(cursor))
             kept = [dict(row) for row in page[: self._page_size]]
-            return kept, len(page) > self._page_size and bool(kept), rows
+            more = len(page) > self._page_size and bool(kept)
+            return _Read(kept, more, rows, self.last(kept, statement.key) if kept else None)
         answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
         # a page's rows are dicts of its own (L3Page), kept as answered: a copy of each, on the loop, held it 11 ms
         # for a page of 10,000 rows of 49 columns (a 12 MiB reply cap's page; 2026-11-16)
         kept = answered.rows if len(answered.rows) <= rows else answered.rows[:rows]
         # a cut page is the statement's first rows in key order: more may follow its last
         more = (answered.truncated or len(answered.rows) > rows) and bool(kept)
-        return kept, more, _next_rows(answered, len(answered.rows), rows)
+        last = self.last(kept, statement.key) if kept else None
+        return _Read(kept, more, _next_rows(answered, len(answered.rows), rows), last)
+
+    async def _newest_page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> _Read:
+        """a versioned page: every key it read, the kept ones handed over without the page's own columns."""
+        if self._paged:
+            answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
+            page, fits = answered.rows, _next_rows(answered, len(answered.rows), rows)
+            cut = answered.truncated
+        else:
+            page = await (await _sender(self._l3, statement)).fetch(*statement.page(cursor, rows=rows))
+            fits, cut = rows, False
+        read = page[:rows]
+        more = (cut or len(page) > rows) and bool(read)
+        versions = sum(int(row[NEWEST_VERSIONS]) for row in read)
+        kept = [
+            {name: value for name, value in dict(row).items() if name not in (_KEPT, NEWEST_VERSIONS)}
+            for row in read
+            if row[_KEPT]
+        ]
+        last = tuple(read[-1][column] for column in statement.key) if read else None
+        return _Read(kept, more, _next_keys(len(read), versions, fits, self._page_size), last)
 
     @staticmethod
     def count(kept: Any) -> int:
@@ -712,8 +822,8 @@ class _ArrowReads:
         self._types = types
         self._paged = callable(getattr(type(l3), "fetch_arrow_page", None))
 
-    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> tuple[Any, bool, int]:
-        """the rows a page keeps, whether more may follow, and how many rows the next page asks for.
+    async def page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> _Read:
+        """the rows a page keeps, whether more may follow, how many rows the next page asks for, and its last key.
 
         :param statement: the statement
         :ptype statement: _KeysetStatement
@@ -721,18 +831,40 @@ class _ArrowReads:
         :ptype cursor: Sequence[Any] | None
         :param rows: the rows it asks for (a paged transport's)
         :ptype rows: int
-        :return: the kept rows, whether more may follow, the next page's rows
-        :rtype: tuple[pyarrow.Table, bool, int]
+        :return: the page read
+        :rtype: _Read
         """
+        if statement.newest is not None:
+            return await self._newest_page(statement, cursor, rows)
         if not self._paged:
             page = await l3_fetch_arrow(self._l3, *statement.page(cursor), types=self._types)
             kept = page.slice(0, self._page_size)
-            return kept, page.num_rows > self._page_size and kept.num_rows > 0, rows
+            more = page.num_rows > self._page_size and kept.num_rows > 0
+            return _Read(kept, more, rows, self.last(kept, statement.key) if kept.num_rows else None)
         answered = await self._l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=self._types)
         kept = answered.rows.slice(0, rows)
         # a cut page is the statement's first rows in key order: more may follow its last
         more = (answered.truncated or answered.rows.num_rows > rows) and kept.num_rows > 0
-        return kept, more, _next_rows(answered, answered.rows.num_rows, rows)
+        last = self.last(kept, statement.key) if kept.num_rows else None
+        return _Read(kept, more, _next_rows(answered, answered.rows.num_rows, rows), last)
+
+    async def _newest_page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> _Read:
+        """a versioned page: every key it read, the kept ones handed over without the page's own columns (Arrow's
+        own filter and sum, no row made a Python object)."""
+        types = {**self._types, _KEPT: flag_type(), NEWEST_VERSIONS: counted_type()}
+        if self._paged:
+            answered = await self._l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=types)
+            page, fits, cut = answered.rows, _next_rows(answered, answered.rows.num_rows, rows), answered.truncated
+        else:
+            sender = await _sender(self._l3, statement)
+            page = await l3_fetch_arrow(sender, *statement.page(cursor, rows=rows), types=types)
+            fits, cut = rows, False
+        read = page.slice(0, rows)
+        more = (cut or page.num_rows > rows) and read.num_rows > 0
+        last = self.last(read, statement.key) if read.num_rows else None
+        counted, versions = without_counted(read, NEWEST_VERSIONS)
+        kept = counted.filter(counted.column(_KEPT)).drop_columns([_KEPT])
+        return _Read(kept, more, _next_keys(read.num_rows, versions, fits, self._page_size), last)
 
     @staticmethod
     def count(kept: Any) -> int:
@@ -801,10 +933,15 @@ async def _cursor_pages(
     asked = ask if ask is not None else _Ask(statement.page_size)
     more = True
     while more:
-        kept, more, asked.rows = await reads.page(statement, cursor, asked.rows)
+        read = await reads.page(statement, cursor, asked.rows)
+        more, asked.rows = read.more, read.rows
         if more:
-            cursor = reads.last(kept, statement.key)
-        yield kept
+            cursor = read.last
+            if reads.count(read.kept) == 0:
+                # a versioned page whose keys' newest versions it kept none of: no page of its own, the read goes on
+                # past its last key
+                continue
+        yield read.kept
 
 
 @dataclass(frozen=True)
@@ -888,14 +1025,15 @@ async def _set_pages(
     :rtype: AsyncGenerator[Any, None]
     """
     statement = shape.statement(row_seek=True)
-    kept, more, rows = await reads.page(statement, None if after is None else tuple(after), statement.page_size)
-    if not more:
+    read = await reads.page(statement, None if after is None else tuple(after), statement.page_size)
+    kept = read.kept
+    if not read.more or read.last is None:
         yield kept
         return
     lead = shape.key[0]
     quoted = shape.quote(lead)
     # read off the page before it is handed over: a reader may empty it (keyset_pages)
-    cursor: tuple[Any, ...] = reads.last(kept, shape.key)
+    cursor: tuple[Any, ...] = read.last
     held, filled = reads.leads(kept, lead), reads.count(kept)
     yield kept
     leads = _GivenLeads(reads, shape, array, values, cursor)
@@ -1193,6 +1331,7 @@ class _KeysetStatement:
         mark: Callable[[str, int], str] | None,
         conditions: Sequence[Fragment] = (),
         row_seek: bool = False,
+        newest: _Newest | None = None,
     ) -> None:
         if page_size < 1:
             raise ValueError(f"a keyset page keeps at least one row, got {page_size}")
@@ -1200,14 +1339,20 @@ class _KeysetStatement:
         self._key = list(key)
         self._order = ", ".join(quote(column) for column in key)
         self._page_size = page_size
+        self._newest = newest
         self._filters, self._values = equality_conditions(where, first=1, quote=quote)
+        #: each filter on its own, as a versioned page judges it inside its newest relation or after (key_only)
+        #: (the equality filters one a column: "col" = $n or "col" IS NULL, joined by AND)
+        self._parts: list[str] = self._filters.split(" AND ") if self._filters else []
         for column, (array, values) in (where_any or {}).items():
             condition = f"{quote(column)} = ANY(${len(self._values) + 1}::{array})"
             self._filters = f"{self._filters} AND {condition}" if self._filters else condition
+            self._parts.append(condition)
             self._values.append(list(values))
         for fragment in conditions:
             condition = narrowing(fragment, len(self._values))
             self._filters = f"{self._filters} AND {condition}" if self._filters else condition
+            self._parts.append(f"({condition})")
             self._values += list(fragment.params)
         self._mark = mark
         self._quoted = [quote(column) for column in key]
@@ -1247,6 +1392,11 @@ class _KeysetStatement:
         """the rows a page keeps."""
         return self._page_size
 
+    @property
+    def newest(self) -> _Newest | None:
+        """the versioned table whose newest versions each page reads; None for a plain read."""
+        return self._newest
+
     def filtered(self) -> tuple[str, list[Any]]:
         """``select_from`` within the read's filters, with no order, cursor or limit, and its parameters.
 
@@ -1266,11 +1416,46 @@ class _KeysetStatement:
         :return: the statement, then its parameters
         :rtype: tuple[Any, ...]
         """
+        limit = (self._page_size if rows is None else rows) + 1
+        if self._newest is not None:
+            return self._newest_page(self._newest, cursor, limit)
         conditions = [self._filters] if self._filters else []
         params = list(self._values)
         if cursor is not None:
             conditions.append(self._past(len(self._values)))
             params += list(cursor)
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        limit = (self._page_size if rows is None else rows) + 1
         return (f"{self._select_from}{where_sql} ORDER BY {self._order} LIMIT {limit}", *params)
+
+    def _newest_page(self, newest: _Newest, cursor: Sequence[Any] | None, limit: int) -> tuple[Any, ...]:
+        """a versioned table's page: ``DISTINCT ON (key...) ... ORDER BY key..., epoch DESC LIMIT <limit>`` over the
+        page's key range (the filters on the key alone and the cursor inside, so each version of the range is read
+        once and the read stops at its ``limit``-th key), every key read answered with whether the page keeps it
+        (:data:`_KEPT`: its newest version live, the filters past the key holding of it) and the versions read of it
+        (:data:`~threetears.interfaces.keyed.keys.NEWEST_VERSIONS`), so the page steps past the last key read, kept or
+        not, and the next asks for as many keys as hold the read's budget.
+
+        :param newest: the read's newest form
+        :ptype newest: _Newest
+        :param cursor: the last key read, or None
+        :ptype cursor: Sequence[Any] | None
+        :param limit: the keys it reads (one past the page)
+        :ptype limit: int
+        :return: the statement, then its parameters
+        :rtype: tuple[Any, ...]
+        """
+        inside = [part for part in self._parts if key_only(part, newest.table.key)]
+        outside = [part for part in self._parts if part not in inside]
+        params = list(self._values)
+        if cursor is not None:
+            inside.append(self._past(len(self._values)))
+            params += list(cursor)
+        relation = newest_relation(
+            newest.table, newest.read_as, within=inside, limit=str(limit), counted=True, flagged=True
+        )
+        kept = " AND ".join([quote_identifier(NEWEST_LIVE), *outside])
+        return (
+            f"SELECT {newest.projection}, ({kept}) AS {quote_identifier(_KEPT)}, {quote_identifier(NEWEST_VERSIONS)} "
+            f"FROM ({relation}) AS {newest.alias} ORDER BY {self._order}",
+            *params,
+        )

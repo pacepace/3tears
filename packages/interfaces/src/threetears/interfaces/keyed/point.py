@@ -216,7 +216,7 @@ def read_row_statement(
 
 
 def read_row_beside_statement(
-    table: str,
+    table: str | Derived,
     *,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected],
@@ -237,8 +237,9 @@ def read_row_beside_statement(
     A row with no step row comes back once, ``present`` and every step column NULL; no row comes back when the pins
     name none.
 
-    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
-    :ptype table: str
+    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time), or a derived relation
+        (a versioned table's newest versions)
+    :ptype table: str | Derived
     :param by: its pins, as :func:`read_by_statement` takes them; at least one
     :ptype by: Mapping[str, Any]
     :param columns: the row's columns, as :func:`read_by_statement` takes them; each one the step reads among them

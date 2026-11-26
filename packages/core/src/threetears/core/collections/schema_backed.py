@@ -1608,7 +1608,7 @@ class TableSchema:
         self._validate_l2_order(pk_cols, by_name)
         # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal. A
         # versioned table's stored key holds a version a write; every keyed read of it sees only each key's newest
-        # live version (keys.newest_guard), so among the rows a read sees its key alone is unique too
+        # live version (keys.newest_relation), so among the rows a read sees its key alone is unique too
         register_table_keys(self.name, self._declared_keys(stored_key, partition_column))
         if stored_key != pk_cols:
             register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
@@ -1729,7 +1729,7 @@ class TableSchema:
 
     def _versioned_table(self, pk_cols: tuple[str, ...]) -> VersionedTable:
         """this versioned table as a read of it sees only each key's newest live version
-        (:func:`~threetears.interfaces.keyed.keys.newest_guard`): its key, the epoch and "gone" columns, and the run
+        (:func:`~threetears.interfaces.keyed.keys.newest_relation`): its key, the epoch and "gone" columns, and the run
         markers a whole run deleted leaves, found by a prefix of the key holding the scope, each prefix value as text
         cast from its column's type as the marker's write casts it (``SqlL3Backend._run_marker_statements``).
 
