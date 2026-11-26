@@ -21,7 +21,6 @@ tests' conftest calls it after each test).
 from __future__ import annotations
 
 import asyncio
-import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -40,8 +39,11 @@ from threetears.core.collections.shared_copy import MARK_TABLE, ApplyHooks, Shar
 from threetears.core.shared_arrow import Parts, SharedArrowStore, version_files
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.rows import DeclaredKey
+from threetears.observe import get_logger, remove_tree
 
 __all__ = ["PublishedCopy", "SharedCopy", "close_published_copies", "copy_rows"]
+
+log = get_logger(__name__)
 
 #: the bytes a test's store may hold: every version a test publishes, with room for the follower's checkpoint jobs
 _STORE_BYTES = 1 << 30
@@ -149,7 +151,7 @@ class PublishedCopy:
         if self in _OPEN:
             _OPEN.remove(self)
         await self.queries.close()
-        await asyncio.to_thread(shutil.rmtree, self._root, ignore_errors=True)
+        await asyncio.to_thread(remove_tree, self._root, log=log, what="a test's published copy store")
 
 
 class SharedCopy:
@@ -229,7 +231,7 @@ class SharedCopy:
             _OPEN.remove(self)
         await self.copy.close()
         await self.queries.close()
-        await asyncio.to_thread(shutil.rmtree, self._root, ignore_errors=True)
+        await asyncio.to_thread(remove_tree, self._root, log=log, what="a test's shared copy store")
 
 
 def copy_rows(store: SharedArrowStore, table: str, columns: Sequence[str] | None = None) -> list[tuple[Any, ...]]:

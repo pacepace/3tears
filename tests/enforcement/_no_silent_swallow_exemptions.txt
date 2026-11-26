@@ -17,3 +17,9 @@ packages/evals/src/threetears/evals/run/runner.py:execute_run.run_and_record#0:C
 packages/core/src/threetears/core/backends/git/repo.py:GitRepo._uninterrupted#0:CancelledError
 # rationale: holds the canceller's cancellation while the socket's reader and writer tasks finish stopping, so the connection's teardown never runs under a live child, and re-raises that same cancellation once both have stopped
 packages/channels/src/threetears/channels/websocket.py:_stop_both#0:CancelledError
+# rationale: holds a repeated cancellation while the export delete already asked runs to its end, so a pod's shutdown never leaves the export it was deleting; the outer handler re-raises the cancellation as soon as the delete has finished
+packages/datasources/src/threetears/datasources/export_read.py:_to_its_end#0:CancelledError
+# rationale: holds the caller's cancellation while the hub may still be writing the export, so the delete is asked first; the function raises that same cancellation once the delete has run
+packages/datasources/src/threetears/datasources/export_read.py:_asked_export#0:CancelledError
+# rationale: holds a repeated cancellation while the cancelled ask's own wait unwinds (it holds no warehouse work); the function raises the first cancellation once the delete has run
+packages/datasources/src/threetears/datasources/export_read.py:_asked_export#1:CancelledError
