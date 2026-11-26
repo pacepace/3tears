@@ -2,8 +2,9 @@
 
 The fence table is created from its declaration (:func:`source_tokens_schema`, the DDL ``to_sqlalchemy_table``
 emits: ``signal COLLATE "C" ASC``), seeded with a ready signal's job rows among thousands of others, and
-:func:`clear_signals` is planned and run: the prefix delete reads ``source_tokens_by_signal_c`` (a range, never the
-table, on YugabyteDB never every tablet) and deletes exactly the rows ``starts_with`` names. On the session's
+:func:`clear_signals` is planned and run: the prefix clear reads ``source_tokens_by_signal_c`` (a range, never the
+table, on YugabyteDB never every tablet) and marks gone exactly the rows ``starts_with`` names (the fence is stamped:
+its rows are marked gone in place, never deleted). On the session's
 ``db_container`` (PostgreSQL), or YugabyteDB through ``THREETEARS_TEST_POSTGRES_URL``; a schema of its own.
 """
 
@@ -44,8 +45,8 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
             + [f"other/{n:05d}" for n in range(_OTHERS)]
         )
         await connection.executemany(
-            "INSERT INTO source_tokens (signal, run_id, as_of, accepted_at, date_created, date_updated) "
-            "VALUES ($1, 1, now(), now(), now(), now())",
+            "INSERT INTO source_tokens (signal, run_id, as_of, accepted_at, date_created, date_updated, epoch) "
+            "VALUES ($1, 1, now(), now(), now(), now(), 1)",
             [(n,) for n in names],
         )
         await connection.execute("ANALYZE source_tokens")
@@ -72,9 +73,9 @@ class _Planned:
 
 
 async def test_a_prefix_clear_reads_the_c_ordered_index_as_a_range(conn: asyncpg.Connection) -> None:
-    """Flips if the fence's prefix delete is not a range on source_tokens_by_signal_c (a scan of 4,000 rows for 40;
+    """Flips if the fence's prefix clear is not a range on source_tokens_by_signal_c (a scan of 4,000 rows for 40;
     on YugabyteDB every tablet), or clears a row starts_with does not name ("refresh_ready_other",
-    "refresh_ready0") or misses one it does, or the named signal's own row."""
+    "refresh_ready0") or misses one it does, or the named signal's own row, or deletes a row it clears."""
     planned = _Planned(conn)
     named = sorted(
         row["signal"]
@@ -82,7 +83,13 @@ async def test_a_prefix_clear_reads_the_c_ordered_index_as_a_range(conn: asyncpg
     )
     cleared = await clear_signals(planned, "source_tokens", signal="refresh_ready", prefix="refresh_ready/")
     assert cleared == sorted(["refresh_ready", *named]) and len(named) == 40
-    left = {row["signal"] for row in await conn.fetch("SELECT signal FROM source_tokens WHERE signal LIKE 'refresh%'")}
+    left = {
+        row["signal"]
+        for row in await conn.fetch("SELECT signal FROM source_tokens WHERE signal LIKE 'refresh%' AND NOT gone")
+    }
     assert left == {"refresh_ready_other", "refresh_ready0"}
+    gone = await conn.fetch("SELECT signal, epoch FROM source_tokens WHERE gone")
+    assert sorted(row["signal"] for row in gone) == cleared, "each cleared row is kept, marked gone"
+    assert all(row["epoch"] > 1 for row in gone), "each gone mark rises the row's epoch"
     (prefixed,) = [plan for plan in planned.plans if 'COLLATE "C"' in plan.sql]
     assert plan_uses_index(prefixed, "source_tokens_by_signal_c"), prefixed.plan

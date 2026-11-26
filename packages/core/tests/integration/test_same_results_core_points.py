@@ -10,15 +10,17 @@ then the one row or value), on the session's ``db_container`` (PostgreSQL), or Y
 - ``ScopeEpochs._read_whole``'s version read -> ``read_value``; ``begin`` / ``_abandon``'s ``FOR UPDATE NOWAIT`` read and
   ``touch``'s ``FOR SHARE`` fence -> ``read_row`` with the same lock (the lock is the read's own; the rows are compared,
   each inside its case's transaction).
-- ``SourceTokenFence._read`` -> ``read_row``.
+- ``SourceTokenFence._read`` -> ``read_row``. The fence is stamped (``ROW_STAMPED``) since; its old statement read a table
+  that held no gone row, so its seeds are live (:data:`_LIVE_FENCE`), and the read's skipping of a gone row is
+  ``test_source_token_stamped_live``'s.
 - ``create_collection_from_table_def``'s ``fetch_from_store`` (``SELECT * ... WHERE pk = $1``) -> ``read_row``.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Callable, Mapping
+from typing import Any, Final
 
 import asyncpg
 import pytest
@@ -77,6 +79,10 @@ _READS: dict[str, dict[str, Any]] = {
 }
 
 
+#: the fence's seeds, each live: the old statement's table had no gone flag, so no row of it was gone
+_LIVE_FENCE: Final[Mapping[str, Mapping[str, Callable[[Any], Any]]]] = {"o24_source_tokens": {"gone": lambda _: False}}
+
+
 @pytest.fixture
 async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
     """A superuser connection on a fresh schema holding the epochs and fence tables as declared, and a generated
@@ -100,4 +106,4 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 @pytest.mark.parametrize("read", list(_READS), ids=list(_READS))
 async def test_the_helper_reads_what_the_statement_it_replaced_read(conn: asyncpg.Connection, read: str) -> None:
     """Flips if a converted core point read returns other rows, values or columns than its old statement."""
-    await assert_rewrite_same(conn, _READS[read])
+    await assert_rewrite_same(conn, _READS[read], overrides=_LIVE_FENCE)

@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the source-token fence carries its epoch
+
+**Changed (breaking):** ``source_tokens_schema()`` declares ``ROW_STAMPED``: the fence table gains ``epoch``, ``gone``
+and the ``(epoch_bucket, epoch)`` restore index. ``SourceTokenFence.advancing`` writes ``epoch = GREATEST(epoch + 1,
+<stamp>)`` and ``gone = false``, its stamp drawn from the caller's ``CallerTransaction`` and the statement sent stamped
+(``stamping_write``); a cleared (gone) row stands for no token, so any token is accepted over it and revives it.
+``clear_signals`` marks its rows gone in place, never a ``DELETE``; the fence reads its live row alone. An owner
+declares the table stamped at its next table-list version; the hub stamps the existing table where it stands with the
+shared steps (``stamp_existing_tables`` over ``stamping_table_of(source_tokens_schema())``), its rows kept.
+
+**Added:** ``threetears.core.collections.gone_marks.mark_gone_keyed(conn, table, by=, keys=, prefix=, where=,
+returning=)``: a stamped table's keyed delete as its gone mark (one keyed ``UPDATE`` a batch, the epoch risen past a
+stamp from the caller's transaction, a row already gone left as it is), taking what ``delete_keyed`` takes, a key
+prefix included (a ``COLLATE "C"`` range). ``DeclaredTableCollection.mark_gone_in_store`` and a stamped child's
+foreign-key action send it; the hub's ``common/stamped_gone.mark_gone`` can move onto it. The epoch-discipline,
+no-whole-reads and partition-column gates judge its calls as ``update_keyed``'s.
+
 ### core: quiet-time cleanup runs on every database and never trips a foreign key
 
 **Added:** ``LoadGate.from_change_log(on_record, quiet_after=QUIET_AFTER_SECONDS)``: a load gate for a database with no
