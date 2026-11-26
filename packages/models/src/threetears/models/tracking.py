@@ -183,6 +183,10 @@ class UsageRecord:
         join key tying a ``tool_llm`` row to its tool row). flows to OTel +
         sinks; never to Prometheus labels.
     :ptype origin_invocation_ref: UUID | None
+    :param credential_label: the label of the key-pool key the call ran on, ``None`` for a model
+        built with one ``api_key``. flows to OTel spans (``llm.credential_label``) and sinks, so an
+        audit sink can attribute spend per key; never to Prometheus labels.
+    :ptype credential_label: str | None
     """
 
     model_name: str
@@ -230,6 +234,9 @@ class UsageRecord:
     #: (``"estimated"``), or nowhere (``"unavailable"``). ``None`` when a record was built by hand
     #: without saying.
     token_source: TokenSource | None = None
+    #: the key-pool key the call ran on, by label; ``None`` off a pool. flows to OTel + sinks; never
+    #: to Prometheus labels (the locked instruments' label set is fixed).
+    credential_label: str | None = None
 
 
 #: where a record's token counts came from.
@@ -939,6 +946,8 @@ class UsageTracker:
                 span.set_attribute("llm.bytes_out", usage.bytes_out)
             if usage.api_calls:
                 span.set_attribute("llm.api_calls", usage.api_calls)
+            if usage.credential_label is not None:
+                span.set_attribute("llm.credential_label", usage.credential_label)
 
     def make_callback(
         self,
@@ -952,6 +961,7 @@ class UsageTracker:
         cost_per_cache_read_token: Decimal | None = None,
         cost_per_cache_write_token: Decimal | None = None,
         cost_per_request: Decimal | None = None,
+        credential_label: str | None = None,
     ) -> BaseCallbackHandler:
         """builds a LangChain callback that records usage on every ``on_llm_end``.
 
@@ -973,6 +983,8 @@ class UsageTracker:
         :ptype cost_per_cache_write_token: Decimal | None
         :param cost_per_request: flat USD per call
         :ptype cost_per_request: Decimal | None
+        :param credential_label: the key-pool key the model calls with, carried on every record
+        :ptype credential_label: str | None
         :return: callback handler suitable for ``model.with_config(callbacks=[...])``
         :rtype: BaseCallbackHandler
         """
@@ -987,6 +999,7 @@ class UsageTracker:
             cost_per_cache_read_token=cost_per_cache_read_token,
             cost_per_cache_write_token=cost_per_cache_write_token,
             cost_per_request=cost_per_request,
+            credential_label=credential_label,
         )
 
 
@@ -1017,6 +1030,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         cost_per_cache_read_token: Decimal | None = None,
         cost_per_cache_write_token: Decimal | None = None,
         cost_per_request: Decimal | None = None,
+        credential_label: str | None = None,
     ) -> None:
         """initialises the callback with the metadata needed for each record.
 
@@ -1040,9 +1054,12 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype cost_per_cache_write_token: Decimal | None
         :param cost_per_request: flat USD per call
         :ptype cost_per_request: Decimal | None
+        :param credential_label: the key-pool key the model calls with, carried on every record
+        :ptype credential_label: str | None
         """
         super().__init__()
         self.run_inline = True
+        self._credential_label = credential_label
         self._tracker = tracker
         self._model_name = model_name
         self._provider_name = provider_name
@@ -1165,6 +1182,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
             cache_read_tokens=extracted.cache_read_tokens,
             cache_creation_tokens=extracted.cache_creation_tokens,
             token_source=extracted.source,
+            credential_label=self._credential_label,
             **attribution,
         )
         logger.info(
