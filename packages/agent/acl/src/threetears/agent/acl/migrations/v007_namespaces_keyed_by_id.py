@@ -81,7 +81,8 @@ _PRIMARY_KEY_SQL: Final[str] = (
     "SELECT c.conname AS name, a.attname AS column_name FROM pg_constraint c"
     " CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, position)"
     " JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum"
-    " WHERE c.contype = 'p' AND c.conrelid = to_regclass('namespaces') ORDER BY k.position"
+    " JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace"
+    " WHERE c.contype = 'p' AND t.relname = 'namespaces' AND n.nspname = current_schema() ORDER BY k.position"
 )
 
 #: the bucket index's declaration, as its comment holds it (NULL when the index or its comment is missing)

@@ -784,8 +784,9 @@ class QuietCleanup:
             if not paged:
                 last = {name: candidates.column(name)[-1].as_py() for name in candidates.column_names}
                 past = tuple(next_past(self._order(schema), last))
-        if not paged and past is not None:
-            # a load started before the next batch: the scope resumes after the last version visited
+        if not paged and past is not None and self._place is None:
+            # a load started before the next batch: the scope resumes after the last version visited. Only while the
+            # place is still the one this call cleared: a place set during the awaits is newer and is kept
             self._place = _Place(schema.name, value, floor, past)
         finished, runs = await self._clear_runs(schema, value, floor) if paged else (False, 0)
         return finished, removed + runs

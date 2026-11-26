@@ -9,7 +9,7 @@ accepts, never a silent miss.
 What :func:`drop_ring` takes down, under the database's DDL lock, in this order:
 
 1. every change-note trigger on every table of the database (the ring's three trigger names and the older truncate
-   trigger's), by ``DROP TRIGGER IF EXISTS``, a table at a time from the catalog;
+   trigger's), by ``DROP TRIGGER IF EXISTS``, a schema and then a table at a time from the catalog;
 2. every note function of the ring's schemas (the per-table ``threetears_note_*`` and the ring's own
    ``threetears_change_note_*``), by ``DROP FUNCTION IF EXISTS`` with its exact arguments, never ``CASCADE``;
 3. the ring's tables (its three note tables, its ring row, the note buffer's guard tables), by one ``DROP TABLE IF
@@ -62,21 +62,27 @@ RING_TABLES: Final = (
     "threetears_note_buffer_never",
 )
 
-#: every table carrying a ring trigger, with the trigger: a catalog read, its size the triggers
+#: the schemas holding any of the ring: its ring row's table, or a table carrying a ring trigger. A catalog read, one
+#: row a schema; every later lookup names the schema it reads (the cutover spans the database, a schema at a time)
+_RING_SCHEMAS_SQL: Final = """
+SELECT n.nspname::text AS schema FROM pg_namespace n
+WHERE EXISTS (
+    SELECT 1 FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind = 'r' AND c.relname::text = $1
+) OR EXISTS (
+    SELECT 1 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid
+    WHERE c.relnamespace = n.oid AND NOT g.tgisinternal AND g.tgname::text = ANY($2::text[])
+)
+ORDER BY 1
+"""
+
+#: every table of a schema carrying a ring trigger, with the trigger: a catalog read, its size the triggers
 _TRIGGERS_SQL: Final = """
-SELECT n.nspname::text AS table_schema, c.relname::text AS table_name, g.tgname::text AS trigger_name
+SELECT c.relname::text AS table_name, g.tgname::text AS trigger_name
 FROM pg_trigger g
 JOIN pg_class c ON c.oid = g.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE NOT g.tgisinternal AND g.tgname::text = ANY($1::text[])
-ORDER BY 1, 2, 3
-"""
-
-#: the schemas holding a ring: those with its ring row's table
-_RING_SCHEMAS_SQL: Final = """
-SELECT n.nspname::text AS schema FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relname::text = $1 AND c.relkind = 'r'
-ORDER BY 1
+WHERE n.nspname = $1::name AND NOT g.tgisinternal AND g.tgname::text = ANY($2::text[])
+ORDER BY 1, 2
 """
 
 #: every note function of a schema, with its identity arguments (the per-table ``threetears_note_*`` and the ring's
@@ -84,14 +90,14 @@ ORDER BY 1
 _FUNCTIONS_SQL: Final = r"""
 SELECT p.proname::text AS name, pg_get_function_identity_arguments(p.oid) AS args
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname::text = $1 AND (p.proname::text LIKE 'threetears\_note\_%' OR p.proname::text LIKE 'threetears\_change\_note%')
+WHERE n.nspname = $1::name AND (p.proname::text LIKE 'threetears\_note\_%' OR p.proname::text LIKE 'threetears\_change\_note%')
 ORDER BY 1, 2
 """
 
 #: the ring's tables present in a schema
 _TABLES_SQL: Final = """
 SELECT c.relname::text AS table_name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname::text = $1 AND c.relkind = 'r' AND c.relname::text = ANY($2::text[])
+WHERE n.nspname = $1::name AND c.relkind = 'r' AND c.relname::text = ANY($2::text[])
 ORDER BY 1
 """
 
@@ -126,15 +132,17 @@ async def drop_ring(pool: Any, *, policy: DdlLockPolicy | None = None) -> RingDr
     tables: list[str] = []
     async with pool.acquire() as conn:
         async with database_ddl_lock(ConnectionSession(conn), policy):
-            for row in await conn.fetch(_TRIGGERS_SQL, list(_TRIGGER_NAMES)):
-                schema, table, trigger = str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"])
-                await conn.execute(
-                    f"DROP TRIGGER IF EXISTS {quote_identifier(trigger)} "
-                    f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
-                )
-                triggers.append(f"{schema}.{table}: {trigger}")
-            schemas = [str(row["schema"]) for row in await conn.fetch(_RING_SCHEMAS_SQL, RING_TABLE)]
+            schemas = [
+                str(row["schema"]) for row in await conn.fetch(_RING_SCHEMAS_SQL, RING_TABLE, list(_TRIGGER_NAMES))
+            ]
             for schema in schemas:
+                for row in await conn.fetch(_TRIGGERS_SQL, schema, list(_TRIGGER_NAMES)):
+                    table, trigger = str(row["table_name"]), str(row["trigger_name"])
+                    await conn.execute(
+                        f"DROP TRIGGER IF EXISTS {quote_identifier(trigger)} "
+                        f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+                    )
+                    triggers.append(f"{schema}.{table}: {trigger}")
                 for row in await conn.fetch(_FUNCTIONS_SQL, schema):
                     name, args = str(row["name"]), str(row["args"])
                     await conn.execute(
