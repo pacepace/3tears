@@ -55,8 +55,10 @@ from threetears.core.keyed import (
     holds_any,
     keyset_page,
     keyset_rows,
+    Nearest,
     newest_read,
     read_by,
+    read_nearest,
     read_keyed,
     read_keyed_arrow,
     read_row,
@@ -409,3 +411,28 @@ class TestSteps:
         assert len(await read_step(ThreadedDuckDB(db), scan(_TABLE, ["rows"]))) == 3
         rows = await read_step(reader, scan(newest_read(reader, _TABLE), ["state", "run_id", "rows"]))
         assert _read(rows) == _LIVE
+
+
+class _Sent:
+    """an L3 reader (it names no dialect) that keeps each statement and answers no row: a vector read's statement is
+    pgvector's, which DuckDB does not run."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append(query)
+        return []
+
+
+async def test_a_vector_read_of_every_column_answers_the_declared_columns_only() -> None:
+    """Flips if a nearest-vector read of a stamped table naming no columns carries its whole row through the wrapper
+    (``(n."_nearest_row").*``), which answers its L3 restore bucket and its gone flag, instead of its declared
+    columns; or if it reads its gone rows."""
+    reader = _Sent()
+    await read_nearest(reader, _TABLE, by={"state": "CA"}, nearest=Nearest("rows", "[1]"), limit=3)
+    [sql] = reader.statements
+    assert "_nearest_row" not in sql and BUCKET_COLUMN not in sql, sql
+    outer = sql.split(" FROM (", 1)[0]
+    assert outer == "SELECT " + ", ".join(f'n."{column}"' for column in _DECLARED), sql
+    assert f'NOT t."{GONE_COLUMN}"' in sql, sql

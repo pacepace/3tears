@@ -32,7 +32,7 @@ from threetears.interfaces.keyed.filters import (
     renumbered,
     selected_column,
 )
-from threetears.interfaces.keyed.keys import default_projection, primary_key, stated_literals
+from threetears.interfaces.keyed.keys import declared_columns, default_projection, primary_key, stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
 from threetears.interfaces.keyed.steps import Step
 
@@ -557,6 +557,9 @@ def read_nearest_statement(
     # packages/core/tests/integration/test_nearest_heavy_owner_live.py.
     similarity = [] if nearest.similarity is None else [f"1 - ({distance}) AS {quote_identifier(nearest.similarity)}"]
     hidden = quote_identifier(_NEAREST_DISTANCE)
+    # every column of a stamped table is its declared ones (keys.declared_columns), never its L3 restore bucket nor
+    # its gone flag: named one by one through the wrapper, as a read naming its columns is, never the row spread whole
+    columns = declared_columns(table) if columns is None else columns
     if columns is None:
         # every column: the row travels whole through the wrapper and is spread again outside it
         row = quote_identifier(_NEAREST_ROW)
