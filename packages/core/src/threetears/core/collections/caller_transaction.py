@@ -58,6 +58,8 @@ from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from asyncpg import PostgresError
+
 from threetears.core.backends.broker_generation import (
     StampedScopes,
     collecting_advanced_generations,
@@ -98,13 +100,35 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.core.collections.base import BaseCollection
 
-__all__ = ["CallerTransaction", "SharedAdvance", "save_delta_files", "shared_advance_for"]
+__all__ = ["CallerTransaction", "SharedAdvance", "outcome_known", "save_delta_files", "shared_advance_for"]
 
 log = get_logger(__name__)
 
 #: the most scopes one touch statement names (:meth:`CallerTransaction._touch_scopes`), one array of them, as
 #: ``ScopeEpochs`` batches its own
 _TOUCH_BATCH: Final = 500
+
+#: the SQLSTATE classes a database answers with when it cannot say how a statement or commit ended: a connection
+#: exception (``08``), an operator intervention such as a shutdown (``57``), an internal error (``XX``)
+_OUTCOME_UNKNOWN_CLASSES: Final = frozenset({"08", "57", "XX"})
+
+
+def outcome_known(error: BaseException) -> bool:
+    """whether a write that raised ``error`` is known not to have committed: the database answered it with its own error
+    (``asyncpg.PostgresError``, which the L3 rail's proxy raises as well), and not one of a lost connection, a shutdown
+    or an internal failure. Anything else -- a dropped connection during ``COMMIT``, a timeout waiting for the reply,
+    a cancellation -- leaves the outcome unknown: the write may have landed.
+
+    :param error: what the write raised
+    :ptype error: BaseException
+    :return: whether the write is known not to have landed
+    :rtype: bool
+    """
+    if not isinstance(error, PostgresError):
+        return False
+    state = f"{getattr(error, 'sqlstate', '') or ''}"
+    return state[:2] not in _OUTCOME_UNKNOWN_CLASSES
+
 
 #: every CallerTransaction open in this context, outermost first. A context variable, so a task
 #: started inside the transaction still finds it, and one started outside never does.
@@ -502,6 +526,7 @@ class CallerTransaction:
     """
 
     __slots__ = (
+        "_after_commit",
         "_before_commit",
         "_committed_generations",
         "_deltas",
@@ -584,6 +609,10 @@ class CallerTransaction:
         # what runs on the transaction's connection just before its COMMIT, given the highest stamp, in order
         # (before_commit): a tuple replaced whole, owned by the task that runs the transaction
         self._before_commit: tuple[Callable[[Any, int], Awaitable[None]], ...] = ()
+        # what runs once the COMMIT landed (or was sent and never answered), in order (after_commit): a tuple replaced
+        # whole, owned by the task that runs the transaction; a savepoint's are handed to its enclosing transaction
+        # when it is released, and dropped when it is rolled back
+        self._after_commit: tuple[Callable[[], Awaitable[None]], ...] = ()
         # the scope epochs scopes this transaction's stamped writes touched, by scope epochs table: each one's last_epoch
         # raised to the highest stamp just before the COMMIT (_touch_scopes). Read off the rows by the store
         # (stamped_send) and named by ScopeEpochs.touch alike, so a scope both name is one index entry. A read-only
@@ -955,6 +984,42 @@ class CallerTransaction:
         """
         self._before_commit = (*self._before_commit, step)
 
+    def after_commit(self, step: Callable[[], Awaitable[None]]) -> None:
+        """run ``step()`` once the transaction's COMMIT has landed, after its enrolled keys are settled; never after a
+        rollback. In the order given, each on the transaction's own end, shielded from a cancellation as the settle is.
+
+        For a write whose announcement must not outlive a rollback: a delete joined to the caller's transaction
+        (``BaseCollection.delete(conn=...)``) announces its row and the rows its foreign-key actions reached here, so
+        a transaction rolled back tells no cache of a delete L3 never took. An enrolled key is settled however the
+        transaction ends (its eviction is right either way); a step is not.
+
+        **The unknown-outcome rule.** A COMMIT sent and never answered (a dropped connection, a timeout, a
+        cancellation; :func:`outcome_known`) may have landed, so its steps run as for one that landed: a spurious
+        announcement costs a reader one re-read, a missed one leaves every pod serving what L3 no longer holds. A body
+        that raised, a commit refused before it was sent (its delta files, its age), or one the database refused with
+        its own error runs none.
+
+        **Savepoints.** The step belongs to the innermost transaction open on the connection: when that savepoint is
+        released its steps pass to the transaction around it, and when it is rolled back they are dropped.
+
+        A step that fails to advance a write generation is the transaction's ``GenerationUnavailableError`` (raised
+        when the body ended cleanly, as a settle's failure is); the steps after it still run.
+
+        :param step: the step
+        :ptype step: Callable[[], Awaitable[None]]
+        :return: nothing
+        :rtype: None
+        """
+        holder = self
+        for scope in _OPEN.get():
+            if scope.conn is self.conn:
+                holder = scope
+        if holder is not self:
+            # the innermost open on the connection holds it; its own call lands here with itself the holder
+            holder.after_commit(step)
+            return
+        self._after_commit = (*self._after_commit, step)
+
     def touch_scopes(self, epochs: str, scopes: Iterable[str]) -> None:
         """raise ``last_epoch`` of ``scopes`` of the scope epochs table ``epochs`` to this transaction's highest stamp
         just before its COMMIT, when it stamped one: how a stamped write's scopes reach the restore, which finds the
@@ -1259,6 +1324,9 @@ class CallerTransaction:
         # the commit's lowest row epoch: its l3.tx.commit carries it, and every epoch record of it names it (s_min)
         s_min = self._s_min if exc_type is None else None
         landed = False
+        # whether the COMMIT (or RELEASE) may have landed: sent, and answered or never answered (after_commit)
+        heard = False
+        after, self._after_commit = self._after_commit, ()
         # the broker's reply to the commit replaces this task's record of its generations; a direct pool's commit
         # leaves it, so a record that did not change since names nothing of this commit's
         before = committed_generations_record()
@@ -1266,7 +1334,11 @@ class CallerTransaction:
             with naming_delta_files(files), naming_commit_scopes(scopes), naming_commit_s_min(s_min):
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
             landed = True
+        except BaseException as error:  # prawduct:allow prawduct/broad-except -- its outcome noted, then re-raised
+            heard = exc_type is None and not outcome_known(error)
+            raise
         finally:
+            heard = heard or (landed and exc_type is None)
             if self._saved_delta_files:
                 # a commit that did not land leaves its files orphans, the only files the fold's sweep removes
                 OWN_DELTA_SAVES.settled(list(self._saved_delta_files.values()), landed=landed and exc_type is None)
@@ -1276,6 +1348,11 @@ class CallerTransaction:
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None
+            if self._outermost is not None and landed and exc_type is None and after:
+                # a released savepoint's steps are its enclosing transaction's (the innermost still open on the
+                # connection, now this one has left), run or dropped as that one ends
+                for step in after:
+                    self._outermost.after_commit(step)
             if self._outermost is None:
                 # the broker's tokens for this commit, read before the settle: a collection that advances nothing
                 # itself (its table advanced by the broker's trigger) stamps the keys it tells a copy with its table's,
@@ -1288,7 +1365,7 @@ class CallerTransaction:
                     naming_commit_generations(replied),
                 ):
                     generation_failure, advanced = await asyncio.shield(
-                        self._settle_collecting(committed=exc_type is None)
+                        self._settle_collecting(committed=exc_type is None, after=after if heard else ())
                     )
                 if landed and exc_type is None:
                     self._committed_generations = MappingProxyType({**replied, **advanced})
@@ -1320,19 +1397,29 @@ class CallerTransaction:
         return await save_delta_files(owed, version=self._write_version)
 
     async def _settle_collecting(
-        self, *, committed: bool
+        self, *, committed: bool, after: Sequence[Callable[[], Awaitable[None]]] = ()
     ) -> tuple[GenerationUnavailableError | None, Mapping[str, str]]:
-        """:meth:`_settle`, collecting the token each advance it makes writes, by table: the collector is this task's
-        own (the shielded settle's), and the caller gets a read-only copy back, never a dict the settle fills.
+        """:meth:`_settle`, then each of ``after`` (:meth:`after_commit`), collecting the token each advance they make
+        writes, by table: the collector is this task's own (the shielded settle's), and the caller gets a read-only copy
+        back, never a dict the settle fills.
 
         :param committed: as :meth:`_settle`
         :ptype committed: bool
+        :param after: the steps owed once the commit landed or went unanswered; empty after a rollback
+        :ptype after: Sequence[Callable[[], Awaitable[None]]]
         :return: the first failure to advance, and table -> the token its advance wrote
         :rtype: tuple[GenerationUnavailableError | None, Mapping[str, str]]
         """
         advanced: dict[str, str] = {}
         with collecting_advanced_generations(advanced):
             failure = await self._settle(committed=committed)
+            for step in after:
+                try:
+                    await step()
+                except GenerationUnavailableError as exc:
+                    # logged where the advance failed; the step's caches were dropped
+                    if failure is None:
+                        failure = exc
         return failure, MappingProxyType(dict(advanced))
 
     async def _settle(self, *, committed: bool) -> GenerationUnavailableError | None:

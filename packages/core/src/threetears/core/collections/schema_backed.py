@@ -5817,6 +5817,28 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk = dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True))
         await store.delete(self.schema.name, pk)
 
+    async def delete_from_store_on(self, entity_id: Any, *, conn: Any) -> None:
+        """:meth:`delete_from_store` on the caller's transaction: a stamped row marked gone in place, any other deleted
+        by key, on ``conn``.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises DeltaFileRefusedError: when the table opts in to delta files (a delete of one key records no file)
+        """
+        if self.schema.stamps_epoch and not self.schema.versioned:
+            await self.mark_gone_in_store(entity_id, conn=conn)
+            return
+        self._refuse_unfiled("delete_from_store_on")
+        store = self._durable_store()
+        if store is None:
+            return
+        pk = dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True))
+        await store.delete(self.schema.name, pk, conn=conn)
+
     async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
         """mark one stamped row gone in place: the store's ``mark_gone``, one keyed ``UPDATE``, its stamp drawn from
         ``conn``'s transaction when it joins one, else from the process clock as its own statement

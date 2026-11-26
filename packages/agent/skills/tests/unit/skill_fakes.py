@@ -62,7 +62,7 @@ class FakeSkillsCollection(AgentSkillCollection):
             return None
         return AgentSkillEntity(dict(row), is_new=False, collection=None)
 
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         agent_id, skill_id = entity_id
         self.rows.pop((agent_id, skill_id), None)
         return True
