@@ -19,20 +19,25 @@ across the documents, in their order, each document's best remaining tile per ro
 whole is recorded as truncated. Each step's selection is bounded on its own, so the documents a candidate fetched never
 take the case's share: truth reads the same case passages whatever an arm fetched, given the same claims.
 
-**A citation names a value and its subject, in one sentence or row.** A passage citation quotes at most
+**A citation names a value and its subject, in one sentence or row.** Every citation quotes at most
 :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, found by
-:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the passage the call was shown and cited (never
-elsewhere in its document), and names, inside that quote, the words that name the claim's subject and the words that
-state the value. Both are found inside the stored quote, and no sentence end (``.``, ``!`` or ``?`` before a space or
-the end) or line break may lie between them. That narrows the neighbouring-value error, a value taken from the sentence
-or row next to the one about this subject, to one sentence or row. Clauses joined by a semicolon count as one
+:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the evidence the call was shown and cited: a
+passage (never elsewhere in its document), or a key fact's line as shown after its ref (``A key fact about <entity>:
+<fact>``, so the entity it names can stand as the subject of a fact that does not name it). Inside that quote it names
+the words that name the claim's subject and the words that state the value. Both are found inside the stored quote,
+and no sentence end (``.``, ``!`` or ``?`` before a space or the end) or line break may lie between them. That
+narrows the neighbouring-value error, a value taken from the sentence or row next to the one about this subject, to
+one sentence or row. Clauses joined by a semicolon count as one
 sentence, so a subject and a value either side of one ("members may renew a loan once; doing so costs two dollars")
 pass with no repair; binding across the semicolon is not proved by code. That is the accepted trade-off: fewer forced
 repairs on rule-style sentences, for a weaker code check. Nor does the check prove the value belongs to that subject
 within any sentence: one stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932", or
 "the pamphlet appeared in 1931; the bound volume followed in 1932") stays the model's to bind, and calibration
-measures what remains. What is stored is the passage's own slice, never the
-model's strings. A key fact is cited whole, with no quote.
+measures what remains. What is stored is the evidence's own slice, never the model's strings. A key fact is held to
+the rule as a passage is, since its support is what reads ``supported`` first: a reply citing it with no quote, with no
+value, or with a value the fact does not state (the claim's own, where the fact gives another) is asked again. What
+the check cannot catch is a value the fact does state, cited as support for a claim that states another: binding the
+stance to the value stays the model's, as for a passage, and the stored value span shows which words it read.
 
 **Precedence among case documents.** A case document may override others (``EvidenceDocument.overrides``: house
 rules over a rulebook, an erratum over its text, a policy update over the old policy), following the chain. The truth
@@ -162,9 +167,9 @@ _CITING_RULES: Final = (
     "date, person or place in the same passage) bears on nothing here, even when its value matches the claim's.\n"
     "- An omission contradicts nothing: evidence that does not state the claim's fact, or states other facts about "
     "its subject, is not cited.\n"
-    "- For a passage (S), quote the one sentence or table row that states it, copied exactly as it is written, at most "
-    f"{CLAIM_QUOTE_CHARS} characters, never shortened with an ellipsis. Give subject: the words of that quote that "
-    "name the claim's subject; and value: the words of that quote that state the value at issue.\n"
+    "- Quote the one sentence or table row of the cited evidence that states it, copied exactly as it is written, "
+    f"at most {CLAIM_QUOTE_CHARS} characters, never shortened with an ellipsis. Give subject: the words of that quote "
+    "that name the claim's subject; and value: the words of that quote that state the value at issue.\n"
     "- Cite each piece of evidence at most once for a claim."
 )
 
@@ -174,7 +179,8 @@ _TRUTH_RULES: Final = (
     "it states this same fact about this same subject; contradicts when it states a different value for this same "
     "subject and relation. A contradiction's value is the value the evidence gives instead.\n"
     + _CITING_RULES
-    + "\n- For a key fact (K), give quote, subject and value as null: a key fact is cited whole.\n"
+    + "\n- A key fact (K) is quoted the same way, from its line as shown after its ref: the entity that line names "
+    "may stand as the subject.\n"
     "- suspect: true only when no evidence given bears on the claim and you doubt that it is true; false otherwise. "
     "A claim you cite evidence for is never suspect."
 )
@@ -217,7 +223,10 @@ _GROUND_REPAIR_SYSTEM: Final = (
 
 _USER_TEMPLATE: Final = "# Evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
-_FACT_TEMPLATE: Final = "{ref}. A key fact about {entity}: {claim}"
+_FACT_TEMPLATE: Final = "{ref}. {fact}"
+
+#: A key fact as a call is shown it after its ref: the text a key citation quotes.
+_FACT_LINE: Final = "A key fact about {entity}: {claim}"
 
 _PASSAGE_TEMPLATE: Final = "{ref}. From {title}, characters {start} to {end}:\n{text}"
 
@@ -659,9 +668,19 @@ class _Shown:
     def passage(self, ref: str) -> _Passage | None:
         return next((passage for shown, passage in self.passages if shown == ref), None)
 
+    def quotable(self, ref: str) -> str:
+        """The text a citation of ``ref`` quotes: a key fact's line as shown after its ref, or a passage's text."""
+        fact = next(((entity, fact) for shown, entity, fact in self.facts if shown == ref), None)
+        if fact is not None:
+            return _fact_line(*fact)
+        passage = self.passage(ref)
+        if passage is None:
+            raise KeyError(ref)
+        return passage.document.text[passage.start : passage.end]
+
     def numbered(self) -> str:
         """The facts and passages as a verify prompt numbers them, one block each: evidence, not a tool's result."""
-        lines = [_FACT_TEMPLATE.format(ref=ref, entity=entity, claim=fact.claim) for ref, entity, fact in self.facts]
+        lines = [_FACT_TEMPLATE.format(ref=ref, fact=_fact_line(entity, fact)) for ref, entity, fact in self.facts]
         lines += [
             _PASSAGE_TEMPLATE.format(
                 ref=ref,
@@ -929,6 +948,7 @@ class ClaimVerifier:
                 "templates": [
                     _USER_TEMPLATE,
                     _FACT_TEMPLATE,
+                    _FACT_LINE,
                     _PASSAGE_TEMPLATE,
                     _NO_EVIDENCE,
                     _PRECEDENCE_HEADING,
@@ -986,7 +1006,7 @@ class ClaimVerifier:
         steps: dict[_Step, str] = {
             "truth": self._evidence_bound(
                 [
-                    _FACT_TEMPLATE.format(ref=f"K{at}", entity=entity, claim=fact.claim)
+                    _FACT_TEMPLATE.format(ref=f"K{at}", fact=_fact_line(entity, fact))
                     for at, (entity, fact) in enumerate(facts, start=1)
                 ],
                 [document for document in given if document.provenance == "case"],
@@ -1311,12 +1331,9 @@ class ClaimVerifier:
             if ref not in shown.refs:
                 faults.append(_FAULTS["unknown_ref"].format(ref=ref))
                 continue
-            passage = shown.passage(ref)
-            if passage is None:
-                # A key fact is cited whole: what a reply quotes of it is not read.
-                citations.append(ClaimCitation(ref=ref, stance=cited.stance))
-                continue
-            citation, fault = _passage_citation(ref, cited, passage)
+            # A key fact's citation is held to the quote a passage's is: its support reads supported before anything
+            # else, so it must name, inside the fact, the words that state the value it is cited for.
+            citation, fault = _quoted_citation(ref, cited, shown.quotable(ref))
             if fault is not None:
                 faults.append(fault)
             elif citation is not None:
@@ -1460,19 +1477,17 @@ def _read_repair(step: _Step, content: str) -> _Answer:
     return _Answer(citations=[cited.as_cited() for cited in ground.citations], suspect=False)
 
 
-def _passage_citation(ref: str, cited: _Cited, passage: _Passage) -> tuple[ClaimCitation | None, str | None]:
-    """A passage citation checked: its quote a stretch of the passage shown, its subject and value inside that quote
-    and in one sentence or row of it.
+def _fact_line(entity: str, fact: ReferenceFact) -> str:
+    return _FACT_LINE.format(entity=entity, claim=fact.claim)
+
+
+def _quoted_citation(ref: str, cited: _Cited, shown: str) -> tuple[ClaimCitation | None, str | None]:
+    """A citation checked: its quote a stretch of the text shown under ``ref`` (a passage's, or a key fact's line),
+    its subject and value inside that quote and in one sentence or row of it.
 
     :return: The stored citation, or the failure named.
     """
-    checked, fault = check_quote(
-        ref,
-        quote=cited.quote,
-        subject=cited.subject,
-        value=cited.value,
-        shown=passage.document.text[passage.start : passage.end],
-    )
+    checked, fault = check_quote(ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown)
     if checked is None:
         return None, fault
     return (

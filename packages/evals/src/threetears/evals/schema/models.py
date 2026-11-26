@@ -6345,8 +6345,9 @@ class ClaimCitation(CoreShapeModel):
         default=None,
         min_length=1,
         max_length=CLAIM_QUOTE_CHARS,
-        description="The sentence or row quoted, verbatim in the cited text; None for a key fact, which is quoted "
-        "whole.",
+        description="The sentence or row quoted, verbatim in the cited text: a passage's, or a key fact's line as "
+        "the call was shown it (`A key fact about <entity>: <fact>`). None for a key fact a grade cited whole, as "
+        "builds that did not quote key facts stored it.",
     )
     subject_span: TextSpan | None = Field(default=None, description="Where the quote names the claim's subject.")
     value_span: TextSpan | None = Field(default=None, description="Where the quote states the value at issue.")

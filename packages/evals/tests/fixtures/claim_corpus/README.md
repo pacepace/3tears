@@ -13,6 +13,7 @@ harness's scripted persona, not a person.
 | `claimset/second_labels.jsonl` | A second labeller's label on 180 of them, drawn by the first label: every claim it called contradicted (74), every one it could not settle (46), and 60 of the 834 it supported |
 | `claimset/specific.jsonl` | Whether each of the 180 is a specific claim: a name, number, date, place or credit a listener could catch out |
 | `keys/` | Answer-key facts derived from the labelled claims, per case (`keys.json`, `keys_barker.json`), facts about entities outside each key (`context_facts*.jsonl`), one pointer per claim to the fact it became (`pointers*.jsonl`), and the keys' own notes (`keys/README.md`). In-sample: every fact was derived from the claims it would grade |
+| `claimset/synthetic.jsonl`, `keys/pointers_synthetic.jsonl` | Invented claims, in the same two formats, each labelled by construction against the key fact its pointer names: no broadcast line and no host's data, and outside every count above. Each holds a shape the grader once got wrong, such as a key that names an artist's true home town and a claim that names another |
 
 `packages/evals/tests/test_claim_read_corpus.py` reads the first label as the instrument and the second as people,
 through the claim read's weighting.

@@ -5,9 +5,10 @@ spent and each reply is chosen. The truth step sees the case key's facts (``K1..
 documents (``S1..``) and never a document the candidate fetched; the ground step, asked only under ``grounded_in``,
 sees only those documents. Code derives every verdict: case support always reads supported, case contradiction
 contradicted, and only a claim no case evidence bears on that the model doubts is nominated for the web. Each
-citation's quote is a stretch of the passage shown, with its subject and value found inside it and no sentence end or
-line break between them: that narrows a neighbouring value to one sentence or row (a semicolon joins clauses of one
-sentence), and what one sentence leaves to the model calibration measures. A case document may override others: a
+citation's quote is a stretch of the evidence shown, a passage or a key fact's line, with its subject and value found
+inside it and no sentence end or line break between them: that narrows a neighbouring value to one sentence or row (a
+semicolon joins clauses of one sentence), keeps a key fact from supporting a value it does not state, and what one
+sentence leaves to the model calibration measures. A case document may override others: a
 citation an overriding document's opposite stance meets is overruled, the call is shown which document overrides
 which, and a key fact sits outside precedence. Restatements ride with their original and take its answer; session claims
 are never verified. A failing answer is asked again alone within its step's repair budget; an unreadable batch is
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -206,6 +208,11 @@ def _repair(*citations: dict[str, Any], suspect: bool = False) -> _Reply:
     return _Reply(content=json.dumps({"citations": list(citations), "suspect": suspect}))
 
 
+#: The key's one fact, cited as support for the authorship claim, quoting its line as a call is shown it.
+_WRITTEN_BY_IDA_VENN = _cite(
+    "K1", quote="Harrow Tales was written by Ida Venn.", subject="Harrow Tales", value="Ida Venn"
+)
+
 _CONTRADICTED_BY_THE_BOUND_VOLUME = _cite(
     "S1",
     "contradicts",
@@ -254,7 +261,7 @@ async def test_each_claim_reads_the_verdict_its_case_citations_give_and_the_grad
     client = _FakeScriptedClient(
         [
             _batch(_answer(0, _CONTRADICTED_BY_THE_BOUND_VOLUME)),
-            _batch(_answer(1, _cite("K1")), _answer(2)),
+            _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2)),
         ]
     )
 
@@ -453,7 +460,7 @@ async def test_one_sentence_naming_two_subjects_is_left_to_the_model_to_bind() -
 
 
 async def test_a_fact_the_key_omits_contradicts_nothing() -> None:
-    client = _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _cite("K1")), _answer(2))])
+    client = _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2))])
 
     verification = await _verify(client)
     chapters = _grade(_CLAIMS, verification).claims[2]
@@ -472,7 +479,7 @@ async def test_case_support_with_a_case_contradiction_reads_supported_with_a_con
             _batch(
                 _answer(
                     1,
-                    _cite("K1"),
+                    _WRITTEN_BY_IDA_VENN,
                     _cite(
                         "S2",
                         "contradicts",
@@ -664,7 +671,14 @@ async def test_a_key_fact_sits_outside_precedence() -> None:
         )
     )
     client = _FakeScriptedClient(
-        _loan_replies(_answer(0, _cite("K1"), _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts")), _answer(1))
+        _loan_replies(
+            _answer(
+                0,
+                _cite("K1", quote="A loan runs two weeks.", subject="A loan", value="two weeks"),
+                _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts"),
+            ),
+            _answer(1),
+        )
     )
 
     grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=key, documents=(_POLICY, _UPDATE)))
@@ -877,7 +891,7 @@ async def _truth_only() -> Verification:
         _FakeScriptedClient(
             [
                 _batch(_answer(0, _BAD)),
-                _batch(_answer(1, _cite("K1")), _answer(2)),
+                _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2)),
                 _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
             ]
         )
@@ -888,7 +902,7 @@ async def test_a_ground_step_past_its_own_repair_budget_loses_only_groundedness(
     client = _FakeScriptedClient(
         [
             _batch(_answer(0, _BAD)),
-            _batch(_answer(1, _cite("K1")), _answer(2)),
+            _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2)),
             _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
             _ground((0, [_BAD_GROUND])),
             _ground((1, [_BAD_GROUND]), (2, [_BAD_GROUND])),
@@ -934,7 +948,7 @@ async def test_a_lost_ground_step_leaves_every_truth_verdict_as_it_was(ground_re
     client = _FakeScriptedClient(
         [
             _batch(_answer(0, _BAD)),
-            _batch(_answer(1, _cite("K1")), _answer(2)),
+            _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2)),
             _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
             *ground_replies,
         ]
@@ -1076,15 +1090,124 @@ async def test_a_quote_is_stored_as_the_documents_own_slice() -> None:
     assert citation.quote[citation.subject_span.start : citation.subject_span.end] == "bound volume of Harrow Tales"
 
 
-async def test_a_key_fact_is_cited_whole_whatever_the_reply_quotes() -> None:
+# --- a key fact is quoted for the value it is cited for -------------------------------------------------------------
+
+_CORPUS = Path(__file__).resolve().parent / "fixtures" / "claim_corpus"
+
+
+def _corpus_lines(name: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in (_CORPUS / name).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@dataclass(frozen=True)
+class _CorpusCase:
+    """One invented corpus row as a cell: its excerpt the only segment, its claim, and the key its pointer names."""
+
+    claim: ExtractedClaim
+    key: ReferenceKey
+    label: str
+    entity: str
+    fact: str
+
+
+def _synthetic(claim_id: str) -> _CorpusCase:
+    (row,) = [line for line in _corpus_lines("claimset/synthetic.jsonl") if line["claim_id"] == claim_id]
+    (pointer,) = [line for line in _corpus_lines("keys/pointers_synthetic.jsonl") if line["claim_id"] == claim_id]
+    entity, fact = pointer["key_fact"]["entity"], pointer["key_fact"]["claim"]
+    segments = (Segment(text=row["utterance_excerpt"], unit=0),)
+    key = ReferenceKey(
+        core=(ReferenceEntity(name=entity, facts=(ReferenceFact(claim=fact, source_url=row["evidence_url"]),)),)
+    )
+    return _CorpusCase(_claim(segments, 0, row["claim"], row["utterance_excerpt"]), key, row["label"], entity, fact)
+
+
+#: A key naming an artist's true home town, and a claim naming another town for the same artist.
+_TOWN = _synthetic("syn-origin-01")
+
+_CONTRADICTED_BY_THE_KEY = _cite("K1", "contradicts", quote=_TOWN.fact, subject=_TOWN.entity, value="Port Imber")
+
+
+@pytest.mark.parametrize(
+    ("first", "failure"),
+    [
+        (_cite("K1"), "its citation of K1 quotes nothing"),
+        (_cite("K1", quote=_TOWN.fact, subject=_TOWN.entity), "its citation of K1 names no value"),
+        (
+            _cite("K1", quote=_TOWN.fact, subject=_TOWN.entity, value="Saltmarsh"),
+            "its value for K1 is not in its quote",
+        ),
+    ],
+    ids=["quotes-nothing", "names-the-subject-only", "names-a-value-the-fact-does-not-state"],
+)
+async def test_a_wrong_home_town_cited_as_the_keys_support_is_asked_again_and_reads_contradicted(
+    first: dict[str, Any], failure: str
+) -> None:
+    """Support from a key fact names, inside the fact as shown, the words that state the value: a citation that quotes
+    nothing, names only the subject, or names the claim's own value where the fact states another is asked again."""
+    client = _FakeScriptedClient([_batch(_answer(0, first)), _repair(_CONTRADICTED_BY_THE_KEY)])
+
+    verification = await _verify(client, (_TOWN.claim,), key=_TOWN.key, documents=())
+
+    assert failure in client.calls[1]["user"]
+    assert _grade((_TOWN.claim,), verification).claims[0].verdict == _TOWN.label == "contradicted"
+    assert "A key fact (K) is quoted" in client.calls[0]["system"]
+
+
+async def test_a_key_fact_cited_as_support_for_a_value_it_does_not_state_never_reads_supported() -> None:
+    insists = _cite("K1", quote=_TOWN.fact, subject=_TOWN.entity, value="Saltmarsh")
+    client = _FakeScriptedClient([_batch(_answer(0, insists)), _repair(insists), _repair(insists)])
+
+    with pytest.raises(ClaimGradingFailed, match="its value for K1 is not in its quote") as failed:
+        await _verify(client, (_TOWN.claim,), key=_TOWN.key, documents=())
+
+    assert failed.value.loss == "repair_budget_spent"
+
+
+async def test_a_key_citation_is_stored_as_the_key_facts_own_slice_with_its_spans() -> None:
     client = _FakeScriptedClient(
-        [_batch(_answer(0)), _batch(_answer(1, _cite("K1", quote="written by", subject="x", value="y")), _answer(2))]
+        [
+            _batch(_answer(0)),
+            _batch(
+                _answer(
+                    1, _cite("K1", quote="Harrow Tales was written by ida venn", subject="Harrow Tales", value="Venn")
+                ),
+                _answer(2),
+            ),
+        ]
     )
 
     verification = await _verify(client)
 
     assert verification.findings[1] is not None
-    assert verification.findings[1].truth_citations == (ClaimCitation(ref="K1", stance="supports"),)
+    (citation,) = verification.findings[1].truth_citations
+    assert citation.quote == "Harrow Tales was written by Ida Venn"
+    assert citation.subject_span is not None and citation.value_span is not None
+    assert citation.quote[citation.subject_span.start : citation.subject_span.end] == "Harrow Tales"
+    assert citation.quote[citation.value_span.start : citation.value_span.end] == "Venn"
+
+
+async def test_a_key_fact_that_does_not_name_its_subject_takes_the_name_its_line_gives_it() -> None:
+    key = ReferenceKey(
+        core=(
+            ReferenceEntity(
+                name=_TOWN.entity,
+                facts=(ReferenceFact(claim="Born and raised in Port Imber.", source_url="https://example.org/tv"),),
+            ),
+        )
+    )
+    cited = _cite(
+        "K1",
+        "contradicts",
+        quote="Tamsin Vell: Born and raised in Port Imber.",
+        subject="Tamsin Vell",
+        value="Port Imber",
+    )
+    client = _FakeScriptedClient([_batch(_answer(0, cited))])
+
+    verification = await _verify(client, (_TOWN.claim,), key=key, documents=())
+
+    assert _grade((_TOWN.claim,), verification).claims[0].verdict == "contradicted"
+    assert "K1. A key fact about Tamsin Vell: Born and raised in Port Imber." in client.calls[0]["user"]
 
 
 # --- repair budget and unreadable replies ---------------------------------------------------------------------------
@@ -1404,7 +1527,7 @@ async def test_grounded_in_with_undeclared_documents_asks_no_ground_step_and_los
     ``documents_undeclared`` and every truth finding is what the same cell reads with no ground step asked."""
 
     def script() -> _FakeScriptedClient:
-        return _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _cite("K1")), _answer(2))])
+        return _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _WRITTEN_BY_IDA_VENN), _answer(2))])
 
     undeclared = await _verify(script(), documents=None, grounded_in=("run",))
     alone = await _verify(script(), documents=None)
@@ -1441,7 +1564,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 #: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:8e2e0364c7f3"
+_PINNED_IDENTITY = "scripted/verify|claimverify:fdeb461d61f3"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

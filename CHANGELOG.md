@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a key fact supports a claim only by naming the value it states
+
+**Fixed (#1322):** the truth step read a planted false claim (an artist's wrong home town) `supported` against the
+case key. A key fact was cited whole, with no quote, so no check bound its support to a value: a reply citing the key
+fact about the artist as support read `supported` whatever town the fact named. A key fact's citation now follows the
+rule a passage's does: it quotes the fact's line as the call is shown it (`A key fact about <entity>: <fact>`, so the
+entity named there can stand as the subject), and names inside that quote the words for the claim's subject and the
+words for the value, in one sentence or row. A citation that quotes nothing, names no value, or names a value the fact
+does not state is asked again within the repair budget, and still failing fails the criterion
+(`repair_budget_spent`). A key fact stays outside precedence: no document overrules it. What the check leaves to the
+model is a value the fact does state, cited as support for a claim that states another; the stored value span shows
+which words it read. The claim corpus gains an invented, labelled `contradicted` row of that shape
+(`claimset/synthetic.jsonl`, with its key fact in `keys/pointers_synthetic.jsonl`), outside the broadcast counts.
+
+**Changed:** the claim verifier's identity and every claims criterion's fingerprint move (new prompts and checks), so
+grades made before and after this never pool. A key citation in a new grade stores a `quote`, `subject_span` and
+`value_span`; one in an older grade stores none and reads as before.
+
+**For hosts:** a grade this build writes carries quotes on key citations, in fields an earlier build already reads
+(they were always optional), so rollout and rollback run in either order. A host re-judging stored cells with a claims
+criterion gets a new fingerprint, as for any prompt change.
+
 ### evals: a run a host keeps open is held under a lease, and the names that do it are stable
 
 **Changed:** `RUN_JOB` and `JobFenced` (`threetears.evals.kernel`) and `JobRecorder` (`threetears.evals.run`) move
