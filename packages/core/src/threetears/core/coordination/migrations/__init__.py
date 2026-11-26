@@ -87,5 +87,4 @@ __all__ = [
     "create_collection_write_marks",
     "create_coordination_tables",
     "register",
-    "revocations_carry_their_epoch",
 ]

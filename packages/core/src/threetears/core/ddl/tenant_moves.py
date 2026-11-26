@@ -72,11 +72,8 @@ from threetears.core.tenancy import column_tenant_sql
 from threetears.interfaces.keyed.filters import Fragment, quote_identifier
 
 __all__ = [
-    "MOVED_EPOCH_SUFFIX",
-    "MOVED_FROM_SUFFIX",
     "TENANT_MOVES_KEY",
     "TENANT_MOVES_TABLE",
-    "TENANT_MOVE_COLUMNS",
     "MoveRecord",
     "MoveStamp",
     "key_text_sql",
@@ -96,7 +93,7 @@ __all__ = [
 TENANT_MOVES_TABLE: Final[str] = "threetears_tenant_moves"
 
 #: its columns, in order (the module's "The moves table")
-TENANT_MOVE_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys", "tenant", "columns")
+_TENANT_MOVE_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys", "tenant", "columns")
 
 #: its key: a restore reads one table's bucket's moves since X as one range of it
 TENANT_MOVES_KEY: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys")
@@ -112,10 +109,10 @@ _MOVED_ROWS: Final[str] = "threetears_moved"
 _NOTED: Final[str] = "threetears_noted_moves"
 
 #: what a moveable column's former value is kept in, beside it: ``<column>_moved_from``
-MOVED_FROM_SUFFIX: Final[str] = "_moved_from"
+_MOVED_FROM_SUFFIX: Final[str] = "_moved_from"
 
 #: what the epoch of the write that last moved it is kept in: ``<column>_moved_epoch``
-MOVED_EPOCH_SUFFIX: Final[str] = "_moved_epoch"
+_MOVED_EPOCH_SUFFIX: Final[str] = "_moved_epoch"
 
 #: the column the row's epoch is in (``row_epoch.EPOCH_COLUMN``, named here so this module stays a leaf)
 _EPOCH: Final[str] = "epoch"
@@ -250,7 +247,7 @@ class MoveRecord:
             f"json_build_object({pairs})::text",
         )
         return (
-            f"INSERT INTO {TENANT_MOVES_TABLE} ({', '.join(TENANT_MOVE_COLUMNS)}) "
+            f"INSERT INTO {TENANT_MOVES_TABLE} ({', '.join(_TENANT_MOVE_COLUMNS)}) "
             f"SELECT {', '.join(selected)} FROM {source} AS {row} WHERE {moved}"
         )
 
@@ -314,7 +311,7 @@ def moved_from_column(column: str) -> str:
     :return: ``<column>_moved_from``
     :rtype: str
     """
-    return f"{column}{MOVED_FROM_SUFFIX}"
+    return f"{column}{_MOVED_FROM_SUFFIX}"
 
 
 def moved_epoch_column(column: str) -> str:
@@ -325,7 +322,7 @@ def moved_epoch_column(column: str) -> str:
     :return: ``<column>_moved_epoch``
     :rtype: str
     """
-    return f"{column}{MOVED_EPOCH_SUFFIX}"
+    return f"{column}{_MOVED_EPOCH_SUFFIX}"
 
 
 def moved_columns(column: str) -> tuple[str, str]:

@@ -53,7 +53,7 @@ from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_colu
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
-__all__ = ["NAMESPACES", "SCOPE_ID_INDEX_SQL", "namespaces_keyed_by_id", "rekey_namespaces"]
+__all__ = ["NAMESPACES", "namespaces_keyed_by_id", "rekey_namespaces"]
 
 log = get_logger(__name__)
 
@@ -69,7 +69,7 @@ NAMESPACES: Final[StampingTable] = StampingTable(
 _KEY: Final[tuple[str, ...]] = ("namespace_id",)
 
 #: the old primary key's shape, as an index :meth:`NamespaceCollection.page_ids` walks a scope at a time
-SCOPE_ID_INDEX_SQL: Final[str] = (
+_SCOPE_ID_INDEX_SQL: Final[str] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.page_ids\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespace_ids_page_by_key\n"
     "-- reason: every namespace id a page at a time, a scope at a time: the key alone is hashed on YugabyteDB\n"
@@ -119,7 +119,7 @@ async def rekey_namespaces(store: Any) -> None:
     quoted = quote_identifier(NAMESPACES.name)
     await store.execute(f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {moved_from_column('row_scope')} text")
     await store.execute(f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {moved_epoch_column('row_scope')} bigint")
-    await store.execute(SCOPE_ID_INDEX_SQL)
+    await store.execute(_SCOPE_ID_INDEX_SQL)
     primary = await store.query(_PRIMARY_KEY_SQL)
     if tuple(str(row["column_name"]) for row in primary) != _KEY:
         # two statements, not one ALTER of both: each is its own on YugabyteDB, and a run stopped between them finds

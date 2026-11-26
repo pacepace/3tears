@@ -14,6 +14,7 @@ from uuid import uuid4
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import NO_L2
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.data.migrations.stamp_tables import StampingTable
 from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.stamped_tables import (
     MigrationStore,
@@ -24,8 +25,11 @@ from threetears.core.testing.stamped_tables import (
     stamps_in,
 )
 from threetears.mcp.migrations import register
-from threetears.mcp.migrations.v003_grants_carry_their_epoch import STAMPED_TABLES, grants_carry_their_epoch
+from threetears.mcp.migrations.v003_grants_carry_their_epoch import grants_carry_their_epoch
 from threetears.mcp.rbac import McpToolGrantCollection
+
+#: the table mcp v003 stamps, its key as declared at v003 (frozen: a later change of its key is its own migration)
+STAMPED_TABLES = (StampingTable("mcp_tool_grants", (("grant_id", "uuid"),), tenancy=("undeclared", None)),)
 
 _SCHEMA = McpToolGrantCollection.schema
 

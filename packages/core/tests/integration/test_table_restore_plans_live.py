@@ -28,7 +28,7 @@ from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import scope_epochs_schema
-from threetears.core.collections.table_restore import StampedTable, TableChanges, restored_tables, versioned_tables
+from threetears.core.collections.table_restore import StampedTable, TableChanges, VersionedTable, restored_tables
 from threetears.core.ddl.row_epoch import (
     BUCKET_COLUMN,
     RESTORE_BUCKETS,
@@ -193,7 +193,11 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
 
 async def _restored(seeded: _Seeded) -> tuple[_Recorder, int, float, int]:
     """the restore's stream run whole: its recorder, the keyed rows its records name, its seconds, its changes."""
-    tables = [table for table in await versioned_tables(seeded.conn) if table.schema == seeded.schema]
+    tables = [
+        table
+        for table in await restored_tables(seeded.conn)
+        if isinstance(table, VersionedTable) and table.schema == seeded.schema
+    ]
     assert [table.table for table in tables] == [_TABLE], tables
     return await _streamed(seeded, tables)
 

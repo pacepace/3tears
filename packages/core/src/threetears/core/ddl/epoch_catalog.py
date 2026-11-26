@@ -38,17 +38,10 @@ from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK
 from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 
 __all__ = [
-    "REFUSE_TABLES_WITHOUT_EPOCH",
-    "MovesTableMissingError",
-    "PerRowTriggerError",
-    "TableWithoutEpochError",
-    "moveable_without_moves",
     "refuse_moveable_without_moves",
     "refuse_tables_without_epoch",
     "refuse_row_triggers",
-    "row_triggers_on_versioned",
     "tables_carrying_epoch",
-    "versioned_among",
 ]
 
 
@@ -76,13 +69,6 @@ JOIN pg_index i ON i.indexrelid = d.objoid
 JOIN pg_class c ON c.oid = i.indrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE d.classoid = 'pg_class'::regclass AND d.objsubid = 0 AND d.description LIKE $1 AND d.description NOT LIKE $2
-"""
-
-#: the versioned tables of one schema among those named
-_VERSIONED_AMONG_SQL: Final = f"""
-SELECT v.table_name FROM ({_VERSIONED_RELATIONS}) v
-WHERE v.table_schema = $3 AND v.table_name = ANY($4::text[])
-ORDER BY 1
 """
 
 #: every per-row trigger a user made (not a constraint's internal one) on a versioned table, of one schema or of every
@@ -125,7 +111,7 @@ ORDER BY 1, 2
 """
 
 
-class MovesTableMissingError(RuntimeError):
+class _MovesTableMissingError(RuntimeError):
     """stamped tables declare a moveable column, but their schema holds no moves table: every write that moves a row
     would fail at write time.
 
@@ -161,7 +147,7 @@ class MovesTableMissingError(RuntimeError):
         )
 
 
-class PerRowTriggerError(RuntimeError):
+class _PerRowTriggerError(RuntimeError):
     """a versioned (page-written) table carries a per-row trigger: every write to it would pay the slow path.
 
     :ivar found: ``schema.table: trigger`` for each one found
@@ -192,26 +178,7 @@ class PerRowTriggerError(RuntimeError):
         )
 
 
-async def versioned_among(conn: _Fetching, schema: str, tables: Iterable[str]) -> frozenset[str]:
-    """the versioned tables of ``schema`` among ``tables``, from the restore declaration their index carries.
-
-    :param conn: a pool or a connection
-    :ptype conn: _Fetching
-    :param schema: the schema
-    :ptype schema: str
-    :param tables: the table names
-    :ptype tables: Iterable[str]
-    :return: those that are versioned
-    :rtype: frozenset[str]
-    """
-    names = sorted(set(tables))
-    if not names:
-        return frozenset()
-    rows = await conn.fetch(_VERSIONED_AMONG_SQL, _DECLARED, _STAMPED, schema, names)
-    return frozenset(str(row["table_name"]) for row in rows)
-
-
-async def row_triggers_on_versioned(conn: _Fetching, schema: str | None = None) -> tuple[str, ...]:
+async def _row_triggers_on_versioned(conn: _Fetching, schema: str | None = None) -> tuple[str, ...]:
     """every per-row trigger on a versioned table, of ``schema`` or (None) of every schema, as ``schema.table: name``.
 
     :param conn: a pool or a connection
@@ -234,14 +201,14 @@ async def refuse_row_triggers(conn: _Fetching, schema: str | None = None) -> Non
     :ptype schema: str | None
     :return: nothing
     :rtype: None
-    :raises PerRowTriggerError: when one is found, naming each
+    :raises _PerRowTriggerError: when one is found, naming each
     """
-    found = await row_triggers_on_versioned(conn, schema)
+    found = await _row_triggers_on_versioned(conn, schema)
     if found:
-        raise PerRowTriggerError(found)
+        raise _PerRowTriggerError(found)
 
 
-async def moveable_without_moves(
+async def _moveable_without_moves(
     conn: _Fetching, schema: str | None = None
 ) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """every stamped table of ``schema`` (None: of every schema) that declares a moveable column while its schema holds
@@ -267,7 +234,7 @@ async def moveable_without_moves(
 
 async def refuse_moveable_without_moves(conn: _Fetching, schema: str | None = None) -> None:
     """refuse a stamped table of ``schema`` (None: of every schema) that declares a moveable column while its schema
-    holds no moves table (:func:`moveable_without_moves`). One catalog read.
+    holds no moves table (:func:`_moveable_without_moves`). One catalog read.
 
     :param conn: a pool or a connection
     :ptype conn: _Fetching
@@ -275,11 +242,11 @@ async def refuse_moveable_without_moves(conn: _Fetching, schema: str | None = No
     :ptype schema: str | None
     :return: nothing
     :rtype: None
-    :raises MovesTableMissingError: when one is found, naming each table, its schema and how to create the moves table
+    :raises _MovesTableMissingError: when one is found, naming each table, its schema and how to create the moves table
     """
-    found = await moveable_without_moves(conn, schema)
+    found = await _moveable_without_moves(conn, schema)
     if found:
-        raise MovesTableMissingError(
+        raise _MovesTableMissingError(
             tuple(f"{owner}.{table} (moveable: {', '.join(columns)})" for owner, table, columns in found),
             tuple(sorted({owner for owner, _, _ in found})),
         )
@@ -304,14 +271,7 @@ async def tables_carrying_epoch(conn: _Fetching, schema: str, tables: Iterable[s
     return frozenset(str(row["table_name"]) for row in rows)
 
 
-#: A switched-on table (one whose writes advance a generation) that carries no epoch is refused at the migration run
-#: that declares it (:func:`refuse_tables_without_epoch`): with the change-note ring retired (append-only L3 chunk 7)
-#: nothing records its writes for a restore, the writers' backstop or a keys-unknown page, so a lost advance of it
-#: could never be announced. 3tears' own ten switched-on tables declare ``ROW_STAMPED`` (work/0950-stamp-own-tables).
-REFUSE_TABLES_WITHOUT_EPOCH: Final = True
-
-
-class TableWithoutEpochError(RuntimeError):
+class _TableWithoutEpochError(RuntimeError):
     """switched-on tables that carry no epoch: their writes would reach no reader of what changed.
 
     :ivar tables: ``schema.table`` of each
@@ -329,8 +289,9 @@ class TableWithoutEpochError(RuntimeError):
 
 
 async def refuse_tables_without_epoch(conn: _Fetching, schema: str, tables: Iterable[str]) -> frozenset[str]:
-    """the switched-on ``tables`` of ``schema`` that carry no epoch; refused (:class:`TableWithoutEpochError`) once
-    :data:`REFUSE_TABLES_WITHOUT_EPOCH` is on. One catalogue read.
+    """the switched-on ``tables`` of ``schema`` that carry no epoch, refused (:class:`_TableWithoutEpochError`): with
+    the change-note ring retired (append-only L3 chunk 7) nothing else records their writes for a restore, the
+    writers' backstop or a keys-unknown page, so a lost advance of one could never be announced. One catalogue read.
 
     :param conn: a pool or a connection
     :ptype conn: _Fetching
@@ -339,9 +300,9 @@ async def refuse_tables_without_epoch(conn: _Fetching, schema: str, tables: Iter
     :param tables: the switched-on tables a run declares: bare, judged in ``schema``, or ``other_schema.table`` for a
         table a run's package creates in a second schema of its database (the hub's audit table), judged in its own
     :ptype tables: Iterable[str]
-    :return: those without an epoch, as named (empty once refused, since a refusal raises)
+    :return: none: a table without an epoch is refused
     :rtype: frozenset[str]
-    :raises TableWithoutEpochError: when one carries none and the refusal is on
+    :raises _TableWithoutEpochError: when one carries none
     """
     by_schema: dict[str, set[str]] = {}
     for name in frozenset(tables):
@@ -351,6 +312,6 @@ async def refuse_tables_without_epoch(conn: _Fetching, schema: str, tables: Iter
     for home, names in sorted(by_schema.items()):
         carrying = await tables_carrying_epoch(conn, home, names)
         missing |= {name if home == schema else f"{home}.{name}" for name in names - carrying}
-    if missing and REFUSE_TABLES_WITHOUT_EPOCH:
-        raise TableWithoutEpochError(name if "." in name else f"{schema}.{name}" for name in missing)
+    if missing:
+        raise _TableWithoutEpochError(name if "." in name else f"{schema}.{name}" for name in missing)
     return frozenset(missing)

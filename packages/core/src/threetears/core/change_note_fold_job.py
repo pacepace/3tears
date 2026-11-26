@@ -148,7 +148,7 @@ def _fold_page(context: JobContext, final: bool, form: tuple[bytes, ...], chunk_
     :ptype context: JobContext
     :param final: the page ends the notes: its last chunk is folded too
     :ptype final: bool
-    :param form: the record's pieces (:class:`~threetears.core.collections.epoch_change.KeyedRecordForm`), in its
+    :param form: the record's pieces (:func:`~threetears.core.collections.epoch_change.keyed_record_form`), in its
         field order: head, middle, tail, row head, row columns, row tail
     :ptype form: tuple[bytes, ...]
     :param chunk_rows: the rows a chunk holds before it may be cut

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-__all__ = ["RowTriggerFinding", "row_triggers_in", "row_triggers_on_versioned", "versioned_tables_in"]
+__all__ = ["row_triggers_in", "row_triggers_on_versioned", "versioned_tables_in"]
 
 #: a per-row trigger statement and its target: up to the first ``;`` (one statement), case-blind
 _ROW_TRIGGER: Final = re.compile(
@@ -38,7 +38,7 @@ _ROW_TRIGGER: Final = re.compile(
 
 
 @dataclass(frozen=True, slots=True)
-class RowTriggerFinding:
+class _RowTriggerFinding:
     """one per-row trigger statement found in source.
 
     :ivar path: the file
@@ -107,36 +107,36 @@ def versioned_tables_in(paths: Iterable[Path]) -> frozenset[str]:
     return frozenset(found)
 
 
-def row_triggers_in(paths: Iterable[Path]) -> tuple[RowTriggerFinding, ...]:
+def row_triggers_in(paths: Iterable[Path]) -> tuple[_RowTriggerFinding, ...]:
     """every per-row trigger statement in the Python and ``.sql`` files.
 
     :param paths: the files
     :ptype paths: Iterable[Path]
     :return: the statements found, in file and line order
-    :rtype: tuple[RowTriggerFinding, ...]
+    :rtype: tuple[_RowTriggerFinding, ...]
     """
-    found: list[RowTriggerFinding] = []
+    found: list[_RowTriggerFinding] = []
     for path in paths:
         if path.suffix == ".sql":
             text = path.read_text(encoding="utf-8")
             for match in _ROW_TRIGGER.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
-                found.append(RowTriggerFinding(path, line, match["name"], _bare(match["table"])))
+                found.append(_RowTriggerFinding(path, line, match["name"], _bare(match["table"])))
         elif path.suffix == ".py":
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for line, text in _texts(tree):
                 for match in _ROW_TRIGGER.finditer(text):
-                    found.append(RowTriggerFinding(path, line, match["name"], _bare(match["table"])))
+                    found.append(_RowTriggerFinding(path, line, match["name"], _bare(match["table"])))
     return tuple(sorted(found, key=lambda each: (str(each.path), each.line, each.trigger)))
 
 
-def row_triggers_on_versioned(paths: Iterable[Path]) -> tuple[RowTriggerFinding, ...]:
+def row_triggers_on_versioned(paths: Iterable[Path]) -> tuple[_RowTriggerFinding, ...]:
     """the per-row triggers whose target is a versioned table any of the files declares.
 
     :param paths: the files: every source and migration file of the tree judged
     :ptype paths: Iterable[Path]
     :return: the findings; none is the rule passing
-    :rtype: tuple[RowTriggerFinding, ...]
+    :rtype: tuple[_RowTriggerFinding, ...]
     """
     files = tuple(paths)
     versioned = versioned_tables_in(files)

@@ -39,13 +39,16 @@ import pytest
 
 from threetears.core.keyed import KeyBatch, Sort, keyset_page, read_keyed
 from threetears.core.keyset import read_keyset_pages
-from threetears.interfaces.keyed.keys import NEWEST_FIRST_KEYS, newest_settings, register_versioned_table
+from threetears.interfaces.keyed.keys import newest_settings, register_versioned_table
 
 pytestmark = pytest.mark.integration
 
 _log = logging.getLogger(__name__)
 
 _ROWS = 40_000
+
+#: the keys a newest read's first statement asks for (``keys``' 100,000 versions a read at 50 versions a key)
+_NEWEST_FIRST_KEYS = 2_000
 
 
 def _script() -> ModuleType:
@@ -222,7 +225,7 @@ async def test_the_shipped_reads_read_each_version_once_and_a_batch_its_keys_alo
 
 
 async def test_a_50_version_batch_and_page_sort_in_memory(measured: tuple[Any, ModuleType, bool]) -> None:
-    """Flips if, at 50 versions a key, the first keyed batch (NEWEST_FIRST_KEYS keys) or a fill page sorts on disk
+    """Flips if, at 50 versions a key, the first keyed batch (_NEWEST_FIRST_KEYS keys) or a fill page sorts on disk
     under the read's own work_mem; on YugabyteDB the same batch under the default 4 MB must spill, so the bound is what
     keeps it in memory."""
     conn, script, yugabyte = measured
@@ -231,14 +234,14 @@ async def test_a_50_version_batch_and_page_sort_in_memory(measured: tuple[Any, M
     name = f"{script.SCHEMA}.{script.table_name(versions)}"
     register_versioned_table(script.declaration(versions))
     held = [(row["state"], int(row["id"])) for row in await conn.fetch(f"SELECT DISTINCT state, id FROM {name}")]
-    keys = sorted(held)[:NEWEST_FIRST_KEYS]
+    keys = sorted(held)[:_NEWEST_FIRST_KEYS]
     batch = _Recorder(conn)
     await read_keyed(
         batch,
         name,
         keys=KeyBatch(("state", "id"), [[k[0] for k in keys], [k[1] for k in keys]], ("text", "bigint")),
         columns=["state", "id", "v", "payload"],
-        batch=NEWEST_FIRST_KEYS,
+        batch=_NEWEST_FIRST_KEYS,
     )
     sql, params = batch.sent[-1]
     bounded = await _explained(conn, script, sql, params, yugabyte, text=True, batch=True)

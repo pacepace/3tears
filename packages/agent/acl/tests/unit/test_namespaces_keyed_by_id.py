@@ -16,7 +16,6 @@ from threetears.agent.acl.migrations import register
 from threetears.agent.acl.migrations.v006_access_tables_carry_their_epoch import STAMPED_TABLES
 from threetears.agent.acl.migrations.v007_namespaces_keyed_by_id import (
     NAMESPACES,
-    SCOPE_ID_INDEX_SQL,
     namespaces_keyed_by_id,
 )
 from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
@@ -27,6 +26,14 @@ _SCHEMA = NamespaceCollection.schema
 
 #: what YugabyteDB's ``version()`` answers, as the migration probes it
 _YUGABYTE = "PostgreSQL 15.12-YB-2025.1.0.0-b0 on x86_64"
+
+#: v007's scope index, as its statement reads with its comments' line ends spaced (:func:`_writes`)
+_SCOPE_ID_INDEX = (
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.page_ids "
+    "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespace_ids_page_by_key "
+    "-- reason: every namespace id a page at a time, a scope at a time: the key alone is hashed on YugabyteDB "
+    "CREATE INDEX IF NOT EXISTS idx_namespaces_scope_id ON namespaces (row_scope, namespace_id)"
+)
 
 
 class _Catalog:
@@ -127,7 +134,7 @@ async def test_v007_rekeys_a_v006_table_in_place() -> None:
         *_moves_table(),
         'ALTER TABLE "namespaces" ADD COLUMN IF NOT EXISTS row_scope_moved_from text',
         'ALTER TABLE "namespaces" ADD COLUMN IF NOT EXISTS row_scope_moved_epoch bigint',
-        " ".join(SCOPE_ID_INDEX_SQL.split()),
+        _SCOPE_ID_INDEX,
         'ALTER TABLE "namespaces" DROP CONSTRAINT IF EXISTS "namespaces_pkey"',
         'ALTER TABLE "namespaces" ADD CONSTRAINT namespaces_pkey PRIMARY KEY (namespace_id)',
         f'DROP INDEX IF EXISTS "{NAMESPACES.index}"',

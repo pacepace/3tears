@@ -24,12 +24,12 @@ from threetears.core.data.migrations.stamp_tables import StampingTable, stamp_ex
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["STAMPED_TABLES", "revocations_carry_their_epoch"]
+__all__ = ["revocations_carry_their_epoch"]
 
 log = get_logger(__name__)
 
 #: the table v007 stamps, its key as declared at v007 (FROZEN: a later change of its key is its own migration)
-STAMPED_TABLES: Final[tuple[StampingTable, ...]] = (
+_STAMPED_TABLES: Final[tuple[StampingTable, ...]] = (
     StampingTable("coordination_revocations", (("purpose", "text"), ("key", "text")), tenancy=("schema", None)),
 )
 
@@ -42,5 +42,5 @@ async def revocations_carry_their_epoch(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    stamped = await stamp_existing_tables(store, STAMPED_TABLES)
+    stamped = await stamp_existing_tables(store, _STAMPED_TABLES)
     log.info("coordination v007: the revocation list is ROW_STAMPED", extra={"extra_data": {"rows_stamped": stamped}})

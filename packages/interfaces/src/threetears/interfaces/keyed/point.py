@@ -29,19 +29,16 @@ from threetears.interfaces.keyed.filters import (
     narrowing,
     quote_identifier,
     relation,
-    renumbered,
     selected_column,
 )
 from threetears.interfaces.keyed.keys import declared_columns, default_projection, primary_key, stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
-from threetears.interfaces.keyed.steps import Step
 
 __all__ = [
     "Nearest",
     "TextRank",
     "read_by_statement",
     "read_nearest_statement",
-    "read_row_beside_statement",
     "read_row_statement",
     "then_terms",
 ]
@@ -214,81 +211,6 @@ def read_row_statement(
     if beside is not None:
         return _beside_sql(table, beside, by, columns, lock, where)
     return _sql(table, by, columns, limit=True, lock=lock, where=where)
-
-
-def read_row_beside_statement(
-    table: str | Derived,
-    *,
-    by: Mapping[str, Any],
-    columns: Sequence[str | Selected],
-    beside: Step,
-    limit: int,
-    present: str,
-    first: str | None = None,
-    where: Sequence[Fragment] = (),
-) -> tuple[str, list[Any]]:
-    """the statement reading the first row of ``table`` the pins name (``r``, as :func:`read_row_statement` reads it)
-    and, beside it, up to ``limit`` rows of a step that reads that row's columns (``r."col"``): one statement, so one
-    round trip and one snapshot for the row and the rows it decides. What ``threetears.core.keyed.read_row_beside``
-    sends::
-
-        SELECT r.*, s.* FROM (<the row's read>) AS r
-          LEFT JOIN LATERAL (SELECT TRUE AS "<present>", b.* FROM (<beside>) AS b LIMIT $n) AS s ON TRUE
-
-    A row with no step row comes back once, ``present`` and every step column NULL; no row comes back when the pins
-    name none.
-
-    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time), or a derived relation
-        (a versioned table's newest versions)
-    :ptype table: str | Derived
-    :param by: its pins, as :func:`read_by_statement` takes them; at least one
-    :ptype by: Mapping[str, Any]
-    :param columns: the row's columns, as :func:`read_by_statement` takes them; each one the step reads among them
-    :ptype columns: Sequence[str | Selected]
-    :param beside: the step, its conditions on the row written ``r."col"`` (a correlated read, each leg a keyed read
-        of its own relation: :mod:`threetears.core.keyed.steps`)
-    :ptype beside: Step
-    :param limit: the most step rows read
-    :ptype limit: int
-    :param present: the name of the column that is TRUE on a step row (NULL on the row alone), a TRUSTED identifier
-    :ptype present: str
-    :param first: given, the name of a column TRUE on one step row and FALSE on the rest, a TRUSTED identifier: the
-        row's columns then come back on that row alone (and on the row alone), NULL on every other, in no particular
-        order of rows. Each answered row otherwise repeats them, and at hundreds of step rows that is hundreds of
-        values more to send and decode for one row read (the change notes' ring, 2026-11-16, YugabyteDB, 500 notes
-        with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, 2026-11-16).
-        ``None`` repeats them on every row
-    :ptype first: str | None
-    :param where: guards on the row beside its pins, each a fragment written as ``t."col"`` from ``$1`` (a stamped
-        table's live guard; a versioned table is read through its newest relation, ``table`` derived); none when empty
-    :ptype where: Sequence[Fragment]
-    :return: the statement, and its binds: the pins', the guards', the step's, then ``limit``
-    :rtype: tuple[str, list[Any]]
-    :raises ValueError: when nothing is pinned, or for a limit under one row
-    """
-    if isinstance(limit, bool) or limit < 1:
-        raise ValueError(f"a read beside a row reads at least one row of its step, not {limit!r}")
-    row, params = _sql(table, by, columns, limit=True, where=where)
-    step = renumbered(Fragment(beside.sql, beside.params), len(params))
-    params += list(beside.params)
-    params.append(limit)
-    marked = quote_identifier(present)
-    if first is None:
-        return (
-            f"SELECT r.*, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {marked}, b.* "
-            f"FROM ({step}) AS b LIMIT ${len(params)}) AS s ON TRUE",
-            params,
-        )
-    # numbered after the limit, so the one numbered first is among the rows kept whatever order an engine limits in
-    once = quote_identifier(first)
-    names = [quote_identifier(column.alias if isinstance(column, Selected) else column) for column in columns]
-    head = ", ".join(f"CASE WHEN s.{once} IS NOT FALSE THEN r.{name} END AS {name}" for name in names)
-    return (
-        f"SELECT {head}, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {marked}, "
-        f"row_number() OVER () = 1 AS {once}, k.* FROM (SELECT b.* FROM ({step}) AS b LIMIT ${len(params)}) AS k) "
-        "AS s ON TRUE",
-        params,
-    )
 
 
 #: the names a nearest read's wrapper uses: the distance it re-sorts by, and the whole row (every column)

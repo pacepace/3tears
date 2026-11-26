@@ -32,10 +32,12 @@ from threetears.core.collections.copy_queries import (
     QueryWorkerDied,
     query_workers,
 )
-from threetears.core.collections.shared_copy import LOCATED_PREFIX
 from threetears.core.shared_arrow import SharedArrowStore, read_version
 
 _STATES = pa.array(["AZ", "GA", "NC", "PA", "VA"], pa.string())
+
+#: the prefix a split table's locator is published beside it under
+_LOCATED = "__located__"
 
 #: a query that runs for minutes on one thread: 10^10 rows hashed
 _ENDLESS = "SELECT sum(hash(a.range * b.range)) AS h FROM range(100000) a, range(100000) b"
@@ -63,7 +65,7 @@ def _rows(count: int, seed: int) -> pa.Table:
 
 async def _publish(store: SharedArrowStore, version: str, rows: pa.Table) -> None:
     located = pa.table({"office_key": rows["office_key"], "state": rows["state"]})
-    await asyncio.to_thread(store.publish, version, {"results": rows, f"{LOCATED_PREFIX}results": located})
+    await asyncio.to_thread(store.publish, version, {"results": rows, f"{_LOCATED}results": located})
 
 
 def _in_process(store: SharedArrowStore, version: str, sql: str, binds: list[Any], **tables: pa.Table) -> pa.Table:
@@ -191,7 +193,7 @@ class TestAQueryRunsInAWorker:
         answer = await queries.run_named("gated", ["/", sql, "AZ"])
         assert (await _answer(answer)).equals(_in_process(store, "c-0", sql, ["AZ"]))
         with pytest.raises(duckdb.CatalogException):
-            await queries.run(f'SELECT * FROM "{LOCATED_PREFIX}results"')
+            await queries.run(f'SELECT * FROM "{_LOCATED}results"')
         with pytest.raises(KeyError):
             await queries.run_named("not declared")
 

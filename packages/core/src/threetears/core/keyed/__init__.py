@@ -7,8 +7,7 @@ as keyed by construction, judged by the key it names):
 - **a keyed read** by a batch of keys or key prefixes, chunked: :func:`read_keyed`, :func:`read_keyed_arrow`
   (:class:`KeyBatch`, ``by`` pins a tenant or scope; :class:`AnyOf` is a set filter); one key's rows, its first
   row or that row's column, bound as a hand-written ``WHERE a = $1`` binds it: :func:`read_by`, :func:`read_row`,
-  :func:`read_value`; one key's row and, beside it, the rows of a step that row decides, in one statement:
-  :func:`read_row_beside`;
+  :func:`read_value`;
 - **a listing's page**: a bound prefix, a closed sort, an opaque cursor, a ``LIMIT``, visibility as a keyed
   ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
   :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
@@ -112,7 +111,7 @@ from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.joins import Joined, read_by_joined, read_reached
 from threetears.core.keyed.links import read_link_chain
-from threetears.core.keyed.point import read_by, read_nearest, read_row, read_row_beside, read_state_arrow, read_value
+from threetears.core.keyed.point import read_by, read_nearest, read_row, read_state_arrow, read_value
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
     TableKey,
@@ -291,7 +290,6 @@ __all__ = [
     "read_past_marks",
     "newest_read",
     "read_row",
-    "read_row_beside",
     "read_value",
     "rows_affected",
     "run_inline",

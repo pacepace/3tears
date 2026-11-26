@@ -25,7 +25,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 
-from threetears.core.collections import copy_queries
+from threetears.core.arrow_keys import rows_found
 from threetears.core.collections.copy_follower import FollowedTable
 from threetears.core.collections.copy_parts import PartRule
 from threetears.core.collections.copy_queries import CopyQueries
@@ -178,9 +178,9 @@ def test_a_lookup_respells_only_its_asked_keys(monkeypatch: pytest.MonkeyPatch) 
             return _original(values, *args, **kwargs)  # type: ignore[operator]
 
         monkeypatch.setattr(pc, kernel, spy)
-    found = copy_queries.rows_found(held, asked, ("state", "price"), {"price": "numeric"})
+    found = rows_found(held, asked, ("state", "price"), {"price": "numeric"})
     assert found["price"].to_pylist() == ["7", "12"]
-    found = copy_queries.rows_found(held, asked.slice(0, 1), ("state", "person_id"), {"person_id": "uuid"})
+    found = rows_found(held, asked.slice(0, 1), ("state", "person_id"), {"person_id": "uuid"})
     assert found.num_rows == 1
     assert seen and max(seen) <= asked.num_rows, seen
 

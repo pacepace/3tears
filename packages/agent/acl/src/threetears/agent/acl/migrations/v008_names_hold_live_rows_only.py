@@ -27,12 +27,12 @@ from threetears.core.data.migrations.live_unique import make_unique_indexes_live
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["LIVE_UNIQUE_INDEXES", "names_hold_live_rows_only"]
+__all__ = ["names_hold_live_rows_only"]
 
 log = get_logger(__name__)
 
 #: the name indexes v008 makes live-only, as v001 named them (FROZEN)
-LIVE_UNIQUE_INDEXES: Final[tuple[str, ...]] = (
+_LIVE_UNIQUE_INDEXES: Final[tuple[str, ...]] = (
     "uq_groups_platform_name",
     "uq_groups_customer_name",
     "uq_roles_platform_name",
@@ -48,7 +48,7 @@ async def names_hold_live_rows_only(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    changed = await make_unique_indexes_live_only(store, LIVE_UNIQUE_INDEXES)
+    changed = await make_unique_indexes_live_only(store, _LIVE_UNIQUE_INDEXES)
     log.info(
         "agent_acl v008: group and role names are unique among live rows", extra={"extra_data": {"changed": changed}}
     )

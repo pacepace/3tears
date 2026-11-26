@@ -82,7 +82,7 @@ __all__ = ["SharedCopyStages"]
 
 log = get_logger(__name__)
 
-#: the hex digits of a table's schema digest (``CheckpointCopy.schema_digest``): the in-process copy's length
+#: the hex digits of a table's schema digest (the checkpoint protocol's ``schema_digest``): the in-process copy's length
 _DIGEST_CHARS: Final = 16
 
 
@@ -112,7 +112,7 @@ def _named(stage: str) -> str:
 
 class SharedCopyStages:
     """a :class:`~threetears.core.collections.copy_follower.CopyFollower`'s backend (``FollowerBackend``,
-    ``PreparesStaged``, and ``copy_checkpoint.CheckpointCopy``) over ``backend``: each change applied in its apply
+    ``PreparesStaged``, and ``copy_checkpoint``'s checkpoint protocol) over ``backend``: each change applied in its apply
     worker through an apply lane of its own, each reload from the volume staged in a reload worker of its own (the
     module's docstring). The follower's ``queries`` read the store ``backend`` publishes in.
 

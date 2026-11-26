@@ -28,12 +28,14 @@ every package's source off Acero.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+
+from threetears.core.frozen_state import EMPTY
 
 __all__ = [
     "CANONICAL_CASTS",
@@ -41,8 +43,8 @@ __all__ = [
     "distinct_keys",
     "key_codes",
     "last_rows",
-    "numeric_texts",
     "rows_named",
+    "rows_found",
     "rows_not_named",
     "stored_instants",
 ]
@@ -352,7 +354,7 @@ _NUMERIC_REWRITES: Final = (
 )
 
 
-def numeric_texts(values: pa.ChunkedArray | pa.Array) -> pa.Array:
+def _numeric_texts(values: pa.ChunkedArray | pa.Array) -> pa.Array:
     """a column of NUMERIC values as text, each in one spelling of its value (``1.50``, ``01.5`` and ``+1.5`` are all
     ``1.5``; ``-0.0`` is ``0``), so two texts of one value are equal. In Arrow's kernels alone, never a Python object a
     value.
@@ -376,14 +378,14 @@ def numeric_texts(values: pa.ChunkedArray | pa.Array) -> pa.Array:
 
 
 #: the SQL types (``FollowedTable.key_cast``) of a key column held as text whose values have one spelling the copy keeps
-#: (:func:`canonical_texts`): a ``NUMERIC``'s (and an integer's held as text) by :func:`numeric_texts`, a UUID's lower
+#: (:func:`canonical_texts`): a ``NUMERIC``'s (and an integer's held as text) by :func:`_numeric_texts`, a UUID's lower
 #: case. An instant's has its own (:func:`stored_instants`, the copy's ``instants``)
 CANONICAL_CASTS: Final = frozenset({"numeric", "bigint", "uuid"})
 
 
 def canonical_texts(values: pa.ChunkedArray | pa.Array, cast: str) -> pa.ChunkedArray | pa.Array:
     """a key column held as text in its type's one spelling: a ``NUMERIC``'s (or an integer's) by
-    :func:`numeric_texts` (``1.50`` is ``1.5``), a UUID's lower-cased; a column of any other type as it is. In Arrow's
+    :func:`_numeric_texts` (``1.50`` is ``1.5``), a UUID's lower-cased; a column of any other type as it is. In Arrow's
     kernels alone, never a Python object a value.
 
     **Why** (3tears' copy, 2026-11-25). A lookup of the copy by key compared a NUMERIC or UUID held as text by value,
@@ -398,8 +400,68 @@ def canonical_texts(values: pa.ChunkedArray | pa.Array, cast: str) -> pa.Chunked
     :rtype: pa.ChunkedArray | pa.Array
     """
     if cast in ("numeric", "bigint"):
-        return numeric_texts(values)
+        return _numeric_texts(values)
     if cast == "uuid":
         lowered: pa.ChunkedArray | pa.Array = pc.utf8_lower(pc.cast(values, pa.string()))
         return lowered
     return values
+
+
+def _compared(
+    column: pa.ChunkedArray | pa.Array, cast: str | None, held: pa.DataType, *, asked: bool
+) -> pa.ChunkedArray | pa.Array:
+    """a key column as a lookup compares it: an asked key's or a held row's.
+
+    A column held typed (an integer, a decimal, a boolean) is compared as it is held, the asked keys cast to its type
+    (:func:`rows_named`, Arrow's cast). A column held as text whose type is not text is compared by value, as
+    the copy's read by key compared it in SQL cast to the column's type (``FollowedTable.held_key``): the asked keys in
+    the one spelling the copy stores (:func:`canonical_texts`: a NUMERIC's ``1.50`` is ``1.5``, a UUID lower-cased;
+    an instant's :func:`stored_instants`), and the held column as it is, never respelled.
+
+    **Why only the asked side** (2026-11-25). Respelled on both sides, every lookup rewrote the held column across the
+    whole part it probed, a cost of the part's rows, not the keys'. The copy now stores that spelling once, as each
+    change is applied (``collections.shared_copy.SharedCopyBackend``'s ``canonical`` and ``instants``), so a
+    lookup's cost is its keys'. In Arrow's kernels alone, never a Python object a key.
+
+    :param column: the column
+    :ptype column: pa.ChunkedArray | pa.Array
+    :param cast: the column's SQL type; None compares it as it is
+    :ptype cast: str | None
+    :param held: the copy's Arrow type of the column
+    :ptype held: pa.DataType
+    :param asked: whether the column is the asked keys' (else the copy's rows')
+    :ptype asked: bool
+    :return: the column as compared
+    :rtype: pa.ChunkedArray | pa.Array
+    """
+    if not asked or cast is None or not (pa.types.is_string(held) or pa.types.is_large_string(held)):
+        return column
+    if cast in CANONICAL_CASTS:
+        return canonical_texts(column, cast)
+    if cast == "timestamptz":
+        return stored_instants(column)
+    return column
+
+
+def rows_found(rows: pa.Table, keys: pa.Table, key: Sequence[str], casts: Mapping[str, str] = EMPTY) -> pa.Table:
+    """the rows of ``rows`` whose key ``keys`` names, in their order in ``rows`` (Arrow's hash kernels, no Python
+    object a key), each key column compared as :func:`_compared` compares it.
+
+    :param rows: the rows looked in
+    :ptype rows: pa.Table
+    :param keys: the keys looked for
+    :ptype keys: pa.Table
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :param casts: each key column's SQL type, for a column held as text compared by value; others as they are
+    :ptype casts: Mapping[str, str]
+    :return: the rows found, as the copy holds them
+    :rtype: pa.Table
+    """
+    held = rows.select(list(key))
+    asked = keys.select(list(key))
+    for at, column in enumerate(key):
+        kind = held.schema.field(column).type
+        held = held.set_column(at, column, _compared(held.column(column), casts.get(column), kind, asked=False))
+        asked = asked.set_column(at, column, _compared(asked.column(column), casts.get(column), kind, asked=True))
+    return rows.take(pa.array(rows_named(held, asked, key)))

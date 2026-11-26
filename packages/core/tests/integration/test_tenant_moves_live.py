@@ -28,7 +28,7 @@ from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, stamped_values
 from threetears.core.collections.table_restore import TableChanges, restored_tables
 from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA, clear_moves
-from threetears.core.ddl.epoch_catalog import MovesTableMissingError, refuse_moveable_without_moves
+from threetears.core.ddl.epoch_catalog import refuse_moveable_without_moves
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, ROW_STAMPED, next_epoch
 from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.keyed import update_keyed
@@ -169,6 +169,6 @@ async def test_the_start_check_passes_beside_the_moves_table_and_refuses_without
     holds the moves table, or passes one whose schema lost it."""
     await refuse_moveable_without_moves(held.pool, held.schema)
     await held.pool.execute(f"DROP TABLE {TENANT_MOVES_TABLE}")
-    with pytest.raises(MovesTableMissingError) as refused:
+    with pytest.raises(RuntimeError, match="REFUSED: a moveable stamped table") as refused:
         await refuse_moveable_without_moves(held.pool, held.schema)
-    assert refused.value.found == (f"{held.schema}.{_TABLE} (moveable: customer_id, office)",)
+    assert f"  - {held.schema}.{_TABLE} (moveable: customer_id, office)\n" in str(refused.value)

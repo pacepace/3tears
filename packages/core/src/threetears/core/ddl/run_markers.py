@@ -19,7 +19,7 @@ request carrying the epoch), on a direct connection 3tears' ``SqlL3Backend.delet
 :func:`run_marker_insert_sql`, so the text form of every value is the database's own. Its declaration, the table's DDL
 for Postgres and YugabyteDB, is :data:`threetears.core.collections.run_markers.RUN_MARKERS_SCHEMA`.
 
-**A table reset is one row too** (:func:`table_reset_marker_sql`). A ``TRUNCATE`` (an operator's reset, a
+**A table reset is one row too** (:func:`_table_reset_marker_sql`). A ``TRUNCATE`` (an operator's reset, a
 super-admin's) leaves no row for a restore or the writers' backstop to read ``epoch >= X`` from, and since the
 change-note ring retired (0.95) no note says so. So whatever resets a table that carries an epoch writes, before its
 ``TRUNCATE`` and on the same connection, the table's reset marker: ``scope`` :data:`TABLE_RESET_SCOPE` and an empty
@@ -44,10 +44,8 @@ __all__ = [
     "RUN_MARKERS_TABLE",
     "RUN_MARKER_COLUMNS",
     "TABLE_RESET_SCOPE",
-    "TableResetUnrecordedError",
     "record_table_reset",
     "run_marker_insert_sql",
-    "table_reset_marker_sql",
 ]
 
 #: the run-marker table, in the same schema as the versioned tables it marks
@@ -107,7 +105,7 @@ def run_marker_insert_sql(declared: Sequence[str], scope_position: int, *, table
     )
 
 
-def table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
+def _table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
     """the statement that writes one table's reset marker: ``$1`` the table reset, ``$2`` the reset's epoch; its scope
     :data:`TABLE_RESET_SCOPE`, its prefix empty (the whole table).
 
@@ -123,7 +121,7 @@ def table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
     return f"INSERT INTO {table} ({', '.join(RUN_MARKER_COLUMNS)}) VALUES ($1, chr({ord(TABLE_RESET_SCOPE)}), '', $2)"
 
 
-class TableResetUnrecordedError(RuntimeError):
+class _TableResetUnrecordedError(RuntimeError):
     """a reset of a table that carries an epoch, refused before its ``TRUNCATE``: its schema holds no run-marker table,
     so nothing could say the table was emptied, and a restore or the writers' backstop would never hear it."""
 
@@ -145,7 +143,7 @@ WHERE c.oid = to_regclass($1)
 
 
 async def record_table_reset(conn: Any, table: str, epoch: int) -> bool:
-    """write ``table``'s reset marker (:func:`table_reset_marker_sql`) at ``epoch``, before its ``TRUNCATE``, on the
+    """write ``table``'s reset marker (:func:`_table_reset_marker_sql`) at ``epoch``, before its ``TRUNCATE``, on the
     connection that runs it: a restore, the writers' backstop and a keys-unknown page then hear the whole table cleared.
 
     A table that carries no restore declaration is read back by no restore, so nothing is written for it. A table that
@@ -164,14 +162,14 @@ async def record_table_reset(conn: Any, table: str, epoch: int) -> bool:
     :ptype epoch: int
     :return: whether a marker was written
     :rtype: bool
-    :raises TableResetUnrecordedError: when the table carries an epoch and its schema holds no run-marker table
+    :raises _TableResetUnrecordedError: when the table carries an epoch and its schema holds no run-marker table
     """
     rows = await conn.fetch(_RESET_TARGET_SQL, table, f'{{"{RESTORE_DECLARATION_MARK}":%')
     if not rows or not rows[0]["declared"]:
         return False
     schema = str(rows[0]["table_schema"])
     if not rows[0]["run_markers"]:
-        raise TableResetUnrecordedError(
+        raise _TableResetUnrecordedError(
             f"refusing to reset {table}: it carries an epoch (a restore reads it back from its rows), and its schema "
             f"{schema!r} holds no {RUN_MARKERS_TABLE} table to record the reset in, so a restore after a NATS loss and "
             f"the writers' backstop would never hear the table emptied. Fix: create the run-marker table in "
@@ -179,5 +177,5 @@ async def record_table_reset(conn: Any, table: str, epoch: int) -> bool:
             f"migration that creates the table, then reset again"
         )
     quoted = '"' + schema.replace('"', '""') + '".' + RUN_MARKERS_TABLE
-    await conn.execute(table_reset_marker_sql(table=quoted), str(rows[0]["table_name"]), epoch)
+    await conn.execute(_table_reset_marker_sql(table=quoted), str(rows[0]["table_name"]), epoch)
     return True
