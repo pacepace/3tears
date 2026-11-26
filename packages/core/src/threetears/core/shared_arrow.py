@@ -1681,7 +1681,7 @@ class _KeptVersions:
     job reads is never revoked from under it; a mapping a job held while it was superseded is moved on as the job
     ends (:meth:`give_back`), before its lease goes.
 
-    Why move at once (Pace, 2026-11-26), not only when the store is short of room as before (e1c5cacb4): an idle
+    Why move at once (Pace, 2026-11-26), not only when the store is short of room as before (2026-11-15): an idle
     worker kept the version it read last until its next job or an eviction, so every pod held one superseded version
     more than it reads -- the files of every change since that worker's last job, bounded by nothing but the store's
     budget. Moved at once, a pod holds only what is current and what a job is reading. The move costs the worker what
@@ -4191,10 +4191,10 @@ class SharedArrowStore:
 
         Why evict this way: every superseded version is revoked as a sweep finds it held only cached
         (:meth:`sweep`), so there is no choice of which to let go and nothing kept for later to let go first: what
-        e1c5cacb4 evicted here, least recently used first, is now let go at every publish (Pace, 2026-11-26). What is
-        left of eviction is this wait: a write that arrives while idle workers are still moving onto the version
-        published just before it (cobalt prod, 2026-11-04: every change refused from 14:16Z for room superseded
-        versions held) waits for the let-go in flight instead of being refused.
+        the 2026-11-15 eviction let go here, least recently used first, is now let go at every publish (Pace,
+        2026-11-26). What is left of eviction is this wait: a write that arrives while idle workers are still moving
+        onto the version published just before it (cobalt prod, 2026-11-04: every change refused from 14:16Z for room
+        superseded versions held) waits for the let-go in flight instead of being refused.
 
         :return: whether a version was retired meanwhile, so the room is worth asking again; False when none was
         :rtype: bool
