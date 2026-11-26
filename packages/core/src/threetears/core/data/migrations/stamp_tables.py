@@ -104,12 +104,18 @@ class StampingTable:
         as
     :ivar instants: the key columns that are ``timestamptz``, as the restore declaration names them
     :ivar tenancy: the table's tenancy kind and its tenant column, as the restore declaration names them
+    :ivar moveable: the columns a write may move its rows between tenants by (``TableSchema.moveable``), as the
+        restore declaration names them; none for most tables
+    :ivar columns: its declared invalidation columns (``TableSchema.invalidation_columns``), as the restore
+        declaration names them; none for most tables
     """
 
     name: str
     keys: tuple[tuple[str, str], ...]
     instants: tuple[str, ...] = ()
     tenancy: tuple[str, str | None] = ("undeclared", None)
+    moveable: tuple[str, ...] = ()
+    columns: tuple[str, ...] = ()
 
     @property
     def index(self) -> str:
@@ -145,7 +151,14 @@ def stamping_table_of(schema: Any) -> StampingTable:
         raise ValueError(f"stamping_table_of: {schema.name} is not declared ROW_STAMPED")
     keys = tuple((column, schema.bucket_hash_kind(column)) for column in schema.pk_columns)
     instants = tuple(column for column, kind in keys if kind == "timestamptz")
-    return StampingTable(schema.name, keys, instants, (schema.tenancy.kind, schema.tenancy.column))
+    return StampingTable(
+        schema.name,
+        keys,
+        instants,
+        (schema.tenancy.kind, schema.tenancy.column),
+        tuple(schema.moveable),
+        tuple(schema.invalidation_columns),
+    )
 
 
 async def on_yugabyte(store: Any) -> bool:
@@ -173,7 +186,9 @@ def bucket_statements(table: StampingTable, *, yugabyte: bool) -> tuple[str, ...
     """
     quoted = quote_identifier(table.name)
     expression = bucket_sql(tuple(key_hash_sql(quote_identifier(column), kind) for column, kind in table.keys))
-    declaration = stamped_restore_declaration(table.key_columns, table.instants, table.tenancy).replace("'", "''")
+    declaration = stamped_restore_declaration(
+        table.key_columns, table.instants, table.tenancy, table.moveable, table.columns
+    ).replace("'", "''")
     split = f" {bucket_split_sql()}" if yugabyte else ""
     return (
         f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {BUCKET_COLUMN} smallint "

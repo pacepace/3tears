@@ -34,9 +34,9 @@ log = get_logger(__name__)
 STAMPED_TABLES: Final[tuple[StampingTable, ...]] = (
     StampingTable("namespaces", (("row_scope", "text"), ("namespace_id", "uuid"))),
     StampingTable("groups", (("row_scope", "text"), ("group_id", "uuid"))),
-    StampingTable("group_members", (("group_id", "uuid"), ("id", "uuid"))),
+    StampingTable("group_members", (("group_id", "uuid"), ("id", "uuid")), columns=("member_type", "member_id")),
     StampingTable("roles", (("role_id", "uuid"),)),
-    StampingTable("role_assignments", (("row_scope", "text"), ("assignment_id", "uuid"))),
+    StampingTable("role_assignments", (("row_scope", "text"), ("assignment_id", "uuid")), columns=("group_id",)),
 )
 
 

@@ -792,9 +792,6 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
-    # a row's key names the group and the row, not the member whose cached group set it changes, so
-    # its broadcast carries the member too
-    invalidation_columns: ClassVar[tuple[str, ...]] = ("member_type", "member_id")
     primary_key_column: tuple[str, ...] = ("group_id", "id")
     partition_exempt_methods = frozenset(
         {
@@ -823,6 +820,9 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         # needs a scope its writer takes a turn at (ScopeEpochs), which no access write has. agent_acl v006 stamps it
         row_epoch=ROW_STAMPED,
         primary_key=("group_id", "id"),
+        # a row's key names the group and the row, not the member whose cached group set it changes, so its record
+        # carries the member too, live and restored (a table carrying an epoch names them here, not on its class)
+        invalidation_columns=("member_type", "member_id"),
         columns=[
             Column("id", UUID_TYPE),
             Column("group_id", UUID_TYPE, partition=True),
@@ -1439,9 +1439,6 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     # generation, so a pod following it notices a missed row broadcast, and the caches derived from
     # it (``AclCache``) are evicted row by row.
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
-    # a row's key names the assignment, not the group whose cached contribution it changes, so its
-    # broadcast carries the group too
-    invalidation_columns: ClassVar[tuple[str, ...]] = ("group_id",)
     primary_key_column: tuple[str, ...] = ("row_scope", "assignment_id")
     partition_exempt_methods = frozenset(
         {
@@ -1484,6 +1481,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         # either way, and versioning needs a scope its writer takes a turn at (ScopeEpochs), which no access write has. agent_acl v006 stamps it
         row_epoch=ROW_STAMPED,
         primary_key=("row_scope", "assignment_id"),
+        # a row's key names the assignment, not the group whose cached contribution it changes, so its record carries
+        # the group too, live and restored (a table carrying an epoch names them here, not on its class)
+        invalidation_columns=("group_id",),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("assignment_id", UUID_TYPE),
