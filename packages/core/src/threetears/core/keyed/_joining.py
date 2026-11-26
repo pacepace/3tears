@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from collections.abc import Hashable
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import date, datetime
 from decimal import Decimal
 from types import MappingProxyType
@@ -77,24 +78,32 @@ class Joined:
         :rtype: None
         """
         # frozen: each field set once, here, through object's own setter
-        for name in ("on", "columns", "casts", "counts"):
-            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
-        if self.by is not None:
-            object.__setattr__(self, "by", MappingProxyType(dict(self.by)))
+        for each in dataclass_fields(self):
+            value = getattr(self, each.name)
+            if isinstance(value, Mapping):
+                object.__setattr__(self, each.name, MappingProxyType(dict(value)))
+        # every field but the shape itself, each mapping as its items beside their types: derived from the fields, so
+        # a field added to Joined is in the shape without a line here (two joins differing in it never share one
+        # held statement)
         object.__setattr__(
             self,
             "shape",
-            (
-                self.table,
-                tuple(self.on.items()),
-                tuple(self.columns.items()),
-                self.left,
-                None if self.by is None else tuple((type(c), c, type(v), v) for c, v in self.by.items()),
-                self.matched,
-                tuple(self.casts.items()),
-                tuple(self.counts.items()),
-            ),
+            tuple((f.name, _field_shape(getattr(self, f.name))) for f in dataclass_fields(self) if f.name != "shape"),
         )
+
+
+def _field_shape(value: Any) -> Hashable:
+    """one field of a :class:`Joined` as its shape holds it: a mapping as its items, each key and value beside its
+    type (``1`` and ``True`` are written apart), anything else beside its type.
+
+    :param value: the field's value
+    :ptype value: Any
+    :return: the shape of it
+    :rtype: Hashable
+    """
+    if isinstance(value, Mapping):
+        return tuple((type(key), key, type(held), held) for key, held in value.items())
+    return (type(value), value)
 
 
 #: a Python value's SQL type, for an ``on`` column given no cast

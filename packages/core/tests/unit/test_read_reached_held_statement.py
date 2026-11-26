@@ -7,6 +7,7 @@ and took the set over its bar of twice the statement it replaced; the text is th
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from typing import Any
 
@@ -92,3 +93,64 @@ async def test_a_pin_written_otherwise_is_another_shape(db: duckdb.DuckDBPyConne
     assert "IS NULL" in null[0] and "IS NULL" not in bound[0]
     assert narrower[1][0] == "u1"
     assert list(narrower[1][-1]) == ["b"]
+
+
+async def _walk_joined(conn: InlineDuckDB, join: Joined) -> list[dict[str, Any]]:
+    return await read_reached(
+        conn,
+        "members",
+        start={"member_type": Const("user"), "member_id": "u1"},
+        on="member_id",
+        to="group_id",
+        by={"member_type": Const("group")},
+        columns=("group_id",),
+        depth=2,
+        joins=[join],
+    )
+
+
+async def test_two_joins_differing_in_one_field_are_two_statements(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a field of a join is left out of the shape a held statement is keyed by: two walks would share one
+    text and the second read the first's join (an inner join answered as a left one, a literal pin as another)."""
+    conn, sent = _recorded(db)
+    on, columns = {"group_id": "group_id"}, {"grant_id": "grant_id"}
+    left = await _walk_joined(conn, Joined("grants", on=on, columns=columns, left=True))
+    inner = await _walk_joined(conn, Joined("grants", on=on, columns=columns, left=False))
+    only_b = await _walk_joined(conn, Joined("grants", on=on, columns=columns, by={"scope": Const("b")}, left=True))
+    texts = [sql for sql, _ in sent]
+    assert len(set(texts)) == 3, texts
+    assert sorted(row["grant_id"] for row in left) == ["x1", "x2"]
+    assert sorted(row["grant_id"] for row in inner) == ["x1", "x2"]
+    assert sorted((row["group_id"], row["grant_id"]) for row in only_b) == [("g1", None), ("g2", "x2")]
+
+
+def test_every_field_of_a_join_is_in_its_shape() -> None:
+    """Flips if a field added to Joined is not in its shape, whatever its kind."""
+    base = Joined("grants", on={"group_id": "group_id"}, columns={"grant_id": "grant_id"})
+    changed: dict[str, Any] = {
+        "table": "other",
+        "on": {"group_id": "other_id"},
+        "columns": {"grant_id": "scope"},
+        "left": True,
+        "by": {"scope": "a"},
+        "matched": "live",
+        "casts": {"group_id": "text"},
+        "counts": {"n": None},
+    }
+    fields = {each.name for each in dataclasses.fields(Joined)} - {"shape"}
+    assert fields == set(changed), "a field of Joined has no case here"
+    for name, value in changed.items():
+        assert dataclasses.replace(base, **{name: value}).shape != base.shape, name
+
+
+def test_a_joins_mappings_are_its_own_and_read_only() -> None:
+    """Flips if a caller's dict changed after the join is built reaches the join (its shape no longer its SQL), or a
+    join's mapping can be changed in place."""
+    on = {"group_id": "group_id"}
+    join = Joined("grants", on=on, columns={"grant_id": "grant_id"})
+    shape = join.shape
+    on["group_id"] = "other_id"
+    assert dict(join.on) == {"group_id": "group_id"}
+    assert join.shape == shape
+    with pytest.raises(TypeError):
+        join.on["group_id"] = "other_id"  # type: ignore[index]
