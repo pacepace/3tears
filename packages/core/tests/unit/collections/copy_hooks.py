@@ -307,3 +307,63 @@ class VoteTotals:
         """
         totals = _vote_totals(applied.table("votes"), "whole")
         return DerivedPages(pages=[ChangePage(ROWS, VOTE_TOTALS, totals)], whole=frozenset({VOTE_TOTALS}))
+
+
+#: the lane's whole-settle test's derived table, per run (``PartRule.run_column``): each results state's runs
+RUNS = "runs"
+RUNS_SCHEMA = pa.schema(
+    [
+        pa.field("state", pa.string()),
+        pa.field("run_id", pa.int64()),
+        pa.field("candidate_id", pa.int64()),
+        pa.field("votes", pa.int64()),
+    ]
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WholeRuns:
+    """derives nothing on a change, and at a whole settle :data:`RUNS`' runs ``1..runs`` of every state ``source``
+    holds, replacing the table whole (a ``WholeHooks``): parts of a per-run table, so the settle makes a tier merge
+    due (``ApplyLane``'s merges)."""
+
+    source: str = "votes"
+    runs: int = 2
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """nothing: the runs are the whole settle's.
+
+        :param applied: what the change did
+        :ptype applied: AppliedTables
+        :return: no pages
+        :rtype: Sequence[ChangePage]
+        """
+        return []
+
+    def derive_whole(self, applied: AppliedTables) -> DerivedPages:
+        """every state's runs.
+
+        :param applied: the version read whole
+        :ptype applied: AppliedTables
+        :return: the runs, replacing the table whole
+        :rtype: DerivedPages
+        """
+        states = sorted(set(applied.table(self.source)["state"].to_pylist()))
+        pages = [
+            ChangePage(
+                ROWS,
+                RUNS,
+                pa.table(
+                    {
+                        "state": pa.array([state] * 20, pa.string()),
+                        "run_id": pa.array([run] * 20, pa.int64()),
+                        "candidate_id": pa.array(np.arange(20), pa.int64()),
+                        "votes": pa.array(np.full(20, run), pa.int64()),
+                    },
+                    schema=RUNS_SCHEMA,
+                ),
+            )
+            for state in states
+            for run in range(1, self.runs + 1)
+        ]
+        return DerivedPages(pages=pages, whole=frozenset({RUNS}))

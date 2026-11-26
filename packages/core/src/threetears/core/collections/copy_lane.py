@@ -37,6 +37,12 @@ applied again over the reload in its one publish (reports' decision 52: a change
 its full after the swap), so no version shows the reload without them. A reload whose publish fails, or that was
 cancelled, publishes nothing and fails no change behind it: the copy is whole without it.
 
+**A whole settle** (``SharedCopyBackend.settle_whole``, after a start that read L3 whole) is a step of this lane too
+(:meth:`ApplyLane.settle_whole`): it publishes in its place in the order, after the changes given before it and before
+those given after it, and a tier merge it makes due runs before the next change, as a change's does. Its caller hears
+its failure; it publishes nothing and fails no change behind it (each applies as before, with nothing derived, and the
+caller asks the settle again).
+
 **State.** The queue is a tuple replaced whole, read and written on the event loop alone, under the lane's condition;
 counters are ints of this object, written only by its task.
 """
@@ -180,6 +186,7 @@ class LaneStatus:
     :ivar waits: submits that waited for room
     :ivar last_error: the last failure, as text; None for none
     :ivar reloads: reloads published (not counted in ``applied``)
+    :ivar settles: whole settles published (not counted in ``applied``)
     """
 
     queued: int
@@ -191,6 +198,7 @@ class LaneStatus:
     waits: int
     last_error: str | None
     reloads: int = 0
+    settles: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +212,8 @@ class _Change:
     seq: int = 0
     #: a reload's publish in place of a change; None for a change
     reload: ReloadStep | None = None
+    #: a whole settle in place of a change: its outcome (``done`` is then never set); None for a change
+    settle: asyncio.Future[Applied | None] | None = None
 
 
 class ApplyLane:
@@ -257,6 +267,7 @@ class ApplyLane:
         #: the reloads' watches: replaced whole, on the loop
         self._watches: tuple[ChangeWatch, ...] = ()
         self._reloads = 0
+        self._settles = 0
 
     def status(self) -> LaneStatus:
         """what the lane holds and has done.
@@ -274,6 +285,7 @@ class ApplyLane:
             waits=self._waits,
             last_error=self._last_error,
             reloads=self._reloads,
+            settles=self._settles,
         )
 
     def _room(self, nbytes: int) -> bool:
@@ -282,20 +294,28 @@ class ApplyLane:
         return len(self._queue) < self._max_changes and self._queued_bytes + nbytes <= self._max_bytes
 
     def _change(
-        self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None, reload: ReloadStep | None = None
+        self,
+        pages: Sequence[ChangePage],
+        whole: Collection[str],
+        mark: int | None,
+        reload: ReloadStep | None = None,
+        *,
+        settle: bool = False,
     ) -> _Change:
         if self._closing:
             raise RuntimeError("the copy's apply lane is closed")
         held = tuple(pages)
         self._given += 1
+        loop = asyncio.get_running_loop()
         return _Change(
             pages=held,
             whole=frozenset(whole),
             mark=mark,
             nbytes=sum(page.rows.nbytes for page in held),
-            done=asyncio.get_running_loop().create_future(),
+            done=loop.create_future(),
             seq=self._given,
             reload=reload,
+            settle=loop.create_future() if settle else None,
         )
 
     def watch(self, tables: Collection[str], *, max_bytes: int) -> ChangeWatch:
@@ -335,6 +355,22 @@ class ApplyLane:
         :raises RuntimeError: when the lane is closed
         """
         return await self._submitted(self._change((), (), step.mark, step))
+
+    async def settle_whole(self) -> Applied | None:
+        """settle the whole copy (``SharedCopyBackend.settle_whole``) in its place in the order, waiting for room as
+        :meth:`submit`, and wait for its publish; a tier merge it makes due runs before the next change.
+
+        :return: what it published; None when the copy holds no version yet
+        :rtype: Applied | None
+        :raises RuntimeError: when the lane is closed
+        :raises Exception: why the settle failed (:class:`ApplyWorkerDied`, the backend's own)
+        """
+        change = self._change((), (), None, settle=True)
+        settled = change.settle
+        assert settled is not None  # noqa: S101 -- made with settle=True
+        await self._submitted(change)
+        # shielded: a caller that stops waiting leaves the settle in its place, published in order all the same
+        return await asyncio.shield(settled)
 
     def _queued(self, change: _Change) -> asyncio.Future[Applied]:
         """take a change into the queue (under ``_changed``, room checked) and wake the lane."""
@@ -501,6 +537,9 @@ class ApplyLane:
         if change.reload is not None:
             await self._publish_reload(change, change.reload)
             return
+        if change.settle is not None:
+            await self._settle_whole(change.settle)
+            return
         try:
             applied = await self._applied_once_more(change)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the caller hears it through its future
@@ -581,6 +620,43 @@ class ApplyLane:
         if not change.done.done():
             change.done.set_result(applied)
 
+    async def _settle_whole(self, settled: asyncio.Future[Applied | None]) -> None:
+        """a whole settle in its turn; its tier merge made due as a change's. A failure fails no change behind it."""
+        try:
+            applied = await self._settled_once_more()
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the settle's caller hears it through its future; the copy is whole without it
+            self._failed += 1
+            self._last_error = f"a whole settle: {type(exc).__name__}: {exc}"
+            contain(exc, log=log, what="a whole settle of the copy failed; nothing of it published", level="error")
+            if not settled.done():
+                settled.set_exception(exc)
+            return
+        except BaseException:
+            if not settled.done():
+                settled.set_exception(
+                    RuntimeError("the copy's apply lane stopped while settling the copy whole; it may be published")
+                )
+            raise
+        if applied is not None:
+            self._settles += 1
+            self._merge_after(applied)
+        if not settled.done():
+            settled.set_result(applied)
+
+    async def _settled_once_more(self) -> Applied | None:
+        """the whole settle; given once more to a fresh apply worker when its worker died."""
+        for attempt in range(2):
+            try:
+                return await self._backend.settle_whole()
+            except BrokenProcessPool as died:
+                self._restarts += 1
+                if attempt:
+                    raise ApplyWorkerDied(
+                        "the copy's apply worker died settling the copy whole, and again in a fresh worker"
+                    ) from died
+                log.warning("the copy's apply worker died settling the copy whole; a fresh one settles it once more")
+        raise AssertionError("unreachable")
+
     async def _reload_once_more(self, step: ReloadStep, mark: int | None) -> Applied:
         """a reload's publish; given once more to a fresh apply worker when its worker died."""
         watch = step.watch
@@ -636,5 +712,7 @@ class ApplyLane:
         self._queued_bytes = 0
         for change in queued:
             self._failed += 1
-            if not change.done.done():
-                change.done.set_exception(error())
+            # a whole settle's caller waits on its own outcome, never on ``done``
+            outcome = change.done if change.settle is None else change.settle
+            if not outcome.done():
+                outcome.set_exception(error())

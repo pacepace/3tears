@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a copy's whole settle is a step of its apply lane
+
+**Fixed:** `SharedCopyStages.settle_whole` called `SharedCopyBackend.settle_whole` directly, past the `ApplyLane`: a
+tier merge it made due waited for the next change's, and its order against queued changes rested on the backend's
+apply lock alone. It now runs as `ApplyLane.settle_whole`, an ordered step of the lane: after the changes given before
+it and before those given after it, a merge it makes due run before the next change as a change's is, a dead apply
+worker given it once more, and a failure heard by its caller (the follower's pass) with no change behind it failed.
+`LaneStatus.settles` counts them.
+
 ### core: a follower on the worker backend settles its copy whole after a start that read L3 whole
 
 **Added:** the whole settle wired into `CopyFollower`'s start (R-1 of `design-copy-worker-backend.md`; reports'

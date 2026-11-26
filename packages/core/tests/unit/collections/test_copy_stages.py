@@ -14,7 +14,9 @@
   (decision 52);
 - with hooks that derive whole, a start that read L3 whole defers the hooks, and the first pass labelled with a
   stamp settles the copy whole (``SharedCopyBackend.settle_whole``) through the stages; a failed whole settle fails
-  the pass and the next one settles; changes after it derive as they apply.
+  the pass and the next one settles; changes after it derive as they apply;
+- the whole settle is a step of the apply lane: a tier merge it makes due has its turn with no change after it, and a
+  change given while it waits its turn applies after it.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from threetears.core.collections.copy_follower import _reload_stage as reload_st
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.collections.copy_parts import PartRule  # noqa: E402
-from threetears.core.collections.shared_copy import MARK_TABLE  # noqa: E402
+from threetears.core.collections.shared_copy import MARK_TABLE, ROWS, ChangePage  # noqa: E402
 from threetears.core.testing.published_copy import SharedCopy  # noqa: E402
 from packages.core.tests.copy_workers_support import COPY_WORKERS  # noqa: E402
 from packages.core.tests.unit.collections import copy_hooks, copy_query_jobs  # noqa: E402
@@ -615,3 +617,83 @@ async def test_a_start_from_a_checkpoint_defers_nothing_and_asks_no_whole_settle
     lock.version += 1
     assert await follower.catch_up()
     assert second.rows(copy_hooks.VOTE_TOTALS) == [("VA", 12, "change")]
+
+
+def _vote_page(*rows: tuple[str, int, int]) -> ChangePage:
+    """a rows page of the followed votes table."""
+    states, geos, votes = zip(*rows, strict=True)
+    return ChangePage(
+        ROWS,
+        _TABLE,
+        pa.table(
+            {
+                "state": pa.array(states, pa.string()),
+                "geo_id": pa.array(geos, pa.int64()),
+                "votes": pa.array(votes, pa.int64()),
+            }
+        ),
+    )
+
+
+async def test_a_whole_settle_is_a_step_of_the_apply_lane_its_merge_run_and_a_change_behind_it_applied_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if the stages' whole settle went past the apply lane: a settle that makes a tier merge due (it writes a
+    per-run table's parts) gets that merge's turn with no change after it, and a change given while a settle waits
+    its turn applies after it, the settle's merge between them."""
+    runs = PartRule(copy_hooks.RUNS, ("state", "run_id", "candidate_id"), scope_column="state", run_column="run_id")
+    shared = await SharedCopy(
+        [_FOLLOWED],
+        derived={copy_hooks.RUNS: (copy_hooks.RUNS_SCHEMA, runs)},
+        hooks=copy_hooks.WholeRuns(),
+        preload=(copy_hooks.__name__,),
+    ).started()
+    stages, backend = shared.copy, shared.copy.backend
+    order: list[str] = []
+    gate = asyncio.Event()
+    gate.set()
+    settle_whole, apply, merge = backend.settle_whole, backend.apply, backend.merge
+
+    async def gated_settle() -> Any:
+        order.append("settle")
+        await gate.wait()
+        return await settle_whole()
+
+    async def spied_apply(*args: Any, **kwargs: Any) -> Any:
+        order.append("apply")
+        return await apply(*args, **kwargs)
+
+    async def spied_merge() -> Any:
+        order.append("merge")
+        return await merge()
+
+    monkeypatch.setattr(backend, "settle_whole", gated_settle)
+    monkeypatch.setattr(backend, "apply", spied_apply)
+    monkeypatch.setattr(backend, "merge", spied_merge)
+    await stages.lane.apply([_vote_page(("VA", 1, 1), ("NC", 1, 2))])
+    assert stages.defer_settles_until_whole()
+    order.clear()
+    settled = await stages.settle_whole()
+    assert settled is not None and copy_hooks.RUNS in settled.parts
+    await stages.lane.drained()
+    # the merge the settle made due had its turn, with no change after it
+    assert order == ["settle", "merge"]
+    assert stages.lane.status().settles == 1
+    # a change given while a settle waits its turn applies after it, the settle's merge between them
+    order.clear()
+    gate.clear()
+    settling = asyncio.create_task(stages.settle_whole())
+    for _ in range(1_000):  # 10 s at most for the settle to take its turn
+        if order:
+            break
+        await asyncio.sleep(0.01)
+    change = await stages.lane.submit([_vote_page(("VA", 1, 9))])
+    await asyncio.sleep(0.05)
+    assert order == ["settle"]  # the change waits its turn behind the settle
+    gate.set()
+    again = await settling
+    applied = await change
+    assert again is not None and order == ["settle", "merge", "apply"]
+    assert int(applied.version.removeprefix("c-")) > int(again.version.removeprefix("c-"))
+    assert sorted(shared.rows(_TABLE)) == [("NC", 1, 2), ("VA", 1, 9)]
+    assert stages.lane.status().settles == 2

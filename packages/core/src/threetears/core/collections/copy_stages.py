@@ -41,7 +41,8 @@ whole) and any change the reload lane cannot take apply as an ordinary change th
 (``shared_copy.WholeHooks``), the follower's start tells this backend it read L3 whole
 (:meth:`SharedCopyStages.defer_settles_until_whole`): the backend applies each change with nothing derived
 (``SharedCopyBackend.defer_hooks_until_whole``) until the follower's first pass labelled with one stamp asks
-:meth:`SharedCopyStages.settle_whole`, which derives every scope at once in the apply worker as one publish.
+:meth:`SharedCopyStages.settle_whole`, which derives every scope at once in the apply worker as one publish, a step of
+the apply lane in its place in the order (``ApplyLane.settle_whole``).
 
 **Calls and state.** The staging methods are called on threads (the follower's ``asyncio.to_thread``); they replace
 the stages, a read-only mapping of read-only stages, whole under a lock, and nothing else: no CPU, no IO. The apply and
@@ -441,14 +442,15 @@ class SharedCopyStages:
         return True
 
     async def settle_whole(self) -> Applied | None:
-        """settle the whole copy in the apply worker as one publish (``SharedCopyBackend.settle_whole``), under the
-        backend's apply turn, so no change of the lane lands between. On the event loop.
+        """settle the whole copy in the apply worker as one publish (``SharedCopyBackend.settle_whole``), as a step of
+        the apply lane (``ApplyLane.settle_whole``): after the changes given before it, before those given after it,
+        and a tier merge it makes due run before the next change, as a change's. On the event loop.
 
         :return: what it published; None when the copy holds no version yet
         :rtype: Applied | None
         :raises ValueError: as ``SharedCopyBackend.settle_whole``
         """
-        return await self._backend.settle_whole()
+        return await self._lane.settle_whole()
 
     async def _published(self, prepared: _Prepared, names: frozenset[str], mark: int | None) -> int:
         """a prepared reload's publish, with ``mark``; its stages dropped however it ends (its pages went with it)."""
