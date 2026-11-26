@@ -58,16 +58,29 @@ copy holds as the rail's text) are kept in their type's one spelling (``arrow_ke
 changes through :class:`~threetears.core.collections.copy_lane.ApplyLane`, which orders them, bounds them, schedules
 the merges and replaces a dead worker.
 
-**Product behaviour stays behind a seam.** :class:`ApplyHooks` (``derive``) runs in the worker after the change is
-applied, sees the applied tables (:class:`AppliedTables`), and returns changes to tables of its own (a product's
-derived tables: reports' settle) applied into the same result, so they land in the change's publish.
+**Product behaviour stays behind a seam** (reports' settle and retention, R-1 of ``design-copy-worker-backend.md``).
+:class:`ApplyHooks` (``derive``) runs in the worker after the change is applied. It sees what the change did and the
+version with it applied (:class:`AppliedTables`: the rows upserted, the keys deleted and the rows they named as held,
+the scopes touched, and :meth:`AppliedTables.table`, a read of any table in place, never a DuckDB connection in the
+serving process), and returns (:class:`DerivedPages`) changes to tables of its own (a product's derived tables)
+applied into the same result, so they land in the change's publish, and rows to let go (:class:`LetGoRows`, by key or by any of a
+table's columns: a whole run, inside a pack too), published as a version of their own right after the change's in the
+same apply turn. :class:`WholeHooks` adds ``derive_whole``: after a start that read L3 whole,
+:meth:`SharedCopyBackend.defer_hooks_until_whole` applies changes with no ``derive`` until
+:meth:`SharedCopyBackend.settle_whole` derives every scope at once, its let-go in the same publish.
 :class:`MergePolicy` picks a per-run table's tier merge (:class:`ByCount` by default; reports merges its LSF runs by
-their retention's ages). Both are module-level objects, pickled to the worker by name.
+their retention's ages), seeing each run's time and model from the table :class:`RunTimes` names. All are module-level
+objects, pickled to the worker by name.
+
+**Parts follow the declared scope as tables grow.** Given ``declared`` (``copy_parts.PartDeclaration``), the copy sizes
+its tables after each change's publish and holds each by the rule its size names (``copy_parts.part_rules``): a table
+crossing ``SPLIT_FLOOR_BYTES`` is cut by its scope from the next change to it, with no table list written by hand.
 
 **Moved from reports** (``aibots_reports.pod.follower_parts`` and ``shared_backend``): the part rewrite (``_part_rows``,
 ``_in_place``, ``_in_key_order``), tiers and their merge by count, ``held_parts``, ``file_name``, the change's publish
-on its base with its mark (:data:`MARK_TABLE`). Not moved: reports' settle, retention (``LetGo``, let-go drops), held
-runs and its DuckDB staging (the follower's page-by-page staging API is wired to this apply in a later step).
+on its base with its mark (:data:`MARK_TABLE`), the let-go drop (``drop_let_go``, now :class:`LetGoRows`), the whole
+settle (``settle_whole``, ``defer_settles_until_whole``) and the run times a merge sees (``_run_times``). Not moved:
+reports' settle and retention policy themselves (its hooks) and its DuckDB staging.
 """
 
 from __future__ import annotations
@@ -78,7 +91,7 @@ import re
 from collections.abc import Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, runtime_checkable
 
 import numpy as np
 import pyarrow as pa
@@ -99,6 +112,7 @@ from threetears.core.collections.copy_parts import (
     PACK_TARGET_BYTES,
     WHOLE_PART,
     Locator,
+    PartDeclaration,
     PartRule,
     is_pack,
     pack_name,
@@ -121,7 +135,7 @@ from threetears.core.shared_arrow import (
     merged_rows,
     version_files,
 )
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "INDEX_PREFIXES",
@@ -131,19 +145,25 @@ __all__ = [
     "MAX_VERSION_FILES",
     "PACKED_PREFIX",
     "ROWS",
+    "RUNS_SCHEMA",
     "Applied",
     "AppliedTables",
     "ApplyPlan",
     "ApplyHooks",
     "ByCount",
     "ChangePage",
+    "DerivedPages",
+    "LetGoRows",
+    "LetGone",
     "MergePolicy",
     "Merged",
     "ReloadScope",
     "ReloadStale",
     "Reloaded",
+    "RunTimes",
     "SharedCopyBackend",
     "StagedReload",
+    "WholeHooks",
     "apply_job",
     "file_name",
     "held_parts",
@@ -259,7 +279,8 @@ class ChangePage:
 
 @dataclass(frozen=True, slots=True)
 class AppliedTables:
-    """what a change did, as :class:`ApplyHooks` sees it in the worker.
+    """what a change did, as :class:`ApplyHooks` sees it in the worker, and the version with the change applied, read
+    in place (:meth:`table`): a pinned handle of the worker's own, never a DuckDB connection in the serving process.
 
     :ivar root: the store's directory
     :ivar version: the version the change applied to; None for the first
@@ -269,6 +290,16 @@ class AppliedTables:
         written); a part the change dropped is absent
     :ivar reloaded: the tables a reload's publish replaced (:meth:`SharedCopyBackend.publish_reload`), whole or by
         scope: their parts are here, their reloaded rows are not in ``rows`` (only the changes applied over them)
+    :ivar deleted_rows: each changed table's rows the change deleted and wrote not again, as the version held them
+        (every column): a table replaced whole names none (it is read whole, :meth:`table`)
+    :ivar whole: the tables the change replaced whole (a whole change's, a whole reload's): read them from
+        :meth:`table`, their ``rows`` are only the change's
+    :ivar touched: the part names of the scope values the change wrote, deleted or reloaded, of every split table
+        (``copy_parts.part_name``: a plain value is its own name); None for every scope (a whole settle,
+        :meth:`SharedCopyBackend.settle_whole`)
+    :ivar files: the version's files with the reloads in place, before the change's own writes (read by :meth:`table`)
+    :ivar rules: each table's rule
+    :ivar schemas: each table's columns
     """
 
     root: str
@@ -277,37 +308,166 @@ class AppliedTables:
     deleted: Mapping[str, pa.Table]
     parts: Mapping[str, Mapping[str, pa.Table]]
     reloaded: frozenset[str] = frozenset()
+    deleted_rows: Mapping[str, pa.Table] = EMPTY
+    whole: frozenset[str] = frozenset()
+    touched: frozenset[str] | None = frozenset()
+    files: Mapping[str, Any] = EMPTY
+    rules: Mapping[str, PartRule] = EMPTY
+    schemas: Mapping[str, pa.Schema] = EMPTY
+
+    def table(self, table: str, scopes: Collection[str] | None = None) -> pa.Table:
+        """a table's rows as the version holds them with the change applied: its parts as the change leaves them,
+        mapped (never read into this process's memory but for the parts the change wrote).
+
+        :param table: the table
+        :ptype table: str
+        :param scopes: the scope values' part names whose rows are read (:attr:`touched`, say) of a split table; a
+            table held as one part is read whole. None for every row
+        :ptype scopes: Collection[str] | None
+        :return: the rows, in the table's schema
+        :rtype: pa.Table
+        :raises KeyError: for a table the copy does not hold
+        """
+        schema = self.schemas[table]
+        rule = self.rules[table]
+        if table in self.parts:
+            held: Mapping[str, Any] = self.parts[table]
+        else:
+            held = _parts_of(self.files, table)
+        wanted = None if scopes is None or not rule.split else frozenset(scopes)
+        chunks: list[pa.Table] = []
+        for part, source in sorted(held.items()):
+            if wanted is not None and not is_pack(part) and _scope_part(part) not in wanted:
+                continue
+            rows = source if isinstance(source, pa.Table) else _map(source, schema)
+            if wanted is not None and is_pack(part):
+                # a pack holds many scopes: only the asked scopes' rows of it
+                rows = rows.filter(pc.is_in(parts_of_keys(rule, rows), value_set=pa.array(sorted(wanted), pa.string())))
+            chunks.append(rows.select(schema.names).cast(schema))
+        return pa.concat_tables(chunks) if chunks else schema.empty_table()
+
+
+@dataclass(frozen=True, slots=True)
+class LetGoRows:
+    """rows a product's hook lets go of a table (a retention letting runs go): every held row equal to one of
+    :attr:`rows` on each of its columns (a null equal to a null) is deleted.
+
+    The columns are any of the table's: its whole key (rows let go by key), its scope column and run column (a run's
+    rows, a whole tier), or more (a run's rows of one group). A split table's parts are found by the scope column (and
+    the run column, a per-run table's) when the rows hold them, through its locator when they hold that, else every
+    part is matched. A part is rewritten without the matched rows, other rows of it kept (a pack's other scopes, a
+    tier's other runs); a part every row of which is let go is dropped.
+
+    :ivar table: the table
+    :ivar rows: the columns rows are matched on, a row a match
+    """
+
+    table: str
+    rows: pa.Table
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedPages:
+    """what :class:`ApplyHooks` derives from a change.
+
+    :ivar pages: pages to tables the change did not carry (a product's derived tables), applied into the change's own
+        result, so they land in its publish; a page to a table the change carried is dropped (its rows stand)
+    :ivar whole: the derived tables the pages replace whole (every row of them not in the pages goes)
+    :ivar let_go: rows let go (:class:`LetGoRows`) of any table, the change's own among them, published as a version
+        of their own right after the change's (a change's pages never wait on its let-go), under the same apply turn:
+        no change or merge lands between. A whole settle's are in its one publish (:meth:`SharedCopyBackend.
+        settle_whole`)
+    """
+
+    pages: Sequence[ChangePage] = ()
+    whole: frozenset[str] = frozenset()
+    let_go: Sequence[LetGoRows] = ()
 
 
 class ApplyHooks(Protocol):
     """a product's behaviour on each change, run in the apply worker (a module-level object, pickled by name).
 
     ``derive`` returns pages of further changes to tables the change did not carry (a product's derived tables),
-    applied into the same result, so they land in the change's own publish. A page to a table the change carried is
-    dropped: the change's rows of it stand.
+    applied into the same result, so they land in the change's own publish, and rows to let go after it
+    (:class:`DerivedPages`); a plain sequence of pages is a :class:`DerivedPages` of those pages alone. A page to a
+    table the change carried is dropped: the change's rows of it stand.
     """
 
-    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
-        """the derived tables' pages.
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage] | DerivedPages:
+        """the derived tables' pages, and what is let go.
 
-        :param applied: what the change did
+        :param applied: what the change did, and the version with it applied (:meth:`AppliedTables.table`)
         :ptype applied: AppliedTables
-        :return: pages to apply after it
-        :rtype: Sequence[ChangePage]
+        :return: pages to apply after it, or :class:`DerivedPages`
+        :rtype: Sequence[ChangePage] | DerivedPages
         """
         ...
+
+
+@runtime_checkable
+class WholeHooks(ApplyHooks, Protocol):
+    """hooks that also derive from the whole copy at once (:meth:`SharedCopyBackend.settle_whole`): the first settle
+    after a start that read L3 whole, every change before it applied with no ``derive``
+    (:meth:`SharedCopyBackend.defer_hooks_until_whole`)."""
+
+    def derive_whole(self, applied: AppliedTables) -> DerivedPages:
+        """the derived tables from every scope of the copy.
+
+        :param applied: the current version read whole (:meth:`AppliedTables.table`; ``touched`` None, no rows)
+        :ptype applied: AppliedTables
+        :return: the derived tables' pages, those replaced whole, and what is let go (in the same publish)
+        :rtype: DerivedPages
+        """
+        ...
+
+
+#: a merge policy's view of a scope's held runs (:class:`RunTimes`): each run once, by run, with its newest time
+#: (seconds since the epoch) and the model it was made by (null for none)
+RUNS_SCHEMA: Final = pa.schema(
+    [
+        pa.field("run", pa.int64(), nullable=False),
+        pa.field("at", pa.float64(), nullable=False),
+        pa.field("model", pa.string()),
+    ]
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RunTimes:
+    """where a copy's runs' times and models are held, so a :class:`MergePolicy` sees them: a table of the copy (a
+    product's held runs), a row a (scope value, run) and its time, maybe more than one (the newest wins).
+
+    :ivar table: the table
+    :ivar scope_column: its column of the scope value (as the per-run tables' scope column holds it)
+    :ivar run_column: its column of the run (an integer)
+    :ivar time_column: its column of the run's time: a timestamp, or an instant as text in any ISO spelling
+        (``arrow_keys.stored_instants``; one with no offset is read as UTC)
+    :ivar model_column: its column of the run's model; None for none
+    """
+
+    table: str
+    scope_column: str
+    run_column: str
+    time_column: str
+    model_column: str | None = None
 
 
 class MergePolicy(Protocol):
     """which of a scope's per-run parts merge next (a module-level object, pickled by name)."""
 
-    def due(self, rule: PartRule, parts: Sequence[tuple[int, int, int, str]]) -> tuple[int, Sequence[str]] | None:
+    def due(
+        self, rule: PartRule, parts: Sequence[tuple[int, int, int, str]], runs: pa.Table | None
+    ) -> tuple[int, Sequence[str]] | None:
         """the level merged from and its parts, neighbours of one level in name order; None when none is due.
 
         :param rule: the table's rule
         :ptype rule: PartRule
         :param parts: one scope's parts: each one's first run, last run, level and name, by first run
         :ptype parts: Sequence[tuple[int, int, int, str]]
+        :param runs: the scope's held runs (:data:`RUNS_SCHEMA`: each run's newest time and its model, by run), as the
+            version's :class:`RunTimes` table holds them; empty when it holds none of the scope's; None when the copy
+            names no such table
+        :ptype runs: pa.Table | None
         :return: the level and the group, or None
         :rtype: tuple[int, Sequence[str]] | None
         """
@@ -325,13 +485,17 @@ class ByCount:
 
     fan_out: int = _FAN_OUT
 
-    def due(self, rule: PartRule, parts: Sequence[tuple[int, int, int, str]]) -> tuple[int, Sequence[str]] | None:
+    def due(
+        self, rule: PartRule, parts: Sequence[tuple[int, int, int, str]], runs: pa.Table | None = None
+    ) -> tuple[int, Sequence[str]] | None:
         """the first ``fan_out`` neighbours of one level, the newest run aside.
 
         :param rule: the table's rule (not read)
         :ptype rule: PartRule
         :param parts: one scope's parts, by first run
         :ptype parts: Sequence[tuple[int, int, int, str]]
+        :param runs: the scope's held runs (not read: merged by count)
+        :ptype runs: pa.Table | None
         :return: the level and the group, or None
         :rtype: tuple[int, Sequence[str]] | None
         """
@@ -357,6 +521,12 @@ class Applied:
     :ivar worker: the process the apply ran in
     :ivar files: the files the version holds
     :ivar merge_due: whether a merge is due after it: small parts to pack, or more files than the bound
+    :ivar let_go: what the hooks let go of it, published right after it (:class:`DerivedPages`'s ``let_go``); None for
+        nothing let go, or a let-go that failed (said at ERROR: the copy keeps those rows until a later settle lets
+        them go again)
+    :ivar rules_changed: the tables whose rule the copy's declaration changed after this publish (they crossed the
+        split floor, :class:`~threetears.core.collections.copy_parts.PartDeclaration`): the next change to each cuts
+        it in its new shape
     """
 
     version: str
@@ -366,6 +536,22 @@ class Applied:
     worker: int
     files: int = 0
     merge_due: bool = False
+    let_go: LetGone | None = None
+    rules_changed: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class LetGone:
+    """what a change's hooks let go (:class:`DerivedPages`'s ``let_go``), published as a version of its own.
+
+    :ivar version: the version published; None when nothing held matched
+    :ivar parts: each table's parts written (True) or dropped (False)
+    :ivar rows: each table's rows the copy lost
+    """
+
+    version: str | None
+    parts: Mapping[str, Mapping[str, bool]]
+    rows: Mapping[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +631,7 @@ class ApplyPlan:
     :ivar unpacked: tables cut without packs (a per-scope reload's staging: its parts swap in by scope)
     :ivar canonical: each table and its key columns held as text in one spelling, with their SQL types
         (``arrow_keys.canonical_texts``)
+    :ivar run_times: where the runs' times the merges see are held (:class:`RunTimes`); None for none
     """
 
     root: str
@@ -460,6 +647,7 @@ class ApplyPlan:
     pack_target: int = PACK_TARGET_BYTES
     unpacked: frozenset[str] = frozenset()
     canonical: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    run_times: RunTimes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,6 +661,11 @@ class _Outcome:
     worker: int
     staged: tuple[tuple[str, str, str], ...] = ()
     pack_due: bool = False
+    #: each table's rows the hooks let go, held in the result as this name (never published as a part): what the
+    #: let-go publish after the change matches (:func:`_let_go_job`)
+    let_go: tuple[tuple[str, str], ...] = ()
+    #: each table's rows the copy lost to a let-go applied in this job (a whole settle's)
+    lost: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,6 +677,20 @@ class _MergePlan:
     pack_below: int = PACK_BELOW_BYTES
     pack_target: int = PACK_TARGET_BYTES
     max_files: int = MAX_VERSION_FILES
+    run_times: RunTimes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LetGoPlan:
+    """what :func:`_let_go_job` is told: the tables, and each table's let-go rows' file (the change's result's, held
+    open until this job is done)."""
+
+    root: str
+    schemas: tuple[tuple[str, pa.Schema], ...]
+    rules: tuple[tuple[str, PartRule], ...]
+    instants: tuple[tuple[str, frozenset[str]], ...]
+    canonical: tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
+    let_go: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,10 +724,35 @@ class _Tables:
     pack_target: int = PACK_TARGET_BYTES
     unpacked: frozenset[str] = frozenset()
     canonical: Mapping[str, Mapping[str, str]] = EMPTY
+    #: each scope's held runs (:data:`RUNS_SCHEMA`) by its part name, as the merges see them; None until read, or for no
+    #: :class:`RunTimes`
+    times: Mapping[str, pa.Table] | None = None
+    #: where the runs' times are held; None for none
+    run_times: RunTimes | None = None
 
     def packing(self, table: str) -> bool:
         """whether ``table``'s small scopes are packed as it is cut."""
         return self.rules[table].split and self.pack_below > 0 and table not in self.unpacked
+
+    @property
+    def merging(self) -> _Merges:
+        """the merges a whole change's runs land in, and the runs' times they see."""
+        return _Merges(self.merges, self.times)
+
+
+@dataclass(frozen=True, slots=True)
+class _Merges:
+    """a merge policy and the runs' times it sees, by scope part name (None for no :class:`RunTimes`)."""
+
+    policy: MergePolicy
+    times: Mapping[str, pa.Table] | None = None
+
+    def due(
+        self, rule: PartRule, scope: str, parts: Sequence[tuple[int, int, int, str]]
+    ) -> tuple[int, Sequence[str]] | None:
+        """the policy's merge due among a scope's parts, with its runs' times."""
+        runs = None if self.times is None else self.times.get(scope, RUNS_SCHEMA.empty_table())
+        return self.policy.due(rule, parts, runs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -665,7 +897,7 @@ def _tiers(held: Collection[str]) -> Mapping[str, tuple[tuple[int, int, str], ..
     return frozen((scope, tuple(sorted(parts))) for scope, parts in by_scope.items())
 
 
-def _merged_tiers(rule: PartRule, policy: MergePolicy, scope: str, runs: Sequence[int]) -> Mapping[str, str]:
+def _merged_tiers(rule: PartRule, policy: _Merges, scope: str, runs: Sequence[int]) -> Mapping[str, str]:
     """each level-0 part of a scope's runs and the part the tier merges leave it in: ``policy``'s merges, in turn,
     until none is due, as :meth:`SharedCopyBackend.merge` would make them one publish at a time.
 
@@ -676,8 +908,8 @@ def _merged_tiers(rule: PartRule, policy: MergePolicy, scope: str, runs: Sequenc
 
     :param rule: the table's rule
     :ptype rule: PartRule
-    :param policy: the merges
-    :ptype policy: MergePolicy
+    :param policy: the merges, and the runs' times they see
+    :ptype policy: _Merges
     :param scope: the scope value's part name
     :ptype scope: str
     :param runs: its runs, ascending, each once
@@ -688,7 +920,7 @@ def _merged_tiers(rule: PartRule, policy: MergePolicy, scope: str, runs: Sequenc
     """
     parts = [(run, run, 0, tier_part(scope, 0, run, run)) for run in runs]
     into: dict[str, str] = {}
-    while (due := policy.due(rule, parts)) is not None:
+    while (due := policy.due(rule, scope, parts)) is not None:
         level, group = due
         if len(group) < 2:
             raise ValueError(f"{rule.table}: a merge takes two parts at least, not {list(group)}")
@@ -707,7 +939,7 @@ def _merged_tiers(rule: PartRule, policy: MergePolicy, scope: str, runs: Sequenc
 
 
 def _run_parts(
-    scopes: pa.Array, runs: pa.Array, held: Collection[str], merged: tuple[PartRule, MergePolicy] | None = None
+    scopes: pa.Array, runs: pa.Array, held: Collection[str], merged: tuple[PartRule, _Merges] | None = None
 ) -> pa.Array:
     """each (scope value, run)'s part: the held tier covering the run, else the run's own level-0 part; null for a
     null scope (a key the copy never held). Named once a distinct pair, never a row.
@@ -720,7 +952,7 @@ def _run_parts(
     :ptype held: Collection[str]
     :param merged: for a whole change (nothing held), the rule and the merges whose parts its runs land in
         (:func:`_merged_tiers`); None for level 0
-    :ptype merged: tuple[PartRule, MergePolicy] | None
+    :ptype merged: tuple[PartRule, _Merges] | None
     :return: each row's part
     :rtype: pa.Array
     """
@@ -777,7 +1009,7 @@ def _row_parts(
     rule: PartRule,
     rows: pa.Table,
     held: Collection[str],
-    merges: MergePolicy | None = None,
+    merges: _Merges | None = None,
     index: pa.Table | None = None,
 ) -> pa.Array:
     """each row's part, by its own columns (a split table's rows hold its scope column); with ``merges``, a whole
@@ -810,7 +1042,7 @@ def _cut(
     rule: PartRule,
     rows: pa.Table,
     held: Collection[str],
-    merges: MergePolicy | None = None,
+    merges: _Merges | None = None,
     index: pa.Table | None = None,
 ) -> Mapping[str, pa.Table]:
     """rows by part, each part's rows a slice in their order in ``rows``: one stable sort of each row's part's name
@@ -888,7 +1120,7 @@ def _packed_cut(rule: PartRule, rows: pa.Table, tables: _Tables) -> tuple[Mappin
         packed_scopes.extend(scope for scope, _ in pack)
         packed_into.extend([name] * len(pack))
     if own:
-        parts.extend(_cut(rule, pa.concat_tables(own), (), tables.merges).items())
+        parts.extend(_cut(rule, pa.concat_tables(own), (), tables.merging).items())
     index = pa.Table.from_arrays(
         [pa.array(packed_scopes, pa.string()), pa.array(packed_into, pa.string())], schema=_INDEX
     )
@@ -1080,6 +1312,8 @@ class _Result:
     written_bytes: int = 0
     #: each part written and its file's bytes, the last write's
     sizes: dict[tuple[str, str], int] = field(default_factory=dict)
+    #: the rows held that are no part (:meth:`hold`)
+    held: int = 0
 
     def write(self, table: str, part: str, rows: pa.Table) -> None:
         name = f"p{len(self.parts)}"
@@ -1093,6 +1327,45 @@ class _Result:
     def drop(self, table: str, part: str) -> None:
         self.parts.append((table, part, None))
 
+    def hold(self, rows: pa.Table) -> str:
+        """write rows into the result that are no part of the version (a let-go's rows, for the job after); their
+        name in the result."""
+        name = f"g{self.held}"
+        self.held += 1
+        self.written_bytes += self.step({name: rows.combine_chunks()})
+        return name
+
+
+@dataclass(frozen=True, slots=True)
+class _TableApplied:
+    """one table's change as the hooks see it: its parts written (as written), the rows it deleted as they were held,
+    and the scope part names it touched."""
+
+    parts: Mapping[str, pa.Table]
+    deleted_rows: pa.Table
+    touched: frozenset[str]
+
+
+def _touched(rule: PartRule, rows: pa.Table, keys: pa.Table | None, locator: Locator) -> frozenset[str]:
+    """the scope part names a split table's change writes (``rows``) or names (``keys``); none for a table held as one
+    part. One unique of each, never a Python object a row."""
+    if not rule.split:
+        return frozenset()
+    found: set[str] = set()
+    if rows.num_rows:
+        found.update(pc.unique(parts_of_keys(rule, rows).drop_null()).to_pylist())
+    if keys is not None and keys.num_rows:
+        found.update(pc.unique(parts_of_keys(rule, keys, locator).drop_null()).to_pylist())
+    return frozenset(found)
+
+
+def _deleted_of(held: pa.Table, deleted: pa.Table, key: Sequence[str]) -> pa.Table | None:
+    """the held rows a change's deleted keys name (one hash match, by row number); None for none."""
+    if not deleted.num_rows or not held.num_rows:
+        return None
+    found = rows_named(held, deleted, key)
+    return held.take(pa.array(found)) if len(found) else None
+
 
 def _apply_table(
     tables: _Tables,
@@ -1101,9 +1374,10 @@ def _apply_table(
     files: Mapping[str, Any],
     result: _Result,
     locators: Mapping[str, Locator] = EMPTY,
-) -> Mapping[str, pa.Table]:
-    """one table's change, its parts written into the result; its parts as the change leaves them, for the hooks.
-    ``locators`` names a table's locator in place of its file's (a per-scope reload's, over the version's)."""
+) -> _TableApplied:
+    """one table's change, its parts written into the result; its parts as the change leaves them, the rows it deleted
+    as they were held and the scopes it touched, for the hooks. ``locators`` names a table's locator in place of its
+    file's (a per-scope reload's, over the version's)."""
     rule, schema = tables.rules[table], tables.schemas[table]
     key = rule.key
     held = _parts_of(files, table)
@@ -1117,19 +1391,23 @@ def _apply_table(
     named = change.named if change.named.num_rows else None
     written = change.rows if change.rows.num_rows else None
     after: dict[str, pa.Table] = {}
+    gone: list[pa.Table] = []
+    touched = _touched(rule, change.rows, named, locator)
     if table in tables.whole or _misshapen(rule, held):
         # the table in its rule's shape now: its rows (the change's alone, for a whole change) cut afresh, every part
         # held before dropped or rewritten
         before = None
         if held and table not in tables.whole:
             before = pa.concat_tables([_map(path, schema) for _, path in sorted(held.items())])
+            if (found := _deleted_of(before, change.deleted, key)) is not None:
+                gone.append(found)
         rows = change.rows if before is None else (_part_rows(schema, before, written, key, named) or before)
         # a per-run table's runs land in the tiers the merges would leave them in, never a part a run; small scopes
         # land in packs
         if tables.packing(table):
             cut, fresh_index = _packed_cut(rule, rows, tables)
         else:
-            cut, fresh_index = _cut(rule, rows, (), tables.merges), _INDEX.empty_table()
+            cut, fresh_index = _cut(rule, rows, (), tables.merging), _INDEX.empty_table()
         for part, part_rows in cut.items():
             after[part] = _in_key_order(part_rows, key)
             result.write(table, part, after[part])
@@ -1142,7 +1420,7 @@ def _apply_table(
             result.write(f"{LOCATED_PREFIX}{table}", WHOLE_PART, fresh.located)
         elif located:
             result.drop(f"{LOCATED_PREFIX}{table}", WHOLE_PART)
-        return frozen(after)
+        return _TableApplied(frozen(after), _concat(schema, gone), touched)
     by_part = _cut(rule, change.rows, held, index=index)
     #: the index pairs of packs this change made new or cut again
     recut: list[pa.Table] = []
@@ -1158,6 +1436,8 @@ def _apply_table(
     repacked: list[str] = []
     for part in sorted(targets):
         held_rows = _map(held[part], schema) if part in held else None
+        if held_rows is not None and (found := _deleted_of(held_rows, change.deleted, key)) is not None:
+            gone.append(found)
         rows = _part_rows(schema, held_rows, by_part.get(part), key, named)
         if rows is None:
             continue
@@ -1185,7 +1465,12 @@ def _apply_table(
         _write_index(result, packed, pa.concat_tables([kept, *recut]))
     if rule.locator is not None and rule.split and written is not None:
         result.write(f"{LOCATED_PREFIX}{table}", WHOLE_PART, locator.extended(rule, change.rows).located)
-    return frozen(after)
+    return _TableApplied(frozen(after), _concat(schema, gone), touched)
+
+
+def _concat(schema: pa.Schema, tables: Sequence[pa.Table]) -> pa.Table:
+    """tables of one schema together; empty for none."""
+    return pa.concat_tables(tables) if tables else schema.empty_table()
 
 
 def _new_scopes_packed(
@@ -1236,7 +1521,7 @@ def _apply_pages(
     pages: Sequence[tuple[str, str, pa.Table]],
     result: _Result,
     locators: Mapping[str, Locator] = EMPTY,
-) -> tuple[Mapping[str, _Settled], Mapping[str, Mapping[str, pa.Table]]]:
+) -> tuple[Mapping[str, _Settled], Mapping[str, _TableApplied]]:
     """each table's pages settled and applied into the result."""
     by_table: dict[str, list[tuple[str, pa.Table]]] = {}
     for kind, table, rows in pages:
@@ -1258,10 +1543,335 @@ def _apply_pages(
         )
         for table, table_pages in sorted(by_table.items())
     )
+    if tables.run_times is not None and tables.times is None and _routes_whole_runs(tables, files, settled):
+        tables = replace(tables, times=_change_run_times(tables, files, settled))
     after = frozen(
         (table, _apply_table(tables, table, change, files, result, locators)) for table, change in settled.items()
     )
     return settled, after
+
+
+def _routes_whole_runs(tables: _Tables, files: Mapping[str, Any], settled: Mapping[str, _Settled]) -> bool:
+    """whether a change cuts a per-run table afresh (whole, or in a new shape), so its runs land in the tiers the
+    merges would leave (:func:`_merged_tiers`), which see the runs' times."""
+    return any(
+        rule.split
+        and rule.run_column is not None
+        and (table in tables.whole or _misshapen(rule, _parts_of(files, table)))
+        for table, rule in ((table, tables.rules[table]) for table in settled)
+    )
+
+
+def _change_run_times(
+    tables: _Tables, files: Mapping[str, Any], settled: Mapping[str, _Settled]
+) -> Mapping[str, pa.Table]:
+    """the runs' times a change's whole cut sees: the change's own rows of the runs table when it replaces that table
+    whole (a cold start carries it), else the version's."""
+    spec = tables.run_times
+    assert spec is not None  # noqa: S101 -- read only with a RunTimes
+    if spec.table in settled and spec.table in tables.whole:
+        return _runs_by_scope(settled[spec.table].rows, spec)
+    return _run_times(files, spec) or EMPTY
+
+
+# -- the runs' times a merge policy sees ---------------------------------------------------------------------------
+
+
+def _run_times(files: Mapping[str, Any], spec: RunTimes | None) -> Mapping[str, pa.Table] | None:
+    """each scope's held runs as a version's :class:`RunTimes` table holds them, by the scope's part name; None for no
+    such table named. Its parts mapped, the columns read in Arrow."""
+    if spec is None:
+        return None
+    held = _parts_of(files, spec.table)
+    if not held:
+        return EMPTY
+    columns = [spec.scope_column, spec.run_column, spec.time_column]
+    if spec.model_column is not None:
+        columns.append(spec.model_column)
+    return _runs_by_scope(pa.concat_tables([_map(path).select(columns) for _, path in sorted(held.items())]), spec)
+
+
+def _runs_by_scope(rows: pa.Table, spec: RunTimes) -> Mapping[str, pa.Table]:
+    """rows of a :class:`RunTimes` table as each scope's runs (:data:`RUNS_SCHEMA`): a run once, its newest time and
+    that row's model, by run. One sort and one run-end encoding; a Python object a scope, never a run or a row."""
+    if not rows.num_rows:
+        return EMPTY
+    scoping = PartRule(spec.table, (spec.scope_column,), scope_column=spec.scope_column)
+    model = (
+        pc.cast(rows[spec.model_column], pa.string())
+        if spec.model_column is not None
+        else pa.nulls(rows.num_rows, pa.string())
+    )
+    runs = pa.table(
+        {
+            "scope": parts_of_keys(scoping, rows),
+            "run": pc.cast(rows[spec.run_column], pa.int64()),
+            "at": _seconds(rows[spec.time_column]),
+            "model": model,
+        }
+    )
+    runs = runs.filter(pc.and_(pc.and_(pc.is_valid(runs["scope"]), pc.is_valid(runs["run"])), pc.is_valid(runs["at"])))
+    if not runs.num_rows:
+        return EMPTY
+    ordered = runs.sort_by([("scope", "ascending"), ("run", "ascending"), ("at", "ascending")])
+    newest = ordered.take(pa.array(last_rows(ordered, ["scope", "run"]))).combine_chunks()
+    encoded = pc.run_end_encode(newest["scope"].combine_chunks())
+    ends = encoded.run_ends.to_numpy()
+    values = encoded.values
+    found: list[tuple[str, pa.Table]] = []
+    start = 0
+    for at, end in enumerate(ends):
+        scope_runs = newest.slice(start, int(end) - start).select(RUNS_SCHEMA.names).cast(RUNS_SCHEMA)
+        found.append((str(values[at].as_py()), scope_runs))
+        start = int(end)
+    return frozen(found)
+
+
+#: an instant as :func:`~threetears.core.arrow_keys.stored_instants` spells it: zoned in UTC, or naive (read as UTC)
+_STORED_ZONED_RE2: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$"
+_STORED_NAIVE_RE2: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$"
+
+
+def _seconds(values: pa.ChunkedArray | pa.Array) -> pa.Array:
+    """a column of instants as seconds since the epoch (float64): a timestamp (a naive one read as UTC), a number of
+    seconds, or text in any ISO spelling (``arrow_keys.stored_instants``; one with no offset read as UTC, one that is
+    no instant null). In Arrow's kernels, never a Python object a value."""
+    column = values.combine_chunks() if isinstance(values, pa.ChunkedArray) else values
+    kind = column.type
+    if pa.types.is_timestamp(kind):
+        stamps = pc.cast(column, pa.timestamp("us", tz=kind.tz))
+    elif pa.types.is_integer(kind) or pa.types.is_floating(kind) or pa.types.is_decimal(kind):
+        numbers: pa.Array = pc.cast(column, pa.float64())
+        return numbers
+    else:
+        text = stored_instants(column)
+        naive = pc.fill_null(pc.match_substring_regex(text, _STORED_NAIVE_RE2), False)
+        text = pc.if_else(naive, pc.binary_join_element_wise(text, "+00:00", ""), text)
+        zoned = pc.fill_null(pc.match_substring_regex(text, _STORED_ZONED_RE2), False)
+        text = pc.if_else(zoned, text, pa.nulls(len(text), pa.string()))
+        stamps = pc.cast(text, pa.timestamp("us", tz="UTC"))
+    micros = pc.cast(pc.cast(stamps, pa.timestamp("us")), pa.int64())
+    seconds: pa.Array = pc.divide(pc.cast(micros, pa.float64()), 1e6)
+    return seconds
+
+
+# -- what a product's hooks let go ---------------------------------------------------------------------------------
+
+
+def _derived(value: Sequence[ChangePage] | DerivedPages) -> DerivedPages:
+    """a hook's answer as :class:`DerivedPages`: a plain sequence of pages is its pages alone."""
+    return value if isinstance(value, DerivedPages) else DerivedPages(pages=tuple(value))
+
+
+def _let_go_by_table(tables: _Tables, let_go: Sequence[LetGoRows]) -> tuple[tuple[str, pa.Table], ...]:
+    """a hook's let-go rows, each table's together (one set of columns a table), each a table the copy holds and
+    columns of it.
+
+    :raises ValueError: for a table the copy does not hold, a column it does not hold, or one table's rows naming
+        different columns
+    """
+    by_table: dict[str, list[pa.Table]] = {}
+    for gone in let_go:
+        if gone.table not in tables.rules:
+            raise ValueError(f"rows let go of {gone.table!r}, a table the copy does not hold")
+        stray = sorted(set(gone.rows.column_names) - set(tables.schemas[gone.table].names))
+        if stray or not gone.rows.column_names:
+            raise ValueError(f"rows let go of {gone.table} are matched on its columns, not {stray or 'none'}")
+        if gone.rows.num_rows:
+            by_table.setdefault(gone.table, []).append(gone.rows)
+    found: list[tuple[str, pa.Table]] = []
+    for table, pieces in sorted(by_table.items()):
+        names = pieces[0].column_names
+        if any(piece.column_names != names for piece in pieces):
+            raise ValueError(f"rows let go of {table} name one set of columns")
+        schema = pa.schema([tables.schemas[table].field(column) for column in names])
+        found.append((table, pa.concat_tables([piece.cast(schema) for piece in pieces]).combine_chunks()))
+    return tuple(found)
+
+
+def _let_go_parts(
+    rule: PartRule, gone: pa.Table, held: Mapping[str, Path], files: Mapping[str, Any], table: str
+) -> frozenset[str]:
+    """the held parts a table's let-go rows may match (:class:`LetGoRows`): by their scope column (and run, a per-run
+    table's), else their locator, a packed scope's pack among them; every part when they name no scope."""
+    if not rule.split:
+        return frozenset(held) & {WHOLE_PART}
+    columns = set(gone.column_names)
+    scopes: pa.Array | None = None
+    if rule.scope_column in columns:
+        scopes = parts_of_keys(rule, gone)
+    elif rule.locator is not None and rule.locator in columns:
+        located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
+        locator = Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
+        scopes = parts_of_keys(rule, gone.select([rule.locator]), locator)
+    if scopes is None:
+        return frozenset(held)
+    index = _index_of(files, table)
+    if rule.run_column is not None and rule.run_column in columns:
+        names = _routed(_run_parts(scopes, gone[rule.run_column].combine_chunks(), held), scopes, index)
+        return frozenset(pc.unique(names.drop_null()).to_pylist()) & frozenset(held)
+    named = frozenset(pc.unique(scopes.drop_null()).to_pylist())
+    packs = index.filter(pc.is_in(index[_INDEX_SCOPE], value_set=pa.array(sorted(named), pa.string())))
+    own = {part for part in held if not is_pack(part) and _scope_part(part) in named}
+    return frozenset(own | set(packs[_INDEX_PACK].to_pylist())) & frozenset(held)
+
+
+def _let_go_table(tables: _Tables, table: str, gone: pa.Table, files: Mapping[str, Any], result: _Result) -> int:
+    """one table's let-go rows let go into the result (:class:`LetGoRows`): each part they may match mapped and
+    matched by its columns (``arrow_keys.rows_named``, a null equal to a null), rewritten without the matched rows in
+    its order, or dropped when every row of it matched (a pack's index then without it). Returns the rows lost."""
+    rule, schema = tables.rules[table], tables.schemas[table]
+    held = _parts_of(files, table)
+    if not held or not gone.num_rows:
+        return 0
+    gone = _respelled(gone, tables.instants.get(table, frozenset()), tables.canonical.get(table, EMPTY))
+    columns = gone.column_names
+    gone = gone.cast(pa.schema([schema.field(column) for column in columns]))
+    lost = 0
+    emptied: list[str] = []
+    for part in sorted(_let_go_parts(rule, gone, held, files, table)):
+        rows = _map(held[part], schema)
+        hits = rows_named(rows, gone, columns)
+        if not len(hits):
+            continue
+        lost += len(hits)
+        if len(hits) == rows.num_rows:
+            result.drop(table, part)
+            if is_pack(part):
+                emptied.append(part)
+        else:
+            result.write(table, part, _without(rows, hits))
+    if emptied:
+        index = _index_of(files, table)
+        kept = index.filter(pc.invert(pc.is_in(index[_INDEX_PACK], value_set=pa.array(emptied, pa.string()))))
+        _write_index(result, f"{PACKED_PREFIX}{table}", kept)
+    return lost
+
+
+def _let_go(
+    tables: _Tables, files: Mapping[str, Any], let_go: Sequence[tuple[str, pa.Table]], result: _Result
+) -> tuple[tuple[str, int], ...]:
+    """each table's let-go rows let go into the result; each table's rows lost."""
+    lost = ((table, _let_go_table(tables, table, gone, files, result)) for table, gone in let_go)
+    return tuple((table, count) for table, count in lost if count)
+
+
+def _tables_of(plan: ApplyPlan) -> _Tables:
+    """a job's tables, made in the worker from its plan's pairs."""
+    return _Tables(
+        schemas=frozen(plan.schemas),
+        rules=frozen(plan.rules),
+        whole=plan.whole,
+        merges=plan.merges,
+        instants=frozen(plan.instants),
+        pack_below=plan.pack_below,
+        pack_target=plan.pack_target,
+        unpacked=plan.unpacked,
+        canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
+        run_times=plan.run_times,
+    )
+
+
+def _pack_due(tables: _Tables, files: Mapping[str, Any], result: _Result) -> bool:
+    """whether a job's writes leave a split table's small parts due a packing."""
+    touched = sorted({table for table, _, _ in result.parts if table in tables.rules and tables.packing(table)})
+    due = False
+    for table in touched:
+        now, packed, _ = _packing_due(_sizes_after(files, table, result), tables.pack_below, tables.pack_target)
+        due = due or packed < now
+    return due
+
+
+def _let_go_job(context: JobContext, plan: _LetGoPlan) -> _Outcome:
+    """what a change's hooks let go (:class:`DerivedPages`'s ``let_go``), let go from the change's published version
+    (``context.version``) into the job's result: only the parts the rows may match read, those they match rewritten
+    or dropped. The rows are mapped from the change's result, where :func:`apply_job` held them.
+
+    :param context: the change's version and the job's result slot
+    :ptype context: JobContext
+    :param plan: the tables, and each table's let-go rows' file
+    :ptype plan: _LetGoPlan
+    :return: each part written or dropped, the rows lost by table
+    :rtype: _Outcome
+    """
+    if context.version is None or not isinstance(context.result, (PiecedSlot, SegmentSlot)):
+        raise ValueError("a let-go reads a version and writes into a result slot")
+    files = version_files(plan.root, context.version.name)
+    tables = _Tables(
+        schemas=frozen(plan.schemas),
+        rules=frozen(plan.rules),
+        whole=frozenset(),
+        instants=frozen(plan.instants),
+        canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
+    )
+    with context.result.writing() as step:
+        result = _Result(step, [])
+        lost = _let_go(tables, files, [(table, _map(Path(path))) for table, path in plan.let_go], result)
+        due = _pack_due(tables, files, result)
+    parts, _ = _settled_parts(files, (), result.parts)
+    return _Outcome(
+        parts=parts, rows=0, written_bytes=result.written_bytes, worker=os.getpid(), pack_due=due, lost=lost
+    )
+
+
+def _settle_whole_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
+    """the whole copy settled in the apply worker (:meth:`SharedCopyBackend.settle_whole`): the hooks'
+    ``derive_whole`` reads every scope of the current version in place (:class:`AppliedTables` with ``touched``
+    None), its derived pages are applied into the job's result, and what it lets go into the same result: one
+    publish, nothing reading the derived rows before their let-go.
+
+    :param context: the current version and the job's result slot
+    :ptype context: JobContext
+    :param plan: the tables and the hooks (:class:`WholeHooks`)
+    :ptype plan: ApplyPlan
+    :return: each part written or dropped, the derived rows, the rows lost by table
+    :rtype: _Outcome
+    :raises ValueError: for hooks with no ``derive_whole``, or a whole settle deriving rows of a table it lets go of
+    """
+    hooks = plan.hooks
+    if not isinstance(hooks, WholeHooks):
+        raise ValueError("a whole settle needs hooks with derive_whole (WholeHooks)")
+    if context.version is None or not isinstance(context.result, (PiecedSlot, SegmentSlot)):
+        raise ValueError("a whole settle reads a version and writes into a result slot")
+    version = context.version.name
+    files = version_files(plan.root, version)
+    tables = replace(_tables_of(plan), whole=frozenset())
+    with context.result.writing() as step:
+        result = _Result(step, [])
+        applied = AppliedTables(
+            root=plan.root,
+            version=version,
+            rows=EMPTY,
+            deleted=EMPTY,
+            parts=EMPTY,
+            touched=None,
+            files=files,
+            rules=tables.rules,
+            schemas=tables.schemas,
+        )
+        derived = hooks.derive_whole(applied)
+        let_go = _let_go_by_table(tables, derived.let_go)
+        written = {page.table for page in derived.pages} | set(derived.whole)
+        both = sorted(written & {table for table, _ in let_go})
+        if both:
+            raise ValueError(f"a whole settle derives rows of tables it lets go of: {both}")
+        settled, _ = _apply_pages(
+            replace(tables, whole=frozenset(derived.whole)),
+            files,
+            [(page.kind, page.table, page.rows) for page in derived.pages],
+            result,
+        )
+        lost = _let_go(tables, files, let_go, result)
+        due = _pack_due(tables, files, result)
+    parts, _ = _settled_parts(files, (), result.parts)
+    return _Outcome(
+        parts=parts,
+        rows=sum(change.rows.num_rows for change in settled.values()),
+        written_bytes=result.written_bytes,
+        worker=os.getpid(),
+        pack_due=due,
+        lost=lost,
+    )
 
 
 def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
@@ -1282,21 +1892,12 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     base: Mapping[str, Any] = EMPTY if version is None else version_files(plan.root, version)
     mapped = EMPTY if context.tables is None else context.tables.tables
     pages = [(kind, table, mapped[f"p{at}"]) for at, (kind, table) in enumerate(plan.pages)]
-    tables = _Tables(
-        schemas=frozen(plan.schemas),
-        rules=frozen(plan.rules),
-        whole=plan.whole,
-        merges=plan.merges,
-        instants=frozen(plan.instants),
-        pack_below=plan.pack_below,
-        pack_target=plan.pack_target,
-        unpacked=plan.unpacked,
-        canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
-    )
+    tables = _tables_of(plan)
     slot = context.result
     if not isinstance(slot, (PiecedSlot, SegmentSlot)):
         raise ValueError("a change's apply writes into a result slot")
     rows = 0
+    let_go: tuple[tuple[str, str], ...] = ()
     with slot.writing() as step:
         result = _Result(step, [])
         view = _reloaded(tables, base, plan.reloads, result)
@@ -1304,32 +1905,16 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
         settled, after = _apply_pages(tables, files, [*view.pages, *pages], result, view.locators)
         rows += sum(change.rows.num_rows for change in settled.values())
         if plan.hooks is not None:
-            left = {**dict.fromkeys(view.tables, EMPTY), **after}
-            applied = AppliedTables(
-                root=plan.root,
-                version=version,
-                rows=frozen((table, change.rows) for table, change in settled.items()),
-                deleted=frozen((table, change.deleted) for table, change in settled.items()),
-                parts=frozen(
-                    (table, _as_left(_parts_of(files, table), parts, result, table)) for table, parts in left.items()
-                ),
-                reloaded=view.tables,
-            )
-            derived = [page for page in plan.hooks.derive(applied) if page.table not in settled]
-            if derived:
-                more, _ = _apply_pages(
-                    replace(tables, whole=frozenset()),
-                    files,
-                    [(p.kind, p.table, p.rows) for p in derived],
-                    result,
-                    view.locators,
-                )
+            applied = _applied_tables(plan, version, tables, files, settled, after, view, result)
+            derived = _derived(plan.hooks.derive(applied))
+            pages_derived = [(p.kind, p.table, p.rows) for p in derived.pages if p.table not in settled]
+            replaced = frozenset(derived.whole) - frozenset(settled)
+            if pages_derived or replaced:
+                more, _ = _apply_pages(replace(tables, whole=replaced), files, pages_derived, result, view.locators)
                 rows += sum(change.rows.num_rows for change in more.values())
-        touched = sorted({table for table, _, _ in result.parts if table in tables.rules and tables.packing(table)})
-        due = False
-        for table in touched:
-            now, packed, _ = _packing_due(_sizes_after(files, table, result), tables.pack_below, tables.pack_target)
-            due = due or packed < now
+            # held in the result for the let-go's own publish after this one, never a part of this version
+            let_go = tuple((table, result.hold(gone)) for table, gone in _let_go_by_table(tables, derived.let_go))
+        due = _pack_due(tables, files, result)
     parts, staged = _settled_parts(base, view.swaps, result.parts)
     return _Outcome(
         parts=parts,
@@ -1338,6 +1923,40 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
         worker=os.getpid(),
         staged=staged,
         pack_due=due,
+        let_go=let_go,
+    )
+
+
+def _applied_tables(
+    plan: ApplyPlan,
+    version: str | None,
+    tables: _Tables,
+    files: Mapping[str, Any],
+    settled: Mapping[str, _Settled],
+    after: Mapping[str, _TableApplied],
+    view: _ReloadView,
+    result: _Result,
+) -> AppliedTables:
+    """what a change did as the hooks see it, and the version with it applied (:class:`AppliedTables`)."""
+    left = {**dict.fromkeys(view.tables, EMPTY), **{table: done.parts for table, done in after.items()}}
+    touched = set().union(*(done.touched for done in after.values())) if after else set()
+    for table, part, _ in view.swaps:
+        if table in tables.rules and tables.rules[table].split and not is_pack(part):
+            touched.add(_scope_part(part))
+    whole = tables.whole | frozenset(reload.table for reload in plan.reloads if reload.scope is None)
+    return AppliedTables(
+        root=plan.root,
+        version=version,
+        rows=frozen((table, change.rows) for table, change in settled.items()),
+        deleted=frozen((table, change.deleted) for table, change in settled.items()),
+        parts=frozen((table, _as_left(_parts_of(files, table), parts, result, table)) for table, parts in left.items()),
+        reloaded=view.tables,
+        deleted_rows=frozen((table, done.deleted_rows) for table, done in after.items() if done.deleted_rows.num_rows),
+        whole=whole,
+        touched=frozenset(touched),
+        files=files,
+        rules=tables.rules,
+        schemas=tables.schemas,
     )
 
 
@@ -1566,12 +2185,14 @@ def _merge_job(context: JobContext, plan: _MergePlan) -> _MergeOutcome | None:
     version = context.version.name
     files = version_files(plan.root, version)
     best: tuple[int, str, tuple[str, ...]] | None = None
+    per_run = any(rule.run_column is not None and rule.split for _, rule in plan.rules)
+    merges = _Merges(plan.policy, _run_times(files, plan.run_times) if per_run else None)
     for table, rule in sorted(plan.rules):
         if rule.run_column is None or not rule.split:
             continue
-        for _scope, tiers in sorted(_tiers(_parts_of(files, table)).items()):
+        for scope, tiers in sorted(_tiers(_parts_of(files, table)).items()):
             parts = [(first, last, _level(name), name) for first, last, name in tiers]
-            due = plan.policy.due(rule, parts)
+            due = merges.due(rule, scope, parts)
             if due is not None and (best is None or due[0] < best[0]):
                 best = (due[0], table, tuple(due[1]))
     if best is None:
@@ -1623,6 +2244,8 @@ def _pack_job(context: JobContext, plan: _MergePlan, files: Mapping[str, Any]) -
         merges=plan.policy,
         pack_below=below,
         pack_target=plan.pack_target,
+        times=_run_times(files, plan.run_times) if rule.run_column is not None else None,
+        run_times=plan.run_times,
     )
     cut, cut_index = _packed_cut(rule, rows, tables)
     if len(cut) >= len(small):
@@ -1746,6 +2369,13 @@ class SharedCopyBackend:
     :ptype pack_target: int
     :param max_files: a version holding more files than this makes a merge due (:data:`MAX_VERSION_FILES`)
     :ptype max_files: int
+    :param run_times: where the runs' times and models are held (:class:`RunTimes`), so ``merges`` sees them; None
+        for none (``MergePolicy.due`` is given None)
+    :ptype run_times: RunTimes | None
+    :param declared: the tables' declared scopes (``copy_parts.PartDeclaration``): after each change's publish the copy
+        sizes its tables and holds each by the rule its size names now (a table crossing ``SPLIT_FLOOR_BYTES`` is cut
+        by its scope from the next change to it). None keeps ``rules`` until :meth:`use_rules`
+    :ptype declared: PartDeclaration | None
     :raises ValueError: for a rule of a table with no schema, a schema missing a rule's column, an instant or canonical
         column that is not a text key column of its table, or a canonical type with no one spelling
     """
@@ -1765,6 +2395,8 @@ class SharedCopyBackend:
         pack_below: int = PACK_BELOW_BYTES,
         pack_target: int = PACK_TARGET_BYTES,
         max_files: int = MAX_VERSION_FILES,
+        run_times: RunTimes | None = None,
+        declared: PartDeclaration | None = None,
     ) -> None:
         if pack_below < 0 or pack_target <= 0 or max_files <= 0:
             raise ValueError(f"pack bounds and a file bound are positive: {pack_below}, {pack_target}, {max_files}")
@@ -1780,6 +2412,18 @@ class SharedCopyBackend:
         self._store = store
         self._hooks = hooks
         self._merges = ByCount() if merges is None else merges
+        if run_times is not None:
+            spec = self._rules.get(run_times.table)
+            columns = [run_times.scope_column, run_times.run_column, run_times.time_column, run_times.model_column]
+            if spec is None or not {c for c in columns if c is not None} <= set(self._schemas[run_times.table].names):
+                raise ValueError(
+                    f"the runs' times are held in {run_times.table!r}: a table the copy holds, with its columns"
+                )
+        self._run_times = run_times
+        self._declared = declared
+        #: whether a whole settle is due (:meth:`defer_hooks_until_whole`): until it publishes, changes apply with no
+        #: ``derive``
+        self._whole_due = False
         self._pool = SharedArrowPool(
             store,
             workers=1,
@@ -1839,13 +2483,15 @@ class SharedCopyBackend:
             rules=tuple(self._rules.items()),
             pages=tuple((page.kind, page.table) for page in pages),
             whole=frozenset(whole),
-            hooks=self._hooks,
+            # a whole settle due derives every scope at once: a change's own derive before it is work thrown away
+            hooks=None if self._whole_due else self._hooks,
             merges=self._merges,
             instants=self._instants,
             reloads=reloads,
             pack_below=self._pack_below,
             pack_target=self._pack_target,
             canonical=self._canonical,
+            run_times=self._run_times,
         )
 
     async def apply(
@@ -1904,6 +2550,7 @@ class SharedCopyBackend:
         self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None, reloads: tuple[Reloaded, ...]
     ) -> Applied:
         sent = [page for page in pages if page.rows.num_rows]
+        let_gone: LetGone | None = None
         async with self._applying:
             current = self._store.current
             base = None if current is None else current.name
@@ -1918,12 +2565,17 @@ class SharedCopyBackend:
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
             try:
-                files = await asyncio.to_thread(self._publish_change, version, base, outcome, done.segment, mark)
+                files, sizes = await asyncio.to_thread(self._publish_change, version, base, outcome, done.segment, mark)
+                self._next += 1
+                over = self._said_over(version, files)
+                if outcome.let_go and done.segment is not None:
+                    # the let-go's rows are files of this change's result: held open until its publish is done
+                    let_gone, sizes, let_go_due = await self._let_go_after(version, outcome.let_go, done.segment, sizes)
+                    over = over or let_go_due
             finally:
                 if done.segment is not None:
                     await asyncio.to_thread(done.segment.close)
-            self._next += 1
-            over = self._said_over(version, files)
+            changed = self._regrown(sizes)
         parts: dict[str, dict[str, bool]] = {}
         for table, part, _path in outcome.staged:
             parts.setdefault(table, {})[part] = True
@@ -1937,6 +2589,161 @@ class SharedCopyBackend:
             worker=outcome.worker,
             files=files,
             merge_due=outcome.pack_due or over,
+            let_go=let_gone,
+            rules_changed=changed,
+        )
+
+    async def _let_go_after(
+        self, version: str, let_go: tuple[tuple[str, str], ...], segment: MappedSegment, sizes: Mapping[str, int]
+    ) -> tuple[LetGone | None, Mapping[str, int], bool]:
+        """what a change's hooks let go, let go from its version in the apply worker and published right after it,
+        under the same apply turn (the caller holds ``_applying``). A failure publishes nothing more and is said at
+        ERROR: the change is published, and the copy keeps the rows until a later settle lets them go again.
+
+        :return: what was let go (None on a failure), the tables' sizes as the copy holds them now, and whether a merge
+            is due after it (small parts to pack, or more files than the bound)
+        """
+        files = segment.files
+        plan = _LetGoPlan(
+            root=str(self._store.root),
+            schemas=tuple(self._schemas.items()),
+            rules=tuple(self._rules.items()),
+            instants=self._instants,
+            canonical=self._canonical,
+            let_go=tuple((table, str(files[name])) for table, name in let_go),
+        )
+        try:
+            done = await self._pool.run(
+                _let_go_job,
+                plan,
+                read=version,
+                result_pieces=_APPLY_PIECE_BYTES,
+                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+            )
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the change is published; what it let go waits for a later settle
+            contain(
+                exc,
+                log=log,
+                what="letting go what a change's settle let go failed; the copy keeps those rows until a later one",
+                extra={"version": version, "tables": sorted(table for table, _ in let_go)},
+                level="error",
+            )
+            return None, sizes, False
+        outcome: _Outcome = done.value
+        published: str | None = None
+        over = False
+        try:
+            if outcome.parts:
+                published = f"c-{self._next}"
+                count, sizes = await asyncio.to_thread(
+                    self._publish_change, published, version, outcome, done.segment, None
+                )
+                self._next += 1
+                over = self._said_over(published, count)
+        finally:
+            if done.segment is not None:
+                await asyncio.to_thread(done.segment.close)
+        parts: dict[str, dict[str, bool]] = {}
+        for table, part, name in outcome.parts:
+            parts.setdefault(table, {})[part] = name is not None
+        return (
+            LetGone(
+                version=published,
+                parts=frozen((table, frozen(done_parts)) for table, done_parts in parts.items()),
+                rows=frozen(outcome.lost),
+            ),
+            sizes,
+            outcome.pack_due or over,
+        )
+
+    def _regrown(self, sizes: Mapping[str, int]) -> frozenset[str]:
+        """hold the tables by the rules their sizes name now (``declared``, :class:`~threetears.core.collections.
+        copy_parts.PartDeclaration`); the tables whose rule changed. On the event loop: a rule a table, no row read."""
+        if self._declared is None or not sizes:
+            return frozenset()
+        now = self._declared.rules(sizes, held=self._rules)
+        changed = frozenset(table for table, rule in now.items() if table in self._rules and self._rules[table] != rule)
+        if changed:
+            self._rules = _checked(self._schemas, {**self._rules, **{table: now[table] for table in changed}})
+            log.info(
+                "copied tables crossed the split floor: each is cut in its new shape by the next change to it",
+                extra={"extra_data": {"tables": {table: now[table].split for table in sorted(changed)}}},
+            )
+        return changed
+
+    @property
+    def whole_settle_due(self) -> bool:
+        """whether a whole settle is due (:meth:`defer_hooks_until_whole`), changes applying with no ``derive`` until
+        it publishes.
+
+        :return: True until :meth:`settle_whole` publishes
+        :rtype: bool
+        """
+        return self._whole_due
+
+    def defer_hooks_until_whole(self) -> None:
+        """a whole settle follows (a start that read L3 whole, no checkpoint): until :meth:`settle_whole` publishes,
+        each change applies with no ``derive``. The whole settle derives every scope from the copy as it then is, so a
+        change's own derive before it is work thrown away (reports' first change after such a start is every row of
+        the copy, and its settle was a whole settle of its own: 6-7 s at prod's size, FR2b 2026-11-17).
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: for hooks with no ``derive_whole`` (:class:`WholeHooks`)
+        """
+        if not isinstance(self._hooks, WholeHooks):
+            raise ValueError("a whole settle needs hooks with derive_whole (WholeHooks)")
+        self._whole_due = True
+
+    async def settle_whole(self) -> Applied | None:
+        """settle the whole copy: in the apply worker, over every scope of the current version read in place, the
+        hooks' ``derive_whole`` computes the derived tables, published with what it lets go as one version, under the
+        apply turn, so no change lands between. Every change after it is derived as it applies.
+
+        :return: what it published; None when the copy holds no version yet
+        :rtype: Applied | None
+        :raises ValueError: for hooks with no ``derive_whole``, or a settle deriving rows of a table it lets go of
+        """
+        hooks = self._hooks
+        if not isinstance(hooks, WholeHooks):
+            raise ValueError("a whole settle needs hooks with derive_whole (WholeHooks)")
+        async with self._applying:
+            current = self._store.current
+            if current is None:
+                return None
+            done = await self._pool.run(
+                _settle_whole_job,
+                replace(self._plan((), ()), hooks=hooks),
+                read=current.name,
+                result_pieces=_APPLY_PIECE_BYTES,
+                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+            )
+            outcome: _Outcome = done.value
+            version = f"c-{self._next}"
+            try:
+                files, sizes = await asyncio.to_thread(
+                    self._publish_change, version, current.name, outcome, done.segment, None
+                )
+            finally:
+                if done.segment is not None:
+                    await asyncio.to_thread(done.segment.close)
+            self._next += 1
+            self._whole_due = False
+            over = self._said_over(version, files)
+            changed = self._regrown(sizes)
+        parts: dict[str, dict[str, bool]] = {}
+        for table, part, name in outcome.parts:
+            parts.setdefault(table, {})[part] = name is not None
+        return Applied(
+            version=version,
+            parts=frozen((table, frozen(done_parts)) for table, done_parts in parts.items()),
+            rows=outcome.rows,
+            written_bytes=outcome.written_bytes,
+            worker=outcome.worker,
+            files=files,
+            merge_due=outcome.pack_due or over,
+            let_go=LetGone(version=version, parts=EMPTY, rows=frozen(outcome.lost)) if outcome.lost else None,
+            rules_changed=changed,
         )
 
     def _said_over(self, version: str, files: int) -> bool:
@@ -2007,9 +2814,10 @@ class SharedCopyBackend:
 
     def _publish_change(
         self, version: str, base: str | None, outcome: _Outcome, segment: MappedSegment | None, mark: int | None
-    ) -> int:
+    ) -> tuple[int, Mapping[str, int]]:
         """publish a change's result on its base (a thread's: IO alone, each written part linked, never copied; a
-        reload's staged parts linked from where it staged them); the files the version holds."""
+        reload's staged parts linked from where it staged them); the files the version holds, and each table's bytes
+        (its parts' files') when the copy follows its declaration (``declared``), else none."""
         files = EMPTY if segment is None else segment.files
         by_table: dict[str, dict[str, Path | None]] = {}
         for table, part, path in outcome.staged:
@@ -2025,7 +2833,8 @@ class SharedCopyBackend:
         if mark is not None:
             tables[MARK_TABLE] = pa.table({"mark": pa.array([int(mark)], pa.int64())})
         self._store.publish(version, tables, base=base)
-        return len(version_files(self._store.root, version))
+        held = version_files(self._store.root, version)
+        return len(held), (EMPTY if self._declared is None else _table_bytes(held, self._schemas))
 
     def _schema_of(self, table: str) -> pa.Schema:
         if table.startswith(LOCATED_PREFIX):
@@ -2059,6 +2868,7 @@ class SharedCopyBackend:
                     pack_below=self._pack_below,
                     pack_target=self._pack_target,
                     max_files=self._max_files,
+                    run_times=self._run_times,
                 ),
                 read=current.name,
                 result_pieces=_APPLY_PIECE_BYTES,
@@ -2100,6 +2910,17 @@ class SharedCopyBackend:
         :rtype: None
         """
         await self._pool.close()
+
+
+def _table_bytes(files: Mapping[str, VersionFile], schemas: Collection[str]) -> Mapping[str, int]:
+    """each table's bytes in a version: its parts' files' (``shared_arrow.version_files``' ``nbytes``), its schema
+    file and the copy's own tables (a locator, a packs index, the mark) aside; 0 for a table holding none."""
+    sizes = dict.fromkeys(schemas, 0)
+    for name, held in files.items():
+        table, separator, rest = name.partition(_PART_SEPARATOR)
+        if separator and table in sizes and rest != _TABLE_SUFFIX:
+            sizes[table] += held.nbytes
+    return frozen(sizes.items())
 
 
 def _instant_keys(

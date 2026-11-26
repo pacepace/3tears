@@ -145,7 +145,7 @@ class TestFewFiles:
         assert _arrays(store) <= len(SCHEMA) * (packs + 1) + 2 * 2
         assert _held(store).equals(_sorted(rows))
 
-    async def test_small_changes_keep_the_file_count_under_the_bound(self, store: SharedArrowStore):
+    async def test_small_changes_keep_the_file_count_under_the_bound(self, store: SharedArrowStore) -> None:
         """Flips if each new small scope stays a file of its own: 60 changes, each bringing a state, left 60 parts a
         version. Each change lands as a part, then the lane's merge packs it: the table holds two parts at most."""
         backend = SharedCopyBackend(store, {"results": SCHEMA}, {"results": BY_STATE})

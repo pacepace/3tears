@@ -57,6 +57,7 @@ __all__ = [
     "pack_name",
     "Locator",
     "Part",
+    "PartDeclaration",
     "PartRule",
     "part_rules",
     "part_name",
@@ -285,6 +286,44 @@ def part_rules(
         big = sizes[table.name] >= (floor // _STAY_SPLIT_DIVISOR if was_split else floor)
         rules.append((table.name, declared if big else PartRule(table.name, key)))
     return frozen(rules)
+
+
+@dataclass(frozen=True, slots=True)
+class PartDeclaration:
+    """what a copy's tables declare about their parts, so the copy cuts them again as they grow
+    (``shared_copy.SharedCopyBackend``'s ``declared``): after each publish the copy sizes its tables and asks
+    :meth:`rules`, and a table crossing :data:`SPLIT_FLOOR_BYTES` (or falling under half of it) is held by its new rule
+    from the next change, rewritten whole in its new shape as that change lands. No table list is written by hand: a
+    table is split by the scope it declares (``FollowedTable.scope``, ``delta_state_scope``).
+
+    :ivar tables: the copied tables (and a product's derived tables, declared alike: a name, a key, a scope)
+    :ivar locators: each table keyed without its scope column, and the key column naming its scope value
+    :ivar runs: each per-run table and its run column
+    :ivar floor: the bytes a table is split at
+    """
+
+    tables: tuple[FollowedTable, ...]
+    locators: Mapping[str, str] = EMPTY
+    runs: Mapping[str, str] = EMPTY
+    floor: int = SPLIT_FLOOR_BYTES
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tables", tuple(self.tables))
+        object.__setattr__(self, "locators", frozen(self.locators))
+        object.__setattr__(self, "runs", frozen(self.runs))
+
+    def rules(self, sizes: Mapping[str, int], held: Mapping[str, PartRule] = EMPTY) -> Mapping[str, PartRule]:
+        """each declared table's rule at these sizes (:func:`part_rules`); a table with no size holds nothing yet.
+
+        :param sizes: each table's bytes as the copy holds it
+        :ptype sizes: Mapping[str, int]
+        :param held: the rules the copy holds its tables by now (a split table stays split down to half the floor)
+        :ptype held: Mapping[str, PartRule]
+        :return: table -> its rule, read-only
+        :rtype: Mapping[str, PartRule]
+        """
+        sized = frozen((table.name, int(sizes.get(table.name, 0))) for table in self.tables)
+        return part_rules(self.tables, sized, locators=self.locators, runs=self.runs, held=held, floor=self.floor)
 
 
 def tier_part(scope: str, level: int, first: int, last: int) -> str:
