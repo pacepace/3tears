@@ -166,8 +166,6 @@ def _build_callbacks(
     callbacks: list[BaseCallbackHandler] = []
 
     effective_tracker = tracker if tracker is not None else default_usage_tracker()
-    cost_in = capabilities.cost_per_input_token if capabilities is not None else None
-    cost_out = capabilities.cost_per_output_token if capabilities is not None else None
     tier = capabilities.model_tier if capabilities is not None else None
     callbacks.append(
         effective_tracker.make_callback(
@@ -175,8 +173,13 @@ def _build_callbacks(
             provider_name=provider_name,
             purpose=purpose,
             tier=tier,
-            cost_per_input_token=cost_in,
-            cost_per_output_token=cost_out,
+            cost_per_input_token=capabilities.cost_per_input_token if capabilities is not None else None,
+            cost_per_output_token=capabilities.cost_per_output_token if capabilities is not None else None,
+            # every price the capabilities carry, so the tracker's cost_usd prices cache reads and
+            # writes at their own rates rather than at the input rate
+            cost_per_cache_read_token=capabilities.cost_per_cache_read_token if capabilities is not None else None,
+            cost_per_cache_write_token=capabilities.cost_per_cache_write_token if capabilities is not None else None,
+            cost_per_request=capabilities.cost_per_request if capabilities is not None else None,
         ),
     )
 
