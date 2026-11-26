@@ -8,6 +8,7 @@ from __future__ import annotations
 from threetears.models.key_pool.classify import KeyErrorClassifier, Verdict, VerdictKind, VerdictScope, classifier_for
 from threetears.models.key_pool.errors import NoKeyAvailableError, NoOutputLimitError
 from threetears.models.key_pool.estimate import reservation_estimate
+from threetears.models.key_pool.metrics import KeyPoolMetrics
 from threetears.models.key_pool.observe import KeyPoolCounters, KeyPoolObserver, MoveReason
 from threetears.models.key_pool.period import period_bounds, period_id
 from threetears.models.key_pool.pool import KeyPool, KeyPoolLease
@@ -32,6 +33,7 @@ __all__ = [
     "KeyPool",
     "KeyPoolCounters",
     "KeyPoolLease",
+    "KeyPoolMetrics",
     "KeyPoolObserver",
     "KeyPoolStatus",
     "KeyPoolStore",
