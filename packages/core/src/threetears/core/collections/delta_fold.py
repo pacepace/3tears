@@ -211,17 +211,12 @@ from threetears.core.collections.volume_fulls import (
 )
 from threetears.core.process_workers import ProcessWorkers
 
-try:
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.compute as pc
-    import pyarrow.ipc as pa_ipc
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.ipc as pa_ipc
 
-    from threetears.core.arrow_keys import key_codes
-
-    _PYARROW = True
-except ImportError:  # NOSILENT: the snapshot extra is optional; a fold refuses without it, saying so
-    _PYARROW = False
+from threetears.core.arrow_keys import key_codes
 
 __all__ = ["DeltaFolds", "FoldedTable", "RebuildConcurrency"]
 
@@ -650,8 +645,6 @@ class DeltaFolds:
         copies: CopyPositionsReader | None = None,
         rebuild: RebuildConcurrency = _REBUILD_CONCURRENCY,
     ) -> None:
-        if not _PYARROW:
-            raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
         if retention not in DELTA_RETENTIONS:
             raise ValueError(f"a fold's retention is one of {DELTA_RETENTIONS}, not {retention!r}")
         if retention == "delete" and copies is None:

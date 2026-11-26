@@ -105,12 +105,9 @@ from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
 
-try:
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.compute as pc
-except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file is read only with it (read_delta_table)
-    pass
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
 
 if TYPE_CHECKING:
     from threetears.nats.capabilities import RawRequester
