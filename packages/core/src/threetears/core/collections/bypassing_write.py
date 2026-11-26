@@ -12,6 +12,7 @@ eviction a cancellation stopped partway leaves exactly the rows it exists to rem
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ class BypassingWrite:
     and settled when it ends.
     """
 
-    __slots__ = ("_collection", "_keys", "_transaction", "_unchanged")
+    __slots__ = ("_collection", "_keys", "_rows", "_transaction", "_unchanged")
 
     def __init__(self, collection: BaseCollection[Any], transaction: CallerTransaction | None) -> None:
         """start a write that has touched nothing yet.
@@ -44,6 +45,8 @@ class BypassingWrite:
         self._transaction = transaction
         #: every key named so far, replaced whole on each :meth:`touches`
         self._keys: tuple[Any, ...] = ()
+        #: the row each key's write saw, in the order of :attr:`keys` (None where none was named)
+        self._rows: tuple[dict[str, Any] | None, ...] = ()
         self._unchanged = False
 
     @property
@@ -56,6 +59,17 @@ class BypassingWrite:
         return self._keys
 
     @property
+    def rows(self) -> tuple[dict[str, Any] | None, ...]:
+        """the row each key's write saw, in the order of :attr:`keys`: what the eviction's broadcast takes the
+        collection's declared invalidation columns from (a membership's member, a grant's group), None where none was
+        named.
+
+        :return: the rows
+        :rtype: tuple[dict[str, Any] | None, ...]
+        """
+        return self._rows
+
+    @property
     def is_unchanged(self) -> bool:
         """whether the body declared that its write changed no row.
 
@@ -64,7 +78,7 @@ class BypassingWrite:
         """
         return self._unchanged
 
-    def touches(self, *entity_ids: Any) -> None:
+    def touches(self, *entity_ids: Any, rows: Sequence[dict[str, Any] | None] | None = None) -> None:
         """name rows the write may have changed; each is evicted when the write, or its transaction, ends.
 
         Name a row before the statement that may change it when the key is known, so a statement
@@ -72,18 +86,26 @@ class BypassingWrite:
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
         :ptype entity_ids: Any
+        :param rows: the row each key's write saw, in the order of ``entity_ids``, for the broadcast's invalidation
+            columns (a cache derived from the table evicts what the row reaches); None when no row was seen
+        :ptype rows: Sequence[dict[str, Any] | None] | None
         :return: nothing
         :rtype: None
+        :raises ValueError: when ``rows`` does not name one row a key, before any key is named
         """
+        seen: tuple[dict[str, Any] | None, ...] = (None,) * len(entity_ids) if rows is None else tuple(rows)
+        if len(seen) != len(entity_ids):
+            raise ValueError(f"touches: {len(entity_ids)} key(s) and {len(seen)} row(s); name one row a key")
         named = 0
         try:
-            for entity_id in entity_ids:
+            for entity_id, row in zip(entity_ids, seen, strict=True):
                 named += 1
                 if self._transaction is not None:
-                    self._transaction.enroll(self._collection, entity_id)
+                    self._transaction.enroll(self._collection, entity_id, row=row)
         finally:
             # one new tuple per call, holding each key named before an enrolment that raised
             self._keys = (*self._keys, *entity_ids[:named])
+            self._rows = (*self._rows, *seen[:named])
 
     def unchanged(self) -> None:
         """declare that the write is known to have changed no row -- a compare-and-swap that lost.

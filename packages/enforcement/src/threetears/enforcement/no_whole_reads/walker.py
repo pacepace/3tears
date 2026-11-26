@@ -184,6 +184,8 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
         "l3_pages",
         "_l3_pages",
         "read_all",
+        # a stamped table's live rows in one statement (threetears.core.keyed.read_live_rows): a cold start's fill
+        "read_live_rows",
     }
 )
 
