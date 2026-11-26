@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import duckdb
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from threetears.core.collections.complete_copy import read_l3_arrow, read_l3_rows
@@ -88,9 +88,13 @@ class _L3:
         self._inner = ThreadedDuckDB(conn)
         self.statements: list[str] = []
 
-    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
         self.statements.append(query)
         return await self._inner.fetch(query, *params)
+
+    async def fetchrow(self, query: str, /, *params: Any) -> dict[str, Any] | None:
+        rows = await self.fetch(query, *params)
+        return rows[0] if rows else None
 
 
 def _chosen(statement: str) -> str:
