@@ -283,6 +283,29 @@ class CircuitBreaker:
         with self._lock:
             return self._last_activity
 
+    def seconds_until_admit(self) -> float:
+        """how long until this breaker could next admit a call, read with no side effects.
+
+        unlike :meth:`check`, never moves OPEN to HALF_OPEN, never admits a probe and
+        never touches ``last_activity``, so it can serve as an eligibility test.
+        ``0.0`` means a call would be admitted now (CLOSED, an OPEN breaker whose
+        recovery window has elapsed, or a HALF_OPEN one whose probe is lost); a positive
+        value is the wait, from an OPEN breaker's recovery window or a HALF_OPEN
+        breaker's in-flight probe.
+
+        :return: seconds until a call could be admitted, ``0.0`` when one would be now
+        :rtype: float
+        """
+        with self._lock:
+            now = self._clock()
+            if self._state == CircuitState.CLOSED:
+                return 0.0
+            if self._state == CircuitState.HALF_OPEN:
+                if not self._probe_in_flight:
+                    return 0.0
+                return max(0.0, self._probe_timeout_seconds - (now - self._probe_started_at))
+            return max(0.0, self._recovery_timeout_seconds - (now - self.last_failure_time))
+
     def check(self) -> None:
         """verifies circuit allows request to proceed.
 
@@ -777,6 +800,29 @@ class CircuitBreakerRegistry:
             self._breakers.move_to_end(key)
             self._last_get[key] = now
         return breaker
+
+    def peek(
+        self, provider_name: str, *, credential: str | None = None, model: str | None = None
+    ) -> CircuitBreaker | None:
+        """returns the breaker for a provider (and credential, and model) if one exists, never creating it.
+
+        :meth:`get` creates a breaker and marks it as just used, which keeps it from
+        idle eviction; ``peek`` does neither, so a reader that only wants to know
+        whether a key is healthy leaves no trace in the registry. (The first call
+        with a credential still draws the registry's fingerprint key, as ``get`` would.)
+
+        :param provider_name: identifier for provider
+        :ptype provider_name: str
+        :param credential: the api key or token the calls are made with, ``None`` for the provider's own
+        :ptype credential: str | None
+        :param model: the model whose rate limits the breaker counts, ``None`` for the provider's own
+        :ptype model: str | None
+        :return: the existing breaker, or ``None`` when none has been created
+        :rtype: CircuitBreaker | None
+        """
+        key = (provider_name, self._fingerprint(credential), model)
+        with self._lock:
+            return self._breakers.get(key)
 
     def _evict_credential_breakers_locked(self, now: float) -> None:
         """drop idle, then least recently used, CLOSED credential breakers. **caller holds the lock.**

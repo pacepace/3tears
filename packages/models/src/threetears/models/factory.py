@@ -133,6 +133,7 @@ def _build_callbacks(
     purpose: LlmPurpose,
     tracker: UsageTracker | None,
     breaker: CircuitBreaker | None,
+    breaker_registry: CircuitBreakerRegistry | None,
     api_key: str,
     extra_callbacks: list[BaseCallbackHandler] | None,
 ) -> list[BaseCallbackHandler]:
@@ -151,6 +152,9 @@ def _build_callbacks(
     :param breaker: circuit breaker (defaults to the shared registry's breaker
         for this provider and credential)
     :ptype breaker: CircuitBreaker | None
+    :param breaker_registry: registry the credential breaker and the per-model rate-limit
+        breaker come from (defaults to the module's own); not allowed with ``breaker``
+    :ptype breaker_registry: CircuitBreakerRegistry | None
     :param api_key: the credential the model calls with; scopes the default
         breaker, and is never stored or logged
     :ptype api_key: str
@@ -176,15 +180,10 @@ def _build_callbacks(
         ),
     )
 
-    effective_breaker = (
-        breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
-    )
+    registry = breaker_registry if breaker_registry is not None else _DEFAULT_BREAKER_REGISTRY
+    effective_breaker = breaker if breaker is not None else registry.get(provider_name, credential=api_key)
     # a rate limit is one model's: it counts against this model's own breaker, not its provider's
-    rate_limit = (
-        None
-        if breaker is not None
-        else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key, model=model_id)
-    )
+    rate_limit = None if breaker is not None else registry.get(provider_name, credential=api_key, model=model_id)
     callbacks.append(effective_breaker.make_callback(rate_limit=rate_limit))
 
     if extra_callbacks:
@@ -201,6 +200,7 @@ def create_chat_model(
     purpose: LlmPurpose = LlmPurpose.CHAT,
     tracker: UsageTracker | None = None,
     breaker: CircuitBreaker | None = None,
+    breaker_registry: CircuitBreakerRegistry | None = None,
     extra_callbacks: list[BaseCallbackHandler] | None = None,
     **provider_kwargs: Any,
 ) -> BaseChatModel:
@@ -228,6 +228,10 @@ def create_chat_model(
         on the same provider; a process with one key has one breaker per
         provider, as before
     :ptype breaker: CircuitBreaker | None
+    :param breaker_registry: optional registry to take the credential breaker AND the per-model
+        rate-limit breaker from, in place of the module's own. unlike ``breaker``, it keeps the
+        per-model rate-limit breaker. passing both raises ``ValueError``
+    :ptype breaker_registry: CircuitBreakerRegistry | None
     :param extra_callbacks: optional extra callbacks to attach
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
     :param provider_kwargs: additional keyword arguments forwarded to the provider factory. On the
@@ -244,8 +248,12 @@ def create_chat_model(
     :ptype provider_kwargs: Any
     :return: configured ``BaseChatModel`` instance with callbacks attached
     :rtype: BaseChatModel
-    :raises ValueError: when the provider cannot be resolved or model_type is wrong
+    :raises ValueError: when the provider cannot be resolved, model_type is wrong, or both
+        ``breaker`` and ``breaker_registry`` are given
     """
+    if breaker is not None and breaker_registry is not None:
+        raise ValueError("pass breaker or breaker_registry, not both")
+
     capabilities = get_capabilities(model_id)
     provider_name = _resolve_provider(
         model_id,
@@ -273,6 +281,7 @@ def create_chat_model(
         purpose=purpose,
         tracker=tracker,
         breaker=breaker,
+        breaker_registry=breaker_registry,
         api_key=api_key,
         extra_callbacks=extra_callbacks,
     )
