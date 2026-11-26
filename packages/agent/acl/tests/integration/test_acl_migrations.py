@@ -21,6 +21,7 @@ from threetears.agent.acl import RoleAssignmentCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.collections import init_connection
+from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -57,6 +58,10 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
+        # namespaces is moveable (row_scope, v007): its schema holds the moves table its moving writes append to, which
+        # the deployment creates (the runner refuses the schema without it: epoch_catalog.refuse_moveable_without_moves)
+        for statement in TENANT_MOVES_SCHEMA.create_statements(yugabyte=False):
+            await conn.execute(statement)
         # acl v001-v008 and agent-tools platform v001-v004
         assert await _runner().apply_for_platform_schema(_Store(conn)) == 12
     finally:
