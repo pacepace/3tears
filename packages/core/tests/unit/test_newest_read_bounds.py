@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import duckdb
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from threetears.nats import Subject
 
@@ -186,7 +186,7 @@ class TestOnTheRail:
         assert READ_SETTINGS_FIELD not in body
 
 
-class _DirectConnection(asyncpg.Connection):
+class _DirectConnection(asyncpg.Connection):  # type: ignore[misc]  # asyncpg is untyped
     """an asyncpg connection (as the store and the helpers judge one) that keeps the statements and transactions it is
     sent; never connected."""
 

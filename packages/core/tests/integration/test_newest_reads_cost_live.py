@@ -302,7 +302,8 @@ async def test_a_listing_s_pages_and_a_prefix_batch_read_their_range_alone(
         cursor = page.next_cursor
     assert listed == expected
     statements = [(sql, params) for sql, params in listing.sent if "DISTINCT ON" in sql]
-    assert len(statements) == len(listing.sent) > 1, listing.sent
+    # every page's statement reads the newest relation (the one other is the engine's version, asked once)
+    assert len(statements) == len([sql for sql, _ in listing.sent if "version()" not in sql]) > 1, listing.sent
     paged = 0
     for sql, params in statements:
         paged += script.rows_read(
@@ -320,9 +321,10 @@ async def test_a_listing_s_pages_and_a_prefix_batch_read_their_range_alone(
         prefix, name, keys=KeyBatch(("state",), [["s000"]], ("text",)), columns=["state", "id", "v"], row_cap=1_001
     )
     assert sorted(int(row["id"]) for row in rows) == expected
-    assert len(prefix.sent) > 1, prefix.sent
+    sent = [(sql, params) for sql, params in prefix.sent if "version()" not in sql]
+    assert len(sent) > 1, sent
     batched = 0
-    for sql, params in prefix.sent:
+    for sql, params in sent:
         assert "LIMIT" in sql and "ANY" not in sql, sql
         read = script.rows_read(
             await _explained(conn, script, sql, params, yugabyte, text=False, batch=False), yugabyte
@@ -330,5 +332,5 @@ async def test_a_listing_s_pages_and_a_prefix_batch_read_their_range_alone(
         # one statement's keys' versions, give or take the request read past its LIMIT: never the scope's
         assert read <= 1_000 * versions * 1.1 + past + 50, (read, sql)
         batched += read
-    _log.warning("prefix batch of %d versions: %d rows read in %d statements", scope, batched, len(prefix.sent))
-    assert batched <= scope * 1.02 + len(prefix.sent) * past + 50, batched
+    _log.warning("prefix batch of %d versions: %d rows read in %d statements", scope, batched, len(sent))
+    assert batched <= scope * 1.02 + len(sent) * past + 50, batched

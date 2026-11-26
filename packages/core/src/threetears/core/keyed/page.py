@@ -265,9 +265,10 @@ async def newest_listing(
         read += versions
         if len(answered) < asked or (wanted is not None and len(kept) >= wanted):
             return kept, read
-        # past the last key read, kept or not
+        # past the last key read, kept or not; a page asks only the rows it still lacks (at least that many keys),
+        # never a whole page again: the next page starts past its last kept row, so keys read past it are read twice
         past = next_past(order, answered[-1])
-        asked = next_newest_keys(len(answered), versions, most)
+        asked = next_newest_keys(len(answered), versions, most if wanted is None else wanted - len(kept))
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
