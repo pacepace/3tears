@@ -19,20 +19,70 @@ One component declares one registry at module level::
 A why the registry does not name is refused where it is counted (a typo would otherwise count nothing a replay
 gates on). Counting is cheap and IO-free: a counter increment and one log line, at INFO for an expected why and at
 WARNING for every other.
+
+**A stamped table's live rows, whole** (:func:`read_live_rows`): the one spelling of a cold start's fill of an empty
+cache from a stamped L3 table (``ROW_STAMPED``), ``SELECT <columns> FROM <table> WHERE NOT gone``, the gone filter in
+the database. Unnarrowed, so its caller declares it (``whole_read(kind="cold_start", ...)``), as it declares any other
+whole pager of 3tears' (``read_l3_rows``).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Mapping
-from typing import Any
+import re
+from collections.abc import Collection, Mapping, Sequence
+from typing import Any, Final
 
+from threetears.core.keyed._filters import reads_l3
+from threetears.interfaces.keyed.keys import stamped_table
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
-__all__ = ["WholeReads"]
+__all__ = ["WholeReads", "read_live_rows"]
 
 log = get_logger(__name__)
+
+#: a TRUSTED column :func:`read_live_rows` writes bare: a plain name
+_COLUMN: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: a TRUSTED table :func:`read_live_rows` writes bare: a plain name, or ``schema.name``
+_TABLE: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?")
+
+
+async def read_live_rows(conn: Any, table: str, columns: Sequence[str]) -> list[Any]:
+    """every live row of a stamped L3 table (``ROW_STAMPED``), in one statement: ``SELECT <columns> FROM <table> WHERE
+    NOT gone``, so a row a delete marked gone in place is left out by the database, never in Python.
+
+    A cold start's fill of an empty cache (a small table read whole once at start and again only after a write that
+    changed the whole table); its caller declares it so (``whole_read(kind="cold_start", ...)``). One statement, never
+    paged: a transport that cuts an answer at its row cap says so (``L3AnswerCutError``), so a short answer is never
+    taken for the table. A table no stamped declaration names (or a read that does not go to L3, whose copy keeps no
+    gone flag) is refused: its gone rows are not marked by the flag this filters on.
+
+    :param conn: the L3 pool, connection or backend (anything with an asyncpg-shaped ``fetch``)
+    :ptype conn: Any
+    :param table: the stamped table, a TRUSTED plain identifier (``name`` or ``schema.name``)
+    :ptype table: str
+    :param columns: the columns read, TRUSTED plain identifiers
+    :ptype columns: Sequence[str]
+    :return: the rows, as the connection answers them
+    :rtype: list[Any]
+    :raises ValueError: when ``table`` is not a stamped L3 table, or a name is not a plain identifier
+    """
+    plain = _TABLE.fullmatch(table) is not None and all(_COLUMN.fullmatch(column) is not None for column in columns)
+    if not plain:
+        raise ValueError(f"read_live_rows: {table!r} or one of {list(columns)!r} is not a plain identifier")
+    if not columns:
+        raise ValueError(f"read_live_rows: {table} names no column to read")
+    declared = stamped_table(table, l3=reads_l3(conn))
+    if declared is None:
+        raise ValueError(
+            f"read_live_rows: {table} is not a stamped L3 table (ROW_STAMPED), so no gone flag marks its deleted rows"
+        )
+    rows: list[Any] = list(
+        await conn.fetch(f"SELECT {', '.join(columns)} FROM {table} WHERE NOT {declared.gone}")  # noqa: S608 - TRUSTED
+    )
+    return rows
 
 
 class WholeReads:
