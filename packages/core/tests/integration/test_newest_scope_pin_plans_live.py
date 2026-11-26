@@ -48,7 +48,7 @@ _LIVE = TableSchema(
         Column("join_state_code", STRING_TYPE),
         Column("votes", INT_TYPE, nullable=True),
     ],
-    indexes=[IndexDef(name=_STATE_INDEX, columns=("join_state_code", "race_id", "geo_id"))],
+    indexes=(IndexDef(name=_STATE_INDEX, columns=("join_state_code", "race_id", "geo_id")),),
     row_epoch=row_versions("join_state_code", scope_prefix="state:"),
     l1_eviction=TEST_L1_TABLE,
 )
@@ -76,6 +76,11 @@ class _Recorder:
     async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
         self.sent.append((query, params))
         return [dict(row) for row in await self._conn.fetch(query, *params)]
+
+    async def fetchrow(self, query: str, /, *params: Any) -> dict[str, Any] | None:
+        self.sent.append((query, params))
+        row = await self._conn.fetchrow(query, *params)
+        return None if row is None else dict(row)
 
 
 @pytest.fixture

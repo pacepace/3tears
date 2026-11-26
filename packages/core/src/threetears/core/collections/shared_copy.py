@@ -88,6 +88,13 @@ crossing ``SPLIT_FLOOR_BYTES`` is cut by its scope from the next change to it, w
 on its base with its mark (:data:`MARK_TABLE`), the let-go drop (``drop_let_go``, now :class:`LetGoRows`), the whole
 settle (``settle_whole``, ``defer_settles_until_whole``) and the run times a merge sees (``_run_times``). Not moved:
 reports' settle and retention policy themselves (its hooks) and its DuckDB staging.
+
+**The copy's health** (moved from reports' ``enr_shared_copy_*`` metrics with the apply, R-1). Every failed apply,
+reload publish and whole settle is counted by why (``shared_copy_apply_failures_total{why}``: ``died``, the apply
+worker died under it, ``BrokenProcessPool``, and :class:`~threetears.core.collections.copy_lane.ApplyLane` gives the
+change once more to a fresh one; ``failed``, anything else), the copy serving its last good version meanwhile. After
+each, failed or not, the store's room is set (``shared_copy_store_room_bytes``: its bound less what it holds), from the
+store's own tallies (``SharedArrowStore.status``), never a directory walk, so the event loop sets it at no cost.
 """
 
 from __future__ import annotations
@@ -95,7 +102,9 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import Collection, Coroutine, Mapping, Sequence
+from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Protocol, runtime_checkable
@@ -150,6 +159,7 @@ from threetears.core.shared_arrow import (
     version_files,
 )
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter, gauge
 
 __all__ = [
     "INDEX_PREFIXES",
@@ -184,6 +194,23 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the copy's applies, reload publishes and whole settles that failed, by why: ``died`` (the apply worker died under it,
+#: ``BrokenProcessPool``: the apply lane gives the change once more to a fresh one) or ``failed`` (anything else). The
+#: copy serves its last good version meanwhile. A product's dashboard reads it (reports' copy health row)
+_APPLY_FAILURES = counter(
+    "shared_copy_apply_failures_total",
+    description="shared copy changes (applies, reload publishes, whole settles) that failed, by why (died: the apply "
+    "worker died; failed: anything else); the copy serves its last good version",
+    label_names=("why",),
+)
+
+#: the store's room: its bound less what it holds, from the store's own tallies (``SharedArrowStore.status``, never a
+#: directory walk), set after every apply, reload publish and whole settle, failed or not
+_STORE_ROOM = gauge(
+    "shared_copy_store_room_bytes",
+    description="bytes the shared copy's store has left: its bound less what it holds, set after each change",
+)
 
 #: a page of rows to upsert (:class:`ChangePage`)
 ROWS: Final = "rows"
@@ -2797,8 +2824,9 @@ class SharedCopyBackend:
         :rtype: Applied
         :raises Exception: what the apply raised; ``BrokenProcessPool`` when its worker died. Nothing is published
         """
-        self._unknown(pages, whole)
-        return await self._applied(pages, whole, mark, ())
+        with self._measured():
+            self._unknown(pages, whole)
+            return await self._applied(pages, whole, mark, ())
 
     async def publish_reload(
         self,
@@ -2828,10 +2856,23 @@ class SharedCopyBackend:
         :raises ReloadStale: for a per-scope reload staged under a rule that is not its table's now. Nothing is
             published on any failure
         """
-        self._unknown(pages, whole)
-        reloads = tuple(reload for reload in staged.reloads if reload.table not in set(whole))
-        applied = await self._applied(pages, whole, mark, reloads)
+        with self._measured():
+            self._unknown(pages, whole)
+            reloads = tuple(reload for reload in staged.reloads if reload.table not in set(whole))
+            applied = await self._applied(pages, whole, mark, reloads)
         return replace(applied, rows=applied.rows + staged.rows)
+
+    @contextmanager
+    def _measured(self) -> Iterator[None]:
+        """count a change's failure by why (:data:`_APPLY_FAILURES`) and set the store's room after it, failed or not
+        (:data:`_STORE_ROOM`). On the event loop: the room is the store's own tallies, no file read."""
+        try:
+            yield
+        except Exception as exc:
+            _APPLY_FAILURES.labels(why="died" if isinstance(exc, BrokenProcessPool) else "failed").inc()
+            raise
+        finally:
+            _STORE_ROOM.set(self._store.max_bytes - int(self._store.status()["held_bytes"]))
 
     async def _applied(
         self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None, reloads: tuple[Reloaded, ...]
@@ -2994,6 +3035,10 @@ class SharedCopyBackend:
         :rtype: Applied | None
         :raises ValueError: for hooks with no ``derive_whole``, or a settle deriving rows of a table it lets go of
         """
+        with self._measured():
+            return await self._settled_whole()
+
+    async def _settled_whole(self) -> Applied | None:
         hooks = self._hooks
         if not isinstance(hooks, WholeHooks):
             raise ValueError("a whole settle needs hooks with derive_whole (WholeHooks)")

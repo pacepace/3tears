@@ -92,6 +92,29 @@ class DiesWhile:
 
 
 @dataclass(frozen=True, slots=True)
+class FailsWhile:
+    """fails a change's apply in the worker, the worker kept, while a file exists.
+
+    :ivar path: the file
+    """
+
+    path: str
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """raise while the file exists, else derive nothing.
+
+        :param applied: what the change did (not read)
+        :ptype applied: AppliedTables
+        :return: no pages
+        :rtype: Sequence[ChangePage]
+        :raises RuntimeError: while the file exists
+        """
+        if os.path.exists(self.path):
+            raise RuntimeError(f"failing while {self.path} exists")
+        return []
+
+
+@dataclass(frozen=True, slots=True)
 class LetsGo:
     """lets go, after each change, of the rows of ``table`` equal to one of ``values`` on ``columns`` (a retention's
     let-go, named by the test).
