@@ -893,7 +893,11 @@ class _Notes:
     ) -> NotedKeysPage | str:
         self.pages += 1
         since, until = noted_between
-        after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
+        after = (
+            datetime.fromisoformat(cursor.after)
+            if cursor is not None and cursor.after is not None
+            else since - timedelta(microseconds=1)
+        )
         start, end = bisect.bisect_right(self.times, after), bisect.bisect_right(self.times, until)
         taken, more = self.notes[start : min(end, start + limit)], end - start > limit
         if more:
@@ -901,7 +905,7 @@ class _Notes:
         return NotedKeysPage(
             keys=tuple(keys for _, keys in taken),
             whole_table=False,
-            next=NotedKeysCursor(slot=0, after=taken[-1][0]) if more else None,
+            next=NotedKeysCursor(slot=0, after=taken[-1][0].isoformat()) if more else None,
         )
 
 
@@ -1076,7 +1080,7 @@ async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
         "keys": [["VA", "1"], ["VA", "2"]],
         "columns": [None, {"state": "VA"}],
         "whole_table": False,
-        "next": {"slot": 3, "after": at.isoformat()},
+        "next": {"slot": 3, "schema": "tools_reports", "scope": "VA", "after": "c3"},
     }
     sent: list[dict[str, Any]] = []
 
@@ -1091,18 +1095,22 @@ async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
         nats_client=nats, namespace_prefix="test", default_namespace="tools.reports", identity_token=lambda: "token"
     )
     page = await proxy.noted_keys(
-        "votes", noted_between=(at, at), cursor=NotedKeysCursor(slot=2, after=at), limit=10, max_bytes=1 << 20
+        "votes",
+        noted_between=(at, at),
+        cursor=NotedKeysCursor(slot=2, schema="tools_reports", scope="TX", after="c2"),
+        limit=10,
+        max_bytes=1 << 20,
     )
     assert page == NotedKeysPage(
         keys=(("VA", "1"), ("VA", "2")),
         columns=(None, {"state": "VA"}),
         whole_table=False,
-        next=NotedKeysCursor(slot=3, after=at),
+        next=NotedKeysCursor(slot=3, schema="tools_reports", scope="VA", after="c3"),
     )
     (asked,) = sent
     assert asked["subject"] == "test.l3.noted_keys"
     assert asked["max_bytes"] == 500, "held under half the payload the bus announces"
-    assert asked["cursor"] == {"slot": 2, "after": at.isoformat()}
+    assert asked["cursor"] == {"slot": 2, "schema": "tools_reports", "scope": "TX", "after": "c2"}
     assert "tenant" not in asked, "the broker names the tenant from the caller's verified schema, never the request"
 
 

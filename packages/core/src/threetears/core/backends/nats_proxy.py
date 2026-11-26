@@ -85,7 +85,12 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.backends.statement_operation import is_resendable, statement_operation
-from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage
+from threetears.core.collections.noted_keys import (
+    NotedKeysCursor,
+    NotedKeysPage,
+    noted_keys_cursor,
+    noted_keys_cursor_wire,
+)
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,
@@ -427,12 +432,11 @@ def _noted_keys_answer(response: Mapping[str, Any], table: str) -> NotedKeysPage
         )
         return "not_covered"
     raw_next = response.get("next")
-    after = None if raw_next is None or raw_next.get("after") is None else datetime.fromisoformat(raw_next["after"])
     return NotedKeysPage(
         keys=tuple(tuple(str(value) for value in key) for key in response.get("keys") or ()),
         columns=tuple(None if held is None else dict(held) for held in response.get("columns") or ()),
         whole_table=bool(response.get("whole_table", False)),
-        next=None if raw_next is None else NotedKeysCursor(slot=int(raw_next["slot"]), after=after),
+        next=None if raw_next is None else noted_keys_cursor(raw_next),
     )
 
 
@@ -1386,9 +1390,7 @@ class NatsProxyL3Backend:
             "namespace": self.default_namespace,
             "table": table,
             "noted_between": [noted_between[0].isoformat(), noted_between[1].isoformat()],
-            "cursor": None
-            if cursor is None
-            else {"slot": cursor.slot, "after": None if cursor.after is None else cursor.after.isoformat()},
+            "cursor": None if cursor is None else noted_keys_cursor_wire(cursor),
             "limit": limit,
             "max_bytes": min(max_bytes, (announced or _NOTED_KEYS_ASSUMED_PAYLOAD) // 2),
             "timeout_ms": self.timeout_ms,

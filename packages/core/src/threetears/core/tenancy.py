@@ -56,6 +56,7 @@ __all__ = [
     "TENANCY_UNDECLARED",
     "TENANT_BY_SCHEMA",
     "Tenancy",
+    "column_tenant_sql",
     "epoch_change_filter",
     "epoch_change_key",
     "no_tenant",
@@ -153,6 +154,27 @@ def _token(prefix: str, value: str) -> str:
     if _TOKEN.match(token):
         return token
     return f"h-{hashlib.sha256(value.encode()).hexdigest()[:_DIGEST]}"
+
+
+def column_tenant_sql(column: str, row: str = "t") -> str:
+    """the SQL of a row's tenant token by its tenant column's value, as :func:`value_tenant` derives it (the same rule
+    as :func:`_token`): ``v-`` and the value when that is one subject token, otherwise ``h-`` and a digest of it;
+    ``NULL`` for a ``NULL`` value. For a read that keeps a column-tenancy table's rows to one tenant's, or names each
+    row's tenant (a restore's records, :mod:`threetears.core.collections.epoch_reads`).
+
+    :param column: the tenant column, a TRUSTED identifier
+    :ptype column: str
+    :param row: the row's alias in the statement
+    :ptype row: str
+    :return: the expression
+    :rtype: str
+    """
+    value = f'{row}."{column.replace(chr(34), chr(34) * 2)}"::text'
+    return (
+        f"(CASE WHEN {value} IS NULL THEN NULL WHEN ('v-' || {value}) ~ '{_TOKEN.pattern}' "
+        f"THEN 'v-' || {value} ELSE 'h-' || left(encode(sha256(convert_to({value}, 'UTF8')), 'hex'), "
+        f"{_DIGEST}) END)"
+    )
 
 
 def schema_tenant(schema: str) -> str:

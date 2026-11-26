@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from packages.core.tests.unit.collections.epoch_range_db import RUNS, STAMPED, RangeDb
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.lost_writes import WriteBackstop, WriterBeats
 from threetears.core.coordination.lease import KVLease
@@ -50,44 +51,22 @@ def _at(seconds: float) -> datetime:
     return datetime.fromtimestamp(seconds, tz=UTC)
 
 
-class _Record(tuple[Any, ...]):
-    """a row of ``noted_rows_since``'s statement, read by position or by name."""
-
-    _FIELDS = (
-        "current_ring",
-        "switch_no",
-        "previous_switched_at",
-        "wait_seconds",
-        "writes_previous_until",
-        "noted",
-        "ring_row",
-        "key_text",
-        "keys",
-        "columns",
-        "tenant",
-    )
-
-    def __getitem__(self, item: Any) -> Any:
-        return super().__getitem__(self._FIELDS.index(item) if isinstance(item, str) else item)
-
-
-class _Pool:
-    """the catalogue (one switched table, in the platform schema) and the ring, answering one keyed note of ``x``."""
+class _Pool(RangeDb):
+    """the database: one stamped table in the platform schema, holding one row ``(CA, x)`` written as the dead
+    writer's window began; each window read is the epoch range its bucket reads bind."""
 
     def __init__(self) -> None:
-        self.windows: list[tuple[Any, ...]] = []
+        super().__init__()
+        self.declared = {STAMPED: RUNS}
+        self.stamped("CA", "x", 3, int(_START * 1000) << 15)
 
-    async def fetch(self, query: str, *args: Any) -> list[Any]:
-        if "pg_trigger" in query:
-            return [{"table_schema": "platform", "table_name": _TABLE}]
-        if "current_ring" in query:
-            self.windows.append(args)
-            epoch = _at(0)
-            return [_Record((0, 0, epoch, 60.0, epoch, True, True, "x", ["x"], None, None))]
-        return []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        raise AssertionError(f"recovery writes nothing to L3: {query}")
+    @property
+    def windows(self) -> list[tuple[int, int]]:
+        """each window read, as its floor and ceiling: one a pass, however many buckets it reads."""
+        bounds = {
+            tuple(arg for arg in args if isinstance(arg, int) and arg > 1 << 40) for _, args in self.data_reads(STAMPED)
+        }
+        return sorted(bounds)  # type: ignore[arg-type]
 
 
 class _Source:
@@ -144,7 +123,7 @@ def _backstop(
     )
 
 
-async def test_a_dead_writer_s_window_is_announced_from_its_notes_and_its_key_deleted() -> None:
+async def test_a_dead_writer_s_window_is_announced_from_its_rows_and_its_key_deleted() -> None:
     """Flips if a writer that died after committing, before its advance, is never announced, or is announced from
     another window than the one its beat names, or its key outlives the recovery (announced again every pass)."""
     nats, pool, source = FakeNatsClient(), _Pool(), _Source()
@@ -166,10 +145,10 @@ async def test_a_dead_writer_s_window_is_announced_from_its_notes_and_its_key_de
     holder_clock.at = writer_clock.at + _STALE + 5
     done = await holder.recover_pass()
     assert done.recovered == ("writer",) and done.live == 1
-    assert source.records == [(_TABLE, [["x"]], False)]
-    (args,) = pool.windows
+    assert source.records == [(STAMPED, [["CA", "x"]], False)]
+    (window,) = pool.windows
     since, until = _at(_START) - CLOCK_SKEW, _at(holder_clock.at) + CLOCK_SKEW
-    assert since in args and until in args
+    assert window == (int(since.timestamp() * 1000) << 15, ((int(until.timestamp() * 1000) + 1) << 15) - 1)
     assert until < beat.beat_at + WRITE_GRACE + CLOCK_SKEW + timedelta(seconds=1)
     bucket = await KVLease(nats, pod_id="reader").bucket()
     assert await bucket.get(key=writer.key) is None

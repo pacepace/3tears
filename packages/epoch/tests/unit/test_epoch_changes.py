@@ -831,7 +831,11 @@ class _Notes:
         if self.answer is not None:
             return self.answer
         since, until = noted_between
-        after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
+        after = (
+            datetime.fromisoformat(cursor.after)
+            if cursor is not None and cursor.after is not None
+            else since - timedelta(microseconds=1)
+        )
         found = [note for note in self.notes if after < note[0] <= until]
         limit = min(limit, self.page_rows or limit)
         taken, more = found[:limit], len(found) > limit
@@ -840,7 +844,7 @@ class _Notes:
         return NotedKeysPage(
             keys=tuple(keys for _, keys in taken),
             whole_table=False,
-            next=NotedKeysCursor(slot=0, after=taken[-1][0]) if more else None,
+            next=NotedKeysCursor(slot=0, after=taken[-1][0].isoformat()) if more else None,
         )
 
 

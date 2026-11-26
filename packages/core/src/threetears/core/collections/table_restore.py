@@ -17,7 +17,7 @@ statement.
 **Which scopes, from ScopeEpochs.** Never by scanning a data table: a stamped write records its highest stamp as
 ``last_epoch`` on every scope it touched (``ScopeEpochs``' "Newest-wins across writers"), so the scopes holding a version
 stamped at X or later are exactly those whose ``last_epoch`` is at or above X, read through the epochs table's
-``last_epoch`` index (:func:`_changed_scopes`). A scope epochs scope names a table's scope as ``scope_prefix + value``
+``last_epoch`` index (:func:`changed_scopes`). A scope epochs scope names a table's scope as ``scope_prefix + value``
 (reports: ``state:VA`` for ``join_state_code = 'VA'``); a scope of another prefix (a race) names none of this table's.
 The writer's contract this rests on: a write of a row of scope value ``v`` touches ``scope_prefix + v``.
 
@@ -26,7 +26,7 @@ the scope bound, ``epoch >= X``, one range of the index (hashed by the scope on 
 folded into records in the restore's worker process (:class:`~threetears.core.change_note_fold.RestoreFolder`, the fold
 the change-note restore uses), so the loop moves bytes only and no row becomes a Python object. A gone marker is a
 version like any other: its key comes back, and a follower evicts it. A run marker
-(:mod:`~threetears.core.ddl.run_markers`) comes back as the whole-table record of its prefix (:func:`_run_marker_changes`),
+(:mod:`~threetears.core.ddl.run_markers`) comes back as the whole-table record of its prefix (:func:`run_marker_changes`),
 read by its own key ``(table_name, scope)``. Every record names X as its ``s_min``: the lowest stamp any row it carries
 may hold.
 
@@ -53,17 +53,26 @@ from operator import itemgetter
 from typing import Any, Final
 
 from threetears.core.change_note_fold import RestoreFolder
-from threetears.core.collections.change_notes import NotedChange
+from threetears.core.collections.noted_change import NotedChange
 from threetears.core.collections.epoch_change import keyed_record_form
-from threetears.core.ddl.change_notes import tenant_sql
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, copy_keyed, keyset_rows
 from threetears.core.sql_fragments import quote_identifier
-from threetears.core.tenancy import Tenancy, schema_tenant, value_tenant
+from threetears.core.tenancy import Tenancy, column_tenant_sql, schema_tenant, value_tenant
 from threetears.observe import get_logger
 
-__all__ = ["RestoredTable", "StampedTable", "VersionedTable", "TableChanges", "restored_tables", "versioned_tables"]
+__all__ = [
+    "RestoredTable",
+    "StampedTable",
+    "TableChanges",
+    "VersionedTable",
+    "changed_scopes",
+    "key_term",
+    "restored_tables",
+    "run_marker_changes",
+    "versioned_tables",
+]
 
 log = get_logger(__name__)
 
@@ -255,7 +264,7 @@ async def versioned_tables(pool: Any) -> list[VersionedTable]:
     return [table for table in await restored_tables(pool) if isinstance(table, VersionedTable)]
 
 
-async def _changed_scopes(pool: Any, schema: str, epochs: str, floor: int) -> list[str]:
+async def changed_scopes(pool: Any, schema: str, epochs: str, floor: int) -> list[str]:
     """the scopes of the scope epochs table ``schema.epochs`` a stamped write touched at ``floor`` or later: their
     ``last_epoch`` at or above it, read through the table's ``last_epoch`` index a page at a time.
 
@@ -292,7 +301,7 @@ def _literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def _key_term(table: RestoredTable, column: str) -> str:
+def key_term(table: RestoredTable, column: str) -> str:
     """a key column of a row as a record spells it: its text, a ``timestamptz`` as its UTC instant.
 
     :param table: the table
@@ -321,10 +330,10 @@ def _fold_columns(table: RestoredTable) -> list[str | Selected]:
     if tenancy.kind == "schema":
         tenant = f"to_json({_literal(schema_tenant(table.schema))}::text)::text"
     elif tenancy.kind == "column":
-        tenant = f"to_json({tenant_sql(tenancy, 't')})::text"
+        tenant = f"to_json({column_tenant_sql(str(tenancy.column))})::text"
     else:
         tenant = "NULL::text"
-    keys = ", ".join(_key_term(table, column) for column in table.keys)
+    keys = ", ".join(key_term(table, column) for column in table.keys)
     # a column tenancy's tenant column is an invalidation column of every record of the table, as its notes carried it
     columns = (
         f"json_build_object({_literal(str(tenancy.column))}, t.{quote_identifier(str(tenancy.column))}::text)::text"
@@ -398,9 +407,11 @@ async def _bucket_rows(pool: Any, table: StampedTable, bucket: int, floor: int) 
     )
 
 
-async def _run_marker_changes(pool: Any, table: VersionedTable, values: Sequence[str], floor: int) -> list[NotedChange]:
-    """the runs of ``table`` deleted at ``floor`` or later in the scopes ``values``, as whole-table changes of their
-    prefixes, one per tenant: read by the run-marker table's key ``(table_name, scope)``.
+async def run_marker_changes(
+    pool: Any, table: VersionedTable, values: Sequence[str], floor: int, ceiling: int | None = None
+) -> list[NotedChange]:
+    """the runs of ``table`` deleted at ``floor`` or later (to ``ceiling``, when named) in the scopes ``values``, as
+    whole-table changes of their prefixes, one per tenant: read by the run-marker table's key ``(table_name, scope)``.
 
     :param pool: the keeper's L3 pool
     :ptype pool: Any
@@ -410,18 +421,23 @@ async def _run_marker_changes(pool: Any, table: VersionedTable, values: Sequence
     :ptype values: Sequence[str]
     :param floor: X, named as the changes' ``s_min``
     :ptype floor: int
+    :param ceiling: the highest epoch read; ``None`` for every one from ``floor`` on (a restore's)
+    :ptype ceiling: int | None
     :return: the changes
     :rtype: list[NotedChange]
     """
     if not table.run_markers or not values:
         return []
+    bounds = [Fragment('t."epoch" >= $1', (floor,))]
+    if ceiling is not None:
+        bounds.append(Fragment('t."epoch" <= $1', (ceiling,)))
     rows = await keyset_rows(
         pool,
         f"{table.schema}.{RUN_MARKERS_TABLE}",
         columns=("scope", "prefix", "epoch"),
         by={"table_name": table.table, "scope": AnyOf(list(values))},
         order=[Sort("scope"), Sort("prefix"), Sort("epoch", cast="bigint")],
-        where=[Fragment('t."epoch" >= $1', (floor,))],
+        where=bounds,
     )
     tenancy = table.tenancy
     prefixes: dict[str | None, dict[tuple[tuple[str, str], ...], None]] = {}
@@ -502,11 +518,11 @@ class TableChanges:
                 continue
             named = (table.schema, table.epochs)
             if named not in changed:
-                changed[named] = await _changed_scopes(self._pool, table.schema, table.epochs, self._floor)
+                changed[named] = await changed_scopes(self._pool, table.schema, table.epochs, self._floor)
             prefix = table.scope_prefix
             values = [scope[len(prefix) :] for scope in changed[named] if scope.startswith(prefix)]
             streamed = False
-            for change in await _run_marker_changes(self._pool, table, values, self._floor):
+            for change in await run_marker_changes(self._pool, table, values, self._floor):
                 streamed = True
                 yield change
             for value in values:
