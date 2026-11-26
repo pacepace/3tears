@@ -69,6 +69,24 @@
 
 <!-- Items available to pick up. -->
 
+- **[MOD-7R2K]** OpenRouter's documented mid-stream error ends the stream silently
+  `effort: M · impact: L · area: models · source: builder · added: 2026-11-26 · status: open`
+
+  OpenRouter documents a mid-stream error as a chunk whose `choices` carry `finish_reason: "error"`.
+  langchain-openrouter 0.2.9 raises only when `choices` is empty, so with the documented shape the stream just
+  ends: the caller gets a truncated answer as if it were whole, and the key pool (KP-H5) never sees the error.
+  Found while building the key pool's classifiers (chunk 03, `key_pool/classify.py`). Fix in
+  `providers/openrouter.py`: raise the provider error for a `finish_reason: "error"` chunk, with a test on the
+  documented shape.
+
+- **[MOD-4QW9]** OpenRouter `max_retries=0` does not turn retries off
+  `effort: S · impact: M · area: models · source: builder · added: 2026-11-26 · status: open`
+
+  With `max_retries=0` langchain-openrouter sets no retry config, so the SDK's default applies: 5xx and connection
+  errors retried for up to an hour. A caller-supplied `client=` ignores `max_retries` entirely. A test run hung on
+  it while building the key pool (chunk 03). Fix in `providers/openrouter.py`: map `max_retries=0` to an explicit
+  no-retry config, with a test that a 5xx surfaces after one request.
+
 ## Promoted
 
 <!-- Items currently being addressed in an active build plan. /prawduct:backlog pick
