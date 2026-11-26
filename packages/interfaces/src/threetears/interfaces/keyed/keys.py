@@ -579,10 +579,11 @@ def _unordered_serving(
     live: frozenset[str] = frozenset(),
 ) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
-    more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
-    narrower); else the primary key where it binds any (always when it binds all its columns: a point read); else
-    None. A secondary index binds its leading columns the read pins to a value or a set of values (``sets``) and, when
-    it binds at least one, each column its partial predicate names that the read pins to exactly the predicate's text.
+    more of the pins than the primary key (the one binding most, then the one binding more leading columns, then a
+    live-only one the read's live guard states, then the narrower); else the primary key where it binds any (always
+    when it binds all its columns: a point read); else None. A secondary index binds its leading columns the read pins
+    to a value or a set of values (``sets``) and, when it binds at least one, each column its partial predicate names
+    that the read pins to exactly the predicate's text.
 
     YugabyteDB plans such a read through the primary key's prefix and filters the rest (3tears #95: 100 rows scanned
     for 20); the coordinator's ruling (#96) names the index that binds more of the pins.
@@ -619,10 +620,17 @@ def _unordered_serving(
     # primary key binds by the same pins and sets (a set of an agent's ids, which the primary key leads with too,
     # names no narrower secondary index). An index binding a value outright is admitted as before
     # (test_keyed_index_hint's ``d7_ds_status`` for a set of ids beside a status)
+    # WHY a live-only index wins a tie before the narrower one (hub v198, 2026-11-26): the hub declared whole indexes
+    # beside its live-only ones (channel_configs.realm_id, datasource_tables.datasource_id, ...) so the database's
+    # foreign-key check during cleanup finds gone children. Ranked by binding and width alone, a live read pinning the
+    # lead was hinted to the whole (ds) over the live-only (ds, ...), which holds only the live rows it asks; and a
+    # same-shape whole/live pair tied, the winner left to the order of a set, which no run fixes. The live-only index
+    # is ranked first among equals only when the read states the live guard (an index :func:`_states` admits): a read
+    # of the table as stored never sees it, and only the database's own foreign-key check reads the whole one
     bound = pinned | sets
     set_floor = _leading_held(primary, bound) if primary is not None else 0
     ranked = [
-        ((held + len(index.stated) + len(index.guarded), held, -len(index.columns)), index)
+        ((held + len(index.stated) + len(index.guarded), held, bool(index.live & live), -len(index.columns)), index)
         for index in indexes
         if not index.primary
         and (held := _leading_held(index, bound)) > 0

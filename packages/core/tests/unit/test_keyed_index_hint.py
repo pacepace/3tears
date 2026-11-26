@@ -36,6 +36,7 @@ from threetears.core.keyed import (
     keyset_page,
     keyset_rows,
     read_by,
+    register_table_indexes,
     serving_index,
 )
 from threetears.core.ddl.row_epoch import ROW_STAMPED
@@ -148,6 +149,23 @@ TableSchema(
     primary_key="id",
     columns=[Column("id", UUID_TYPE), Column("name", STRING_TYPE), Column("status", STRING_TYPE)],
     indexes=(Index("lu_ds_name", "name", unique=True, where="NOT gone"), Index("lu_ds_status", "status")),
+    row_epoch=ROW_STAMPED,
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: a datasource's tables, as the hub declares them since v198: a name unique among a datasource's live rows only
+#: (``WHERE NOT gone``) and, beside it, a whole index of the datasource for the database's foreign-key check during
+#: cleanup, which must find gone children too
+_FK_CHILD = "lt_hint_datasource_tables"
+
+TableSchema(
+    name=_FK_CHILD,
+    primary_key="id",
+    columns=[Column("id", UUID_TYPE), Column("datasource_id", UUID_TYPE), Column("name", STRING_TYPE)],
+    indexes=(
+        Index("lt_tables_ds", "datasource_id"),
+        Index("lt_tables_ds_name", "datasource_id", "name", unique=True, where="NOT gone"),
+    ),
     row_epoch=ROW_STAMPED,
     l1_eviction=TEST_L1_TABLE,
 )
@@ -621,6 +639,90 @@ class TestALiveOnlyIndexServesLiveReadsOnly:
             assert live.startswith("/*+ IndexOnlyScan(t lu_ds_name) */ ") is hinted, live
             assert 'NOT t."gone"' in live, live
             assert "lu_ds_name" not in stored and '"gone"' not in stored.split("WHERE", 1)[-1], stored
+
+
+class TestALiveReadKeepsItsLiveOnlyIndexBesideAWholeOne:
+    """A whole index beside a live-only one leading with the same column (hub v198: ``datasource_tables.datasource_id``
+    and the rest, for the database's foreign-key check during cleanup) never takes a live read: the live-only index
+    holds only the live rows it asks. It wins a tie of binding before the narrower index, and a same-shape pair is
+    decided by that, never by the order a set registered them in; a read stating no live guard never sees it.
+
+    WHY (2026-11-26): ranked by binding and width alone, a live read of a datasource's tables was hinted to the whole
+    (datasource_id), every gone row read and filtered, and a same-shape whole/live pair went to whichever the set
+    named first."""
+
+    _LIVE = frozenset({"gone"})
+    _WHOLE = DeclaredIndex(name="lt_whole_ds", columns=("ds",))
+    _LIVE_SAME = DeclaredIndex(name="lt_live_ds", columns=("ds",), live=frozenset({"gone"}))
+    _LIVE_WIDE = DeclaredIndex(name="lt_live_ds_name", columns=("ds", "name"), unique=True, live=frozenset({"gone"}))
+    _KEY = DeclaredIndex(name="lt_pk", columns=("id",), primary=True)
+
+    def _registered(self, table: str, *indexes: DeclaredIndex) -> str:
+        """``table`` with ``indexes`` registered one call each, so the registry holds them in exactly that order."""
+        for index in (self._KEY, *indexes):
+            register_table_indexes(table, [index])
+        return table
+
+    def test_a_same_shape_pair_goes_to_the_live_only_index_in_either_order(self) -> None:
+        """Flips if a live read pinning the lead is served by the whole index of the same shape, in either order the
+        two were registered, or a read stating no live guard is served by the live-only one."""
+        for table, indexes in (
+            ("lt_hint_same_whole_first", (self._WHOLE, self._LIVE_SAME)),
+            ("lt_hint_same_live_first", (self._LIVE_SAME, self._WHOLE)),
+        ):
+            self._registered(table, *indexes)
+            live = serving_index(table, {"ds": 1}, [], live=self._LIVE)
+            assert live is not None and live.name == "lt_live_ds", (table, live)
+            stored = serving_index(table, {"ds": 1}, [])
+            assert stored is not None and stored.name == "lt_whole_ds", (table, stored)
+
+    def test_a_narrower_whole_index_never_takes_a_live_read(self) -> None:
+        """Flips if a live read pinning only the lead is served by the narrower whole index rather than the live-only
+        one, in either registration order, or a read stating no live guard (with_gone, quiet cleanup) by the live-only
+        one, which would answer it without its gone rows."""
+        for table, indexes in (
+            ("lt_hint_wide_whole_first", (self._WHOLE, self._LIVE_WIDE)),
+            ("lt_hint_wide_live_first", (self._LIVE_WIDE, self._WHOLE)),
+        ):
+            self._registered(table, *indexes)
+            live = serving_index(table, {"ds": 1}, [], live=self._LIVE)
+            assert live is not None and live.name == "lt_live_ds_name", (table, live)
+            for guard in (frozenset(), frozenset({"other"})):
+                stored = serving_index(table, {"ds": 1}, [], live=guard)
+                assert stored is not None and stored.name == "lt_whole_ds", (table, guard, stored)
+
+    def test_an_ordered_same_shape_pair_goes_to_the_live_only_index_in_either_order(self) -> None:
+        """Flips if an ordered live read is served by the whole index of the live-only one's shape in either
+        registration order, or an ordered read stating no live guard by the live-only one."""
+        whole = DeclaredIndex(name="lt_whole_ds_name", columns=("ds", "name"))
+        for table, indexes in (
+            ("lt_hint_order_whole_first", (whole, self._LIVE_WIDE)),
+            ("lt_hint_order_live_first", (self._LIVE_WIDE, whole)),
+        ):
+            self._registered(table, *indexes)
+            live = serving_index(table, {"ds": 1}, [Sort("name")], live=self._LIVE)
+            assert live is not None and live.name == "lt_live_ds_name", (table, live)
+            stored = serving_index(table, {"ds": 1}, [Sort("name")])
+            assert stored is not None and stored.name == "lt_whole_ds_name", (table, stored)
+
+    async def test_read_by_of_a_datasources_tables_is_hinted_to_the_live_only_index(self) -> None:
+        """Flips if read_by (live) of one datasource's tables is not hinted on YugabyteDB to the live-only index, the
+        whole one named instead, or a keyset page read with_gone names the live-only one, or PostgreSQL gets a hint."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await read_by(reader, _FK_CHILD, by={"datasource_id": 1})
+            await keyset_page(
+                reader,
+                _FK_CHILD,
+                columns=("id",),
+                by={"datasource_id": 1},
+                order=[Sort("id", cast="uuid")],
+                limit=5,
+                with_gone=True,
+            )
+            live, stored = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert live.startswith("/*+ IndexOnlyScan(t lt_tables_ds_name) */ ") is hinted, live
+            assert ("/*+" in live) is hinted, live
+            assert "lt_tables_ds_name" not in stored, stored
 
 
 class TestAWholeUniqueKeyServesAnyOrder:
