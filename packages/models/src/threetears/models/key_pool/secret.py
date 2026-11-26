@@ -16,14 +16,17 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final, NoReturn, final
 
+from threetears.observe import BuildOnce
+
 __all__ = ["KeySpec", "Secret"]
 
 #: What every rendering of a secret shows in its place.
 _REDACTED: Final = "<redacted>"
 
 #: The per-process key a secret's hash is drawn with, so ``hash()`` says nothing about the value that
-#: another process, or a dump of hashes, could compare.
-_HASH_KEY: Final = secrets.token_bytes(32)
+#: another process, or a dump of hashes, could compare. Drawn on first use, not at import: importing
+#: ``create_chat_model`` must draw no randomness.
+_HASH_KEY: Final[BuildOnce[None, bytes]] = BuildOnce()
 
 #: A label is short and drawn from a charset safe as a metric label value and inside the pool's store
 #: account names, where ``/`` separates the parts.
@@ -86,7 +89,9 @@ class Secret:
     def __hash__(self) -> int:
         """A hash drawn with a key private to this process, so equal secrets hash equal and no hash
         can be compared across processes."""
-        digest = hashlib.blake2b(self.__value.encode(), key=_HASH_KEY, digest_size=8).digest()
+        digest = hashlib.blake2b(
+            self.__value.encode(), key=_HASH_KEY.get(None, lambda: secrets.token_bytes(32)), digest_size=8
+        ).digest()
         return int.from_bytes(digest, "big")
 
     def __copy__(self) -> Secret:

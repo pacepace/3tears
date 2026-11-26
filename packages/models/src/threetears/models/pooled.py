@@ -49,6 +49,7 @@ import functools
 import threading
 from collections.abc import AsyncIterator, Awaitable, Iterator, Mapping
 from concurrent.futures import Future
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
@@ -58,7 +59,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, convert_to_messag
 from langchain_core.prompt_values import PromptValue
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.runnables.config import ensure_config, merge_configs
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 from threetears.models.errors import CircuitOpenError
 from threetears.models.key_pool import (
@@ -541,21 +542,24 @@ def _prompt_messages(input: Any) -> list[BaseMessage]:  # noqa: A002, ANN401 -- 
 
 # -- the synchronous paths' event loop ------------------------------------------------------------
 
-_LOOP_LOCK = threading.Lock()
-_LOOP: asyncio.AbstractEventLoop | None = None
-_LOOP_THREAD: threading.Thread | None = None
+
+@dataclass(frozen=True)
+class _Bridge:
+    """The private event loop the synchronous paths run pool calls on, and the thread running it."""
+
+    loop: asyncio.AbstractEventLoop
+    thread: threading.Thread
 
 
-def _bridge_loop() -> asyncio.AbstractEventLoop:
-    """The private event loop the synchronous paths run pool calls on, started on first use."""
-    global _LOOP, _LOOP_THREAD  # noqa: PLW0603 -- one loop per process IS module state
-    with _LOOP_LOCK:
-        if _LOOP is None or _LOOP_THREAD is None or not _LOOP_THREAD.is_alive():
-            loop = asyncio.new_event_loop()
-            thread = threading.Thread(target=loop.run_forever, name="threetears-key-pool", daemon=True)
-            thread.start()
-            _LOOP, _LOOP_THREAD = loop, thread
-        return _LOOP
+def _start_bridge() -> _Bridge:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, name="threetears-key-pool", daemon=True)
+    thread.start()
+    return _Bridge(loop, thread)
+
+
+#: One bridge per process, started on first use and started again if its thread has died.
+_BRIDGE: BuildOnce[None, _Bridge] = BuildOnce(is_current=lambda bridge: bridge.thread.is_alive())
 
 
 def _run_sync[T](call: Awaitable[T]) -> T:
@@ -563,8 +567,9 @@ def _run_sync[T](call: Awaitable[T]) -> T:
 
     The caller's context variables go with it. Interrupted while waiting, the call is cancelled.
     """
-    loop = _bridge_loop()
-    if threading.current_thread() is _LOOP_THREAD:
+    bridge = _BRIDGE.get(None, _start_bridge)
+    loop = bridge.loop
+    if threading.current_thread() is bridge.thread:
         raise RuntimeError("a pooled model's synchronous path was called from its own pool loop")
 
     async def run() -> T:
