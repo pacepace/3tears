@@ -80,8 +80,10 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index,
     SchemaBackedCollection,
     TableSchema,
+    UniqueConstraint,
 )
 from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.exceptions import GenerationUnavailableError
@@ -1496,6 +1498,57 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # automation passes ``'auto:agent-yaml'``.
             Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
+        # every index the acl migrations create on the table (v001 its keys, v002 and v004 its readers; v008 left each
+        # whole), declared as the DDL creates it, so a keyed read on YugabyteDB names the one that serves it
+        # (keys.serving_index) among all of them. WHY all, never some: an index left out is one the hint can never
+        # name, so a read it serves best is sent to a worse one that is declared -- a grant's natural-key read (ensure,
+        # grant_winner) hinted to (group_id, scope_type), every grant of the group's scope read and filtered, rather
+        # than its unique index, one row. test_role_assignment_indexes_match_the_migrations holds each declaration to
+        # the migrations' DDL; the purposes, plan tests and reasons stay beside that DDL (and _index_declarations.txt),
+        # each read added here only where the frozen DDL cannot name it
+        indexes=(
+            Index(
+                "idx_role_assignments_group_scope",
+                "group_id",
+                "scope_type",
+                purpose="packages/agent/acl/src/threetears/agent/acl/collections.py::"
+                "RoleAssignmentCollection._revive_gone_grant",
+                plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_revive_gone_grant",
+            ),
+            Index("idx_role_assignments_scope_namespace", "scope_namespace_id", where="scope_namespace_id IS NOT NULL"),
+            Index(
+                "idx_role_assignments_scope_type_customer",
+                "scope_customer_id",
+                "scope_namespace_type",
+                where="scope_type = 'type_customer'",
+            ),
+            Index(
+                "idx_role_assignments_role",
+                "role_id",
+                "assignment_id",
+                purpose="packages/core/src/threetears/core/collections/delete_cascade.py::_live_children",
+                plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_restricted_delete_count",
+            ),
+            Index("idx_role_assignments_scope_type", "scope_type", "assignment_id"),
+            Index(
+                "uq_role_assignments_namespace_grant",
+                "group_id",
+                "role_id",
+                "scope_namespace_id",
+                "managed_by",
+                unique=True,
+                where="scope_type = 'namespace'",
+            ),
+            Index(
+                "uq_role_assignments_all_grant",
+                "group_id",
+                "role_id",
+                "managed_by",
+                unique=True,
+                where="scope_type = 'all'",
+            ),
+        ),
+        unique_constraints=(UniqueConstraint("uq_role_assignments_assignment_id", "assignment_id"),),
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
@@ -1765,10 +1818,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleAssignmentEntity] = []
         if self.l3_pool is not None:
+            # the namespace index's predicate stated as its guard: only a read stating it is served by that partial
+            # index (keys.serving_index); unstated, it was hinted on YugabyteDB to (scope_type, assignment_id), every
+            # namespace grant of every namespace read and filtered
             rows = await read_by(
                 self.l3_pool,
                 "role_assignments",
                 by={"scope_namespace_id": namespace_id, "scope_type": ScopeType.NAMESPACE.value},
+                where=[Fragment('t."scope_namespace_id" IS NOT NULL')],
             )
             result = self._promoted(rows, read_ticket)
         return result
@@ -1919,30 +1976,25 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
 
         row_scope = "platform" if scope_type == "all" else "customer"
-        existing_row = next(
-            iter(
-                (
-                    await keyset_page(
-                        self.l3_pool,
-                        "role_assignments",
-                        columns=("assignment_id",),
-                        by={
-                            "row_scope": row_scope,
-                            "group_id": group_id,
-                            "role_id": role_id,
-                            "scope_type": scope_type,
-                            "scope_namespace_id": scope_id,
-                        },
-                        order=[Sort("assignment_id")],
-                        limit=1,
-                        records=True,
-                    )
-                ).rows
-            ),
-            None,
+        # the grant's rows by its natural key but its provenance (a row of any managed_by holds it): one a managed_by
+        # (uq_role_assignments_namespace_grant / _all_grant), so a handful, read unordered through that index and the
+        # lowest id taken here. WHY unordered: ordered by assignment_id, no declared index holds the order after these
+        # pins, so the primary key's (row_scope, assignment_id) served it and YugabyteDB walked the partition's every
+        # grant in id order, filtering, to its first match (keys.serving_index)
+        existing = await read_by(
+            self.l3_pool,
+            "role_assignments",
+            by={
+                "row_scope": row_scope,
+                "group_id": group_id,
+                "role_id": role_id,
+                "scope_type": scope_type,
+                "scope_namespace_id": scope_id,
+            },
+            columns=("assignment_id",),
         )
-        if existing_row is not None:
-            found: UUID = existing_row["assignment_id"]
+        if existing:
+            found: UUID = min(row["assignment_id"] for row in existing)
             return found, False
         # the grant's customer (acl v005): a namespace grant's is its namespace's (None for a platform one), read
         # by the namespace's key; an 'all' grant has none
