@@ -67,11 +67,26 @@ def _reference_mcp_tool_grants_table_v095(metadata: sa.MetaData) -> sa.Table:
     return table
 
 
+def _reference_mcp_tool_grants_table_v095_live_page(metadata: sa.MetaData) -> sa.Table:
+    """the v0.95.0 shape with mcp v004's live-only page index: ``mcp_tool_grants_live_by_id`` (grant_id ASC) WHERE NOT
+    gone, an operator's page of live grants.
+
+    :param metadata: the metadata to attach the table to
+    :ptype metadata: sa.MetaData
+    :return: the table
+    :rtype: sa.Table
+    """
+    table = _reference_mcp_tool_grants_table_v095(metadata)
+    sa.Index("mcp_tool_grants_live_by_id", table.c.grant_id, postgresql_where=sa_text("NOT gone"))
+    return table
+
+
 def test_parity_mcp_tool_grants_collection_schema() -> None:
     """Production :attr:`McpToolGrantCollection.schema` produces a
-    Table structurally equal to ``_reference_mcp_tool_grants_table_v095``: the frozen v0.8.0 shape, stamped.
+    Table structurally equal to ``_reference_mcp_tool_grants_table_v095_live_page``: the frozen v0.8.0 shape, stamped,
+    with mcp v004's live-only page index.
     """
-    via_reference = _reference_mcp_tool_grants_table_v095(sa.MetaData())
+    via_reference = _reference_mcp_tool_grants_table_v095_live_page(sa.MetaData())
     via_collection = McpToolGrantCollection.schema.to_sqlalchemy_table(sa.MetaData())
     assert_tables_equivalent(via_reference, via_collection)
     # the v0.8.0 shape is the v0.95.0 one but for the two stamped columns

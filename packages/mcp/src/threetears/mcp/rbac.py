@@ -40,6 +40,7 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -140,6 +141,17 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         # since no key is written twice, and versioning needs a scope its writer takes a turn at (ScopeEpochs), which
         # the admin write path has none of. mcp v003 stamps the table
         row_epoch=ROW_STAMPED,
+        # mcp v004: an operator's live grants a page at a time, never through the revoked ones until cleanup
+        indexes=(
+            Index(
+                "mcp_tool_grants_live_by_id",
+                "grant_id",
+                where="NOT gone",
+                asc="grant_id",
+                purpose="packages/mcp/src/threetears/mcp/rbac.py::McpToolGrantCollection.list_grants_page",
+                plan_test="packages/mcp/tests/integration/test_index_plans.py::test_grants_live_page",
+            ),
+        ),
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 

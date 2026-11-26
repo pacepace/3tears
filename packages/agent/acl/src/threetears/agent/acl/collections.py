@@ -354,6 +354,17 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
+        # agent_acl v010: every live group by id, a page at a time, never through the gone ones until cleanup
+        indexes=(
+            Index(
+                "groups_live_by_id",
+                "group_id",
+                where="NOT gone",
+                asc="group_id",
+                purpose="packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.page_all",
+                plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_groups_live_page",
+            ),
+        ),
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
@@ -825,6 +836,21 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
                 server_default="now()",
             ),
         ],
+        # agent_acl v010: a group's live members a page at a time, never through the gone ones until cleanup
+        indexes=(
+            Index(
+                "group_members_live_by_group",
+                "group_id",
+                "id",
+                where="NOT gone",
+                asc="id",
+                purpose=(
+                    "packages/agent/acl/src/threetears/agent/acl/collections.py::GroupMemberCollection.page_by_group",
+                    "packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.read_cascade",
+                ),
+                plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_group_members_live_page",
+            ),
+        ),
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
@@ -1537,6 +1563,15 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_restricted_delete_count",
             ),
             Index("role_assignments_page_by_scope_type", "scope_type", "assignment_id"),
+            # agent_acl v010: every live grant by id, the customer backfill's pages, never through revoked grants
+            Index(
+                "role_assignments_live_by_id",
+                "assignment_id",
+                where="NOT gone",
+                asc="assignment_id",
+                purpose="packages/agent/acl/src/threetears/agent/acl/collections.py::_customer_backfill_plan",
+                plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_role_assignments_live_page",
+            ),
             Index(
                 "uq_role_assignments_namespace_grant",
                 "group_id",
