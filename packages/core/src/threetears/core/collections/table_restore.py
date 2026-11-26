@@ -69,9 +69,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from itertools import groupby
 from operator import itemgetter
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.noted_change import NotedChange
 from threetears.core.collections.epoch_change import RESET_REASON, keyed_record_form
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK, invalidation_columns_of
@@ -81,6 +80,12 @@ from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, copy_keyed, k
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.tenancy import Tenancy, column_tenant_sql, schema_tenant, value_tenant
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    # the folder is Arrow's (core.change_note_fold imports pyarrow and NumPy); the keeper builds it and hands it to
+    # TableChanges, so this module, which epoch_reads (and through it the epoch follow) imports, stays free of Arrow
+    # (tests/enforcement/test_core_imports_without_arrow.py)
+    from threetears.core.change_note_fold import RestoreFolder
 
 __all__ = [
     "RestoredTable",
