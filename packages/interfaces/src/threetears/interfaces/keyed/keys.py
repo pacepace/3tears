@@ -48,7 +48,8 @@ Which index serves a read (:func:`serving_index`): one whose leading columns are
 pins is a constant, and orders nothing), every one in the sort's direction or every one against it (a backward scan).
 Of those, the one holding the most pins; then the fewest columns; the primary key over a secondary index holding as
 many, which needs no hint. No index at all for a relation no declaration registers, a sort by an expression, or a read
-with nothing left to sort by.
+with nothing left to sort by. Before any of that, a unique index whose every column the read binds (each to a value or
+a set) serves it whatever its order: it reads at most one row a value.
 """
 
 from __future__ import annotations
@@ -612,6 +613,37 @@ def _unordered_serving(
     return primary if floor else None
 
 
+def _unique_bound(
+    relation: Relation,
+    pinned: set[str],
+    by: Mapping[Any, Any],
+    guarded: frozenset[str],
+    sets: frozenset[str],
+    live: frozenset[str],
+) -> DeclaredIndex | None:
+    """the narrowest unique secondary index whose every column the read binds to a value or a set of values, its
+    predicate stated; None when none is.
+
+    WHY an ordered read takes it (agent-acl's grant indexes declared, 2026-11-26): such a read finds at most one row a
+    value through it, so its order sorts that handful and no index need hold it. A grant's natural-key read
+    (``grant_winner``, oldest first by ``(date_granted, assignment_id)``) found no declared index holding its order and
+    was left to the planner; through ``uq_role_assignments_namespace_grant`` it reads the one row the grant holds. A
+    column pinned to NULL binds no single row (two NULLs are distinct in a unique index), so such a pin binds nothing
+    here.
+    """
+    bound = {column for column in pinned if by.get(column) is not None} | sets
+    keyed = [
+        index
+        for named, index in _INDEXES
+        if named == relation
+        and index.unique
+        and not index.primary
+        and set(index.columns) <= bound
+        and _states(index, by, guarded, live)
+    ]
+    return min(keyed, key=lambda index: len(index.columns)) if keyed else None
+
+
 def serving_index(
     table: Any,
     by: Mapping[Any, Any],
@@ -623,8 +655,9 @@ def serving_index(
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
     An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
-    (:func:`_unordered_serving`); so is a read sorting by an expression, which no plain index holds, unless only the
-    primary key binds its pins (None: the planner's own choice).
+    (:func:`_unordered_serving`); an ordered one binding every column of a unique index by that index
+    (:func:`_unique_bound`); a read sorting by an expression, which no plain index holds, as an unordered one is,
+    unless only the primary key binds its pins (None: the planner's own choice).
 
     :param table: the relation read (a derived relation, or a name no declaration registers, has none)
     :ptype table: Any
@@ -651,6 +684,9 @@ def serving_index(
     sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
     if not sorts:
         return _unordered_serving(relation, pinned, by, guarded, sets, live)
+    keyed = _unique_bound(relation, pinned, by, guarded, sets, live)
+    if keyed is not None:
+        return keyed
     if any(sort.expression is not None for sort in sorts):
         # WHY an order by an expression names the index binding most pins (D5 via the coordinator, 2026-11-15): no
         # plain B-tree index holds such an order, so the read sorts whatever rows it reads and the fewest is the best

@@ -175,6 +175,40 @@ TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
+#: a group's grants, as agent-acl declares role_assignments: by group and scope, a namespace's (its id IS NOT NULL),
+#: by scope type, and a namespace grant's natural key, unique among the namespace scope's rows
+_GRANTS = "ai_hint_grants"
+
+TableSchema(
+    name=_GRANTS,
+    primary_key=("row_scope", "grant_id"),
+    columns=[
+        Column("row_scope", STRING_TYPE),
+        Column("grant_id", UUID_TYPE),
+        Column("group_id", UUID_TYPE),
+        Column("role_id", UUID_TYPE),
+        Column("scope_type", STRING_TYPE),
+        Column("scope_ns", UUID_TYPE, nullable=True),
+        Column("managed_by", STRING_TYPE),
+        Column("date_granted", STRING_TYPE),
+    ],
+    indexes=(
+        Index("ai_grants_group_scope", "group_id", "scope_type"),
+        Index("ai_grants_ns", "scope_ns", where="scope_ns IS NOT NULL"),
+        Index("ai_grants_scope_type", "scope_type", "grant_id"),
+        Index(
+            "ai_grants_ns_key",
+            "group_id",
+            "role_id",
+            "scope_ns",
+            "managed_by",
+            unique=True,
+            where="scope_type = 'namespace'",
+        ),
+    ),
+    l1_eviction=TEST_L1_TABLE,
+)
+
 #: the skills listing's order (agent-skills' _RECENT_FIRST_PAGE): an expression, then columns no index holds
 _RECENT_FIRST = [
     Sort("last_used_or_never", descending=True, expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)"),
@@ -587,3 +621,43 @@ class TestALiveOnlyIndexServesLiveReadsOnly:
             assert live.startswith("/*+ IndexOnlyScan(t lu_ds_name) */ ") is hinted, live
             assert 'NOT t."gone"' in live, live
             assert "lu_ds_name" not in stored and '"gone"' not in stored.split("WHERE", 1)[-1], stored
+
+
+class TestAWholeUniqueKeyServesAnyOrder:
+    """An ordered read binding every column of a unique index (each to a value or a set) finds at most one row a value
+    through it: its order sorts that handful, so no index need hold it.
+
+    WHY (agent-acl's grant_winner, oldest first by (date_granted, assignment_id)): no declared index held that order,
+    so the read was left to the planner rather than named to the natural-key unique index that holds the one row."""
+
+    _KEY = {"group_id": 1, "role_id": 2, "scope_ns": 3, "managed_by": "manual"}
+    _OLDEST = [Sort("date_granted"), Sort("grant_id")]
+
+    def test_an_ordered_read_binding_the_whole_key_takes_it(self) -> None:
+        """Flips if an ordered read binding the whole natural key, its predicate stated, is not served by the unique
+        index, or one with the row scope a set beside it."""
+        for by in (
+            {**self._KEY, "scope_type": "namespace"},
+            {**self._KEY, "scope_type": "namespace", "row_scope": AnyOf(["platform", "customer"])},
+        ):
+            served = serving_index(_GRANTS, by, self._OLDEST)
+            assert served is not None and served.name == "ai_grants_ns_key", (by, served)
+
+    def test_not_for_a_null_pin_another_scope_or_part_of_the_key(self) -> None:
+        """Flips if the unique index is named for a read pinning a key column to NULL (two NULLs are distinct: it binds
+        no single row), stating another scope's text (it holds none of those rows), or binding part of the key."""
+        for by in (
+            {**self._KEY, "scope_ns": None, "scope_type": "namespace"},
+            {**self._KEY, "scope_type": "all"},
+            {"group_id": 1, "role_id": 2, "scope_ns": 3, "scope_type": "namespace"},
+        ):
+            served = serving_index(_GRANTS, by, self._OLDEST)
+            assert served is None or served.name != "ai_grants_ns_key", (by, served)
+
+    def test_a_live_only_unique_index_serves_an_ordered_live_read_never_a_with_gone_one(self) -> None:
+        """Flips if the live-only unique name index is not named for an ordered live read of one name, or is named for
+        one stating no live guard (with_gone, quiet cleanup), which it would answer without its gone rows."""
+        live = serving_index(_LIVE_NAMED, {"name": "a"}, [Sort("id")], live=frozenset({"gone"}))
+        assert live is not None and live.name == "lu_ds_name", live
+        stored = serving_index(_LIVE_NAMED, {"name": "a"}, [Sort("id")])
+        assert stored is None or stored.name != "lu_ds_name", stored

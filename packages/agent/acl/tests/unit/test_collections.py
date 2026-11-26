@@ -673,7 +673,10 @@ class TestEnsureGroupRoleAssignment:
         sql, *args = reread
         # the winner is read in either row scope (the natural-key index that absorbed ours spans both), by the grant
         assert '"row_scope" = ANY($1' in sql, sql
-        assert args[1:] == [group_id, role_id, "namespace", scope_id, "bootstrap"]
+        # the scope written as the literal its natural-key index's predicate names (WHERE scope_type = 'namespace'),
+        # so a generic plan proves the predicate; every other pin bound
+        assert "\"scope_type\" = 'namespace'" in sql, sql
+        assert args[1:] == [group_id, role_id, scope_id, "bootstrap"]
         assert sorted(args[0]) == ["customer", "platform"]
         # through the broker the absorbed insert still advanced the table: the winner is announced
         coll.invalidate_cache_many.assert_awaited_once_with([("platform", winner)], rows=[{"group_id": group_id}])
@@ -861,10 +864,11 @@ class TestDeleteByGroupAndScope:
             managed_by="auto:agent-yaml",
         )
         # a revoke marks its grants gone in place (ROW_STAMPED), never a DELETE: the gone flag and the risen epoch are
-        # $1 and $2, so the pins follow from $3
+        # $1 and $2, so the pins follow from $3; the scope is the literal its partial indexes' predicates name
         delete = pool.fetch.await_args_list[1]
         assert delete.args[0].lstrip().upper().startswith('UPDATE "ROLE_ASSIGNMENTS" SET "GONE" = $1')
-        assert '"managed_by" = $7' in delete.args[0]
+        assert "\"scope_type\" = 'namespace'" in delete.args[0]
+        assert '"managed_by" = $6' in delete.args[0]
         assert delete.args[-1] == "auto:agent-yaml"
 
 

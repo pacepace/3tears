@@ -24,13 +24,25 @@ from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.acl import NamespaceEntity
 from threetears.agent.acl.types import ScopeType
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
-from threetears.core.collections.delete_cascade import read_delete_cascade
+from threetears.core.collections.delete_cascade import (
+    RestrictedDeleteError,
+    read_delete_cascade,
+    refuse_restricted_delete,
+)
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, next_epoch
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, bucket_epoch_index_name, next_epoch
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
-from threetears.interfaces.keyed import AnyOf, Sort, delete_keyed_statements, read_by_statement
+from threetears.interfaces.keyed import (
+    AnyOf,
+    Fragment,
+    Sort,
+    delete_keyed_statements,
+    read_by_statement,
+    update_keyed_statements,
+)
 from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import (
     PlanRecorder,
@@ -481,6 +493,11 @@ class _PlanFirst:
 
     def __init__(self, conn: asyncpg.Connection) -> None:
         self._conn = conn
+
+    async def answers_from_yugabyte(self) -> bool:
+        """whether its connection is YugabyteDB, as a PlanRecorder answers it: a keyed read's index hint asks this,
+        never a ``SELECT version()`` this double would plan as the method's first statement."""
+        return await known_on_yugabyte(self._conn)
 
     async def _plan(self, sql: str, *args: Any) -> Any:
         raise _FirstPlanned(await explain_statement(self._conn, sql, *args))
@@ -944,3 +961,114 @@ async def test_namespaces_tool_provider_pod(conn: asyncpg.Connection) -> None:
             plan, "idx_namespaces_type"
         )
         assert keyed and plan.rows_scanned == 40, json.dumps(plan.plan)[:2500]
+
+
+async def test_restricted_delete_count(conn: asyncpg.Connection) -> None:
+    """Flips if a role's delete, counting the live grants that still name it (role_assignments.role_id ON DELETE
+    RESTRICT, run by 3tears for a gone mark: refuse_restricted_delete), stops reading idx_role_assignments_role."""
+    await _seed_assignments(conn)
+    role = await conn.fetchval("SELECT role_id FROM roles ORDER BY role_id LIMIT 1")
+    roles, recorder = _recorded(acl.RoleCollection, conn)
+    with pytest.raises(RestrictedDeleteError):
+        await refuse_restricted_delete(roles, [role])
+    assert recorder.plans, "the count sent no statement"
+    for plan in recorder.plans:
+        assert plan_uses_index(plan, "idx_role_assignments_role"), _outline(plan.plan)
+
+
+async def test_revive_gone_grant(conn: asyncpg.Connection) -> None:
+    """Flips if the revive of a gone grant (RoleAssignmentCollection._revive_gone_grant: one keyed UPDATE by the grant's
+    whole natural key, in either row scope, of a gone row only) stops finding its row through an index of its pins:
+    idx_role_assignments_group_scope or its scope's natural-key unique index, each led by the group, or a namespace
+    grant's idx_role_assignments_scope_namespace (YugabyteDB's choice: a keyed write carries no hint)."""
+    await _seed_assignments(conn)
+    # some grants revoked (marked gone in place), so the revive's gone row is among them
+    await conn.execute(
+        "UPDATE role_assignments SET gone = true WHERE assignment_id IN (SELECT assignment_id FROM role_assignments"
+        " ORDER BY assignment_id LIMIT 500)"
+    )
+    await conn.execute("ANALYZE role_assignments")
+    for scope in ("namespace", "all"):
+        held = await conn.fetchrow(
+            "SELECT group_id, role_id, scope_namespace_id, managed_by FROM role_assignments WHERE scope_type = $1"
+            " ORDER BY assignment_id LIMIT 1",
+            scope,
+        )
+        assert held is not None
+        sql, params = update_keyed_statements(
+            "role_assignments",
+            values={"gone": False, "date_granted": None},
+            by={
+                "row_scope": AnyOf(("platform", "customer"), cast=None),
+                "group_id": held["group_id"],
+                "role_id": held["role_id"],
+                "scope_type": scope,
+                "scope_namespace_id": held["scope_namespace_id"],
+                "managed_by": held["managed_by"],
+            },
+            where=[Fragment('"gone"')],
+            returning=("assignment_id", "row_scope"),
+        )[0]
+        async with _rolled_back(conn):
+            plan = await explain_write(conn, sql, *params)
+        keyed = ["idx_role_assignments_group_scope"]
+        if scope == "namespace":
+            keyed += ["uq_role_assignments_namespace_grant", "idx_role_assignments_scope_namespace"]
+        else:
+            keyed += ["uq_role_assignments_all_grant"]
+        assert any(plan_uses_index(plan, index) for index in keyed), (scope, _outline(plan.plan))
+
+
+async def test_role_assignment_indexes_match_the_migrations(conn: asyncpg.Connection) -> None:
+    """Flips if an index RoleAssignmentCollection's schema declares differs from the one the acl migrations create
+    (its columns in order, its uniqueness, its predicate), or the migrations create one on role_assignments the schema
+    does not declare. A keyed read on YugabyteDB names the declared index that serves it: a declaration that is not
+    the live index names one that does not hold the read's rows, and one left out is never named.
+
+    Each declaration is created on a scratch copy of the table, so the database spells its predicate as it spells the
+    live one's; the primary key and the stamped table's restore index (its row_epoch declaration's) are not
+    declared as indexes."""
+    schema = acl.RoleAssignmentCollection.schema
+    live_sql = (
+        "SELECT c.relname AS name, i.indisunique AS is_unique, pg_get_expr(i.indpred, i.indrelid) AS predicate,"
+        " array(SELECT a.attname::text FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, n)"
+        " JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum ORDER BY k.n) AS columns"
+        " FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid"
+        " WHERE t.relname = $1 AND t.relnamespace = $2::regnamespace"
+    )
+
+    async def indexes(table: str, namespace: str) -> dict[str, tuple[bool, tuple[str, ...], str | None]]:
+        return {
+            row["name"]: (row["is_unique"], tuple(row["columns"]), row["predicate"])
+            for row in await conn.fetch(live_sql, table, namespace)
+        }
+
+    current = await conn.fetchval("SELECT current_schema()")
+    live = await indexes("role_assignments", current)
+    async with _rolled_back(conn):
+        await conn.execute("CREATE TEMP TABLE declared_probe (LIKE role_assignments)")
+        temp = await conn.fetchval("SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()")
+        for at, index in enumerate(schema.indexes):
+            unique = "UNIQUE " if index.unique else ""
+            where = "" if index.where is None else f" WHERE {index.where}"
+            await conn.execute(
+                f"CREATE {unique}INDEX declared_probe_{at} ON declared_probe ({', '.join(index.columns)}){where}"
+            )
+        probed = await indexes("declared_probe", temp)
+    for at, index in enumerate(schema.indexes):
+        assert index.name in live, f"{index.name} is declared but no migration creates it"
+        assert live[index.name] == probed[f"declared_probe_{at}"], (index.name, live[index.name])
+    constraints = {
+        row["conname"]: tuple(row["columns"])
+        for row in await conn.fetch(
+            "SELECT con.conname, array(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, n)"
+            " JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum ORDER BY k.n) AS columns"
+            " FROM pg_constraint con WHERE con.conrelid = 'role_assignments'::regclass AND con.contype = 'u'"
+        )
+    }
+    assert constraints == {unique.name: tuple(unique.columns) for unique in schema.unique_constraints}, constraints
+    declared = {index.name for index in schema.indexes} | set(constraints)
+    undeclared = set(live) - declared - {"role_assignments_pkey", bucket_epoch_index_name("role_assignments")}
+    assert not undeclared, (
+        f"the migrations create {sorted(undeclared)} on role_assignments, which the schema does not declare"
+    )
