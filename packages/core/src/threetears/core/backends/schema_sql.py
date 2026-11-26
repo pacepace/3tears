@@ -31,6 +31,7 @@ from threetears.interfaces.keyed.filters import quote_identifier
 from threetears.interfaces.keyed.keys import newest_relation, versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, rising_epoch_assignment
+from threetears.core.ddl.tenant_moves import moved_assignments, moved_returning
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -88,6 +89,8 @@ __all__ = [
     "insert_columns_for_data",
     "json_default",
     "key_array_type",
+    "moving_columns",
+    "moving_returning",
     "normalize_read_value",
     "normalize_write_value",
     "pull_value",
@@ -624,17 +627,71 @@ def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Co
     chosen = _named_set(mutable, named)
     rising = _rises_epoch(schema)
     if chosen:
+        target = _conflict_target_ref(schema)
         # a stamped table's epoch never goes back, whichever process's clock stamped the write (row_epoch)
-        result = ", ".join(
-            rising_epoch_assignment(_conflict_target_ref(schema))
-            if rising and c.name == EPOCH_COLUMN
-            else f"{c.name} = EXCLUDED.{c.name}"
+        terms = [
+            rising_epoch_assignment(target) if rising and c.name == EPOCH_COLUMN else f"{c.name} = EXCLUDED.{c.name}"
             for c in chosen
+        ]
+        # a moveable column the row sets records the tenant the row leaves, in this same statement (tenant_moves); its
+        # move's epoch is the row's new one, as rising_epoch_assignment sets it
+        moveable = _moveable(schema)
+        new_epoch = f"GREATEST({target}.{EPOCH_COLUMN} + 1, EXCLUDED.{EPOCH_COLUMN})"
+        terms.extend(
+            moved_assignments(c.name, f"EXCLUDED.{c.name}", new_epoch, target=target)
+            for c in chosen
+            if c.name in moveable
         )
+        result = ", ".join(terms)
     else:
         first = mutable[0].name
         result = f"{first} = {_conflict_target_ref(schema)}.{first}"
     return result
+
+
+def _moveable(schema: TableSchema) -> tuple[str, ...]:
+    """the columns a write may move ``schema``'s row between tenants by (``TableSchema.moveable``,
+    :mod:`~threetears.core.ddl.tenant_moves`), read duck-typed as this module reads a schema.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: them; none for most tables
+    :rtype: tuple[str, ...]
+    """
+    return tuple(getattr(schema, "moveable", ()) or ())
+
+
+def moving_columns(schema: TableSchema, data: Mapping[str, Any], *, fenced: bool = False) -> list[str]:
+    """the moveable columns (``TableSchema.moveable``) a single-row write of ``data`` sets in a row L3 holds: those whose
+    move the statement records (:func:`_update_set_clause`, :func:`build_cas_update_sql`) and returns
+    (:func:`moving_returning`). Empty for a table with none, or a write that sets none of them.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param data: the row as written
+    :ptype data: Mapping[str, Any]
+    :param fenced: the write is the fenced ``UPDATE`` (:func:`upsert_set_columns`' ``fenced``)
+    :ptype fenced: bool
+    :return: the columns, in declared order
+    :rtype: list[str]
+    """
+    moveable = _moveable(schema)
+    if not moveable:
+        return []
+    return [name for name in upsert_set_columns(schema, data, fenced=fenced) if name in moveable]
+
+
+def moving_returning(columns: Sequence[str]) -> str:
+    """the ``RETURNING`` clause a single-row write that sets the moveable ``columns`` ends with (:func:`moving_columns`):
+    the row's epoch and each column's ``moved_from`` and ``moved_epoch``, so the writer learns from the statement
+    itself whether, and from which tenant, the row moved (:func:`~threetears.core.ddl.tenant_moves.moves_returned`).
+
+    :param columns: the moveable columns the write sets
+    :ptype columns: Sequence[str]
+    :return: the clause, with its leading space
+    :rtype: str
+    """
+    return moved_returning(columns)
 
 
 def _rises_epoch(schema: TableSchema) -> bool:
@@ -824,8 +881,10 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     set_parts: list[str] = []
     next_idx = len(pk_cols) + 1
     rising = _rises_epoch(schema)
+    values: dict[str, str] = {}
     for col in mutable:
         value = render_param(col, next_idx)
+        values[col.name] = value
         # a stamped table's epoch never goes back (row_epoch): GREATEST(epoch + 1, the new stamp)
         set_parts.append(
             f"{col.name} = GREATEST({col.name} + 1, {value})"
@@ -833,6 +892,14 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
             else f"{col.name} = {value}"
         )
         next_idx += 1
+    moveable = _moveable(schema)
+    if moveable and EPOCH_COLUMN in values:
+        # a moveable column the row sets records the tenant the row leaves, in this same statement (tenant_moves): the
+        # right-hand sides read the row as it was. Its move's epoch is the row's new one, as the epoch's term sets it
+        new_epoch = f"GREATEST({EPOCH_COLUMN} + 1, {values[EPOCH_COLUMN]})"
+        set_parts.extend(
+            moved_assignments(col.name, values[col.name], new_epoch) for col in mutable if col.name in moveable
+        )
     # final $ is the CAS fence value
     cas_idx = next_idx
     if not set_parts:

@@ -469,13 +469,18 @@ def bucket_split_sql() -> str:
 
 
 def stamped_restore_declaration(
-    keys: tuple[str, ...], instants: tuple[str, ...], tenancy: tuple[str, str | None]
+    keys: tuple[str, ...],
+    instants: tuple[str, ...],
+    tenancy: tuple[str, str | None],
+    moveable: tuple[str, ...] = (),
 ) -> str:
     """what a stamped table's ``(bucket, epoch)`` index says of the table as its comment, for the restore to read it by.
 
     JSON: the mark, ``"kind": "stamped"``, the bucket column and the number of buckets, the key columns in order
     (``instants`` those a record spells as their UTC text), and the tenancy. A versioned table's declaration
-    (:func:`restore_declaration`) names no kind.
+    (:func:`restore_declaration`) names no kind. A table a write may move between tenants (``TableSchema.moveable``,
+    :mod:`~threetears.core.ddl.tenant_moves`) names its moveable columns too (``"moveable"``), so a restore reads back
+    the tenant each moved row left; a table with none carries no such key, its comment byte for byte as before.
 
     :param keys: the table's primary key's columns, in order
     :ptype keys: tuple[str, ...]
@@ -483,23 +488,25 @@ def stamped_restore_declaration(
     :ptype instants: tuple[str, ...]
     :param tenancy: the table's tenancy kind and its tenant column (or None)
     :ptype tenancy: tuple[str, str | None]
+    :param moveable: the columns a write may move the row's tenant by; none for most tables
+    :ptype moveable: tuple[str, ...]
     :return: the comment's text
     :rtype: str
     """
     kind, column = tenancy
-    return json.dumps(
-        {
-            RESTORE_DECLARATION_MARK: 1,
-            "kind": "stamped",
-            "bucket": BUCKET_COLUMN,
-            "buckets": RESTORE_BUCKETS,
-            "keys": list(keys),
-            "instants": list(instants),
-            "tenancy": kind,
-            "tenant_column": column,
-        },
-        separators=(",", ":"),
-    )
+    declared: dict[str, Any] = {
+        RESTORE_DECLARATION_MARK: 1,
+        "kind": "stamped",
+        "bucket": BUCKET_COLUMN,
+        "buckets": RESTORE_BUCKETS,
+        "keys": list(keys),
+        "instants": list(instants),
+        "tenancy": kind,
+        "tenant_column": column,
+    }
+    if moveable:
+        declared["moveable"] = list(moveable)
+    return json.dumps(declared, separators=(",", ":"))
 
 
 def _wall_ms() -> int:

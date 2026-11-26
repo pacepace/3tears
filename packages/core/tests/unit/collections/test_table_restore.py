@@ -31,6 +31,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     STRING_TYPE,
+    UUID_TYPE,
     Column,
     TableSchema,
     collection_for_schema,
@@ -49,9 +50,10 @@ from threetears.core.ddl.row_epoch import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_column
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
-from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant
+from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.enforcement.no_whole_reads.schema import collect_schema
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
@@ -496,3 +498,82 @@ def test_a_stamped_table_declares_its_bucket_epoch_index_and_its_restore_declara
     assert any(each.startswith(f'COMMENT ON INDEX "{index}"') for each in on_postgres), on_postgres
     cache = _RUNS.to_sqlalchemy_table(sa.MetaData())
     assert BUCKET_COLUMN not in cache.c and not any(each.name == index for each in cache.indexes)
+
+
+_MOVING_TABLE = "moving_runs"
+_MOVING_FROM = moved_from_column("customer_id")
+_MOVING_EPOCH = moved_epoch_column("customer_id")
+_LEFT = "0193a2b4-0000-7000-8000-00000000000a"
+_JOINED = "0193a2b4-0000-7000-8000-00000000000b"
+
+#: a stamped table whose tenant column a write may change in place (``TableSchema.moveable``, tenant_moves)
+_MOVING = TableSchema(
+    name=_MOVING_TABLE,
+    primary_key="id",
+    columns=[Column("id", STRING_TYPE), Column("customer_id", UUID_TYPE, nullable=True), Column("rows", BIGINT_TYPE)],
+    tenancy=tenant_column("customer_id"),
+    row_epoch=ROW_STAMPED,
+    moveable=("customer_id",),
+    l1_eviction=Declared(Policy.EVICTABLE, "a test's stamped table whose tenant moves"),
+)
+
+
+async def test_a_restore_reads_back_each_moved_row_for_the_tenant_it_left() -> None:
+    """Flips if a restore of a lost log reads a moveable stamped table's rows back only for their current tenant (the
+    tenant a row left since X keeps it), reads the moves outside the bucket's (bucket, epoch) range, or reads a row
+    whose move is older than X back for the tenant it left long ago."""
+    bus, source, lost = await _lost_log()
+    now = datetime.now(UTC)
+    mark_at = now - timedelta(minutes=1)
+    floor = restore_floor(int(mark_at.timestamp() * 1000))
+    pool = _Pool(lost, now, [{"log_incarnation": lost, "seq": 0, "at": mark_at, "id": 1}])
+    pool.catalog = [(_MOVING_TABLE, _declaration(_MOVING))]
+    # (key, bucket, epoch, current tenant, tenant it left, its move's epoch)
+    rows: list[tuple[str, int, int, str, str | None, int | None]] = [
+        ("moved", 3, floor + 10, _JOINED, _LEFT, floor + 10),
+        ("moved-long-ago", 5, floor + 20, _JOINED, _LEFT, floor - 1),
+        ("never-moved", 7, floor + 30, _JOINED, None, None),
+    ]
+
+    async def copy_from_query(query: str, *args: Any, output: Any, **_: Any) -> str:
+        pool.sent.append((query, args))
+        bucket = next(arg for arg in args if isinstance(arg, int) and arg < RESTORE_BUCKETS)
+        for key, held, epoch, tenant, left, moved_at in rows:
+            if held != bucket or epoch < floor:
+                continue
+            named: str | None = tenant
+            if _MOVING_FROM in query:
+                if moved_at is None or moved_at < floor:
+                    continue
+                named = left
+            held_by = None if named is None else value_tenant(named)
+            fields = (json.dumps(_MOVING_TABLE), json.dumps(held_by), json.dumps([key]))
+            await output((",".join('"' + field.replace('"', '""') + '"' for field in fields) + ",\n").encode())
+        return "COPY"
+
+    pool.copy_from_query = copy_from_query  # type: ignore[method-assign]
+    keeper = ChangeNoteKeeper(pool, notes_schema=_RING, log=source)
+
+    done = await keeper.run_pass()
+
+    assert done.restored is not None
+    records = [record for record in await _restored_records(source) if record.table == _MOVING_TABLE]
+    # each record's tenant is the key it went under: the log's entries, by their sequence (the token's last part)
+    entries = await bus.change_log(EPOCH_CHANGES_BUCKET).records_after(f"*.{_MOVING_TABLE}.e", 0, 1000)
+    tenants = {entry.seq: entry.key.split(".", 1)[0] for entry in entries}
+    heard = sorted(
+        (tenants[int(record.token.rpartition(":")[2])], row.ids[0]) for record in records for row in record.rows
+    )
+    assert heard == sorted(
+        [
+            (value_tenant(_JOINED), "moved"),
+            (value_tenant(_LEFT), "moved"),
+            (value_tenant(_JOINED), "moved-long-ago"),
+            (value_tenant(_JOINED), "never-moved"),
+        ]
+    ), heard
+    moves = [query for query, _ in pool.sent if f'"{_MOVING_TABLE}"' in query and _MOVING_FROM in query]
+    assert len(moves) == RESTORE_BUCKETS, "one moves read a bucket"
+    for query in moves:
+        assert 't."epoch_bucket" = $1' in query and 't."epoch" >= $2' in query, query
+        assert f't."{_MOVING_EPOCH}" >= $3' in query, query

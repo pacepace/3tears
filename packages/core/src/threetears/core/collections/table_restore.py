@@ -41,6 +41,13 @@ naming X as its ``s_min``. A delete of a stamped table's key marks its row gone 
 delete's stamp (``SqlL3Backend.mark_gone``; a real ``DELETE`` of one is refused), so the bucket read finds it like any
 other write (``copy_keyed(with_gone=True)``, where every other read skips it) and the key comes back: a follower
 evicts it.
+
+**A row that moved between tenants comes back for the tenant it left too.** A stamped table whose tenant column a write
+may change in place (``TableSchema.moveable``, :mod:`~threetears.core.ddl.tenant_moves`) keeps, on the row, the value
+its last move left and that move's epoch. Its declaration names the moveable columns (``"moveable"``); for the one that
+is its tenant column, a restore reads each bucket a second time, ``epoch >= X AND <column>_moved_epoch >= X`` within
+the same ``(bucket, epoch)`` range (:func:`_bucket_moves`), the record's tenant and invalidation column named from
+``<column>_moved_from``: the old tenant's followers evict the key, as the ring's old-row note had them do.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from threetears.core.collections.epoch_change import keyed_record_form
 from threetears.core.ddl.change_notes import tenant_sql
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_column
 from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, copy_keyed, keyset_rows
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.tenancy import Tenancy, schema_tenant, value_tenant
@@ -146,6 +154,7 @@ class StampedTable:
     :ivar keys: its primary key's columns, in order
     :ivar instants: those of them spelled as their UTC text
     :ivar tenancy: its tenancy
+    :ivar moveable: the columns a write may move its rows between tenants by (``TableSchema.moveable``)
     """
 
     schema: str
@@ -155,6 +164,19 @@ class StampedTable:
     keys: tuple[str, ...]
     instants: frozenset[str]
     tenancy: Tenancy
+    moveable: tuple[str, ...] = ()
+
+    @property
+    def moved_tenant(self) -> str | None:
+        """the moveable column that is its tenant column: the one whose moves a restore reads back for the tenant a row
+        left; None when its tenant cannot move (or it has no tenant column: its records go on ``_all``, which every
+        follower reads).
+
+        :return: the column, or None
+        :rtype: str | None
+        """
+        column = self.tenancy.column
+        return column if self.tenancy.kind == "column" and column in self.moveable else None
 
     @property
     def relation(self) -> str:
@@ -214,6 +236,7 @@ def _declared(schema: str, table: str, text: str, run_markers: bool) -> Restored
             keys=tuple(str(key) for key in value["keys"]),
             instants=frozenset(str(key) for key in value["instants"]),
             tenancy=tenancy,
+            moveable=tuple(str(column) for column in value.get("moveable", ())),
         )
     return VersionedTable(
         schema=schema,
@@ -308,26 +331,30 @@ def _key_term(table: RestoredTable, column: str) -> str:
     return f"{value}::text"
 
 
-def _fold_columns(table: RestoredTable) -> list[str | Selected]:
+def _fold_columns(table: RestoredTable, held_in: str | None = None) -> list[str | Selected]:
     """what a scope's (or a bucket's) ``COPY`` selects: the four JSON texts the restore's fold reads, as a change note's
     restore ``COPY`` writes them (the table, the tenant, the key's values, the invalidation columns).
 
     :param table: the table
     :ptype table: RestoredTable
+    :param held_in: the column the tenant column's value is read from: the tenant column itself when None; its
+        ``<column>_moved_from`` for the tenant a moved row left (:func:`_bucket_moves`)
+    :ptype held_in: str | None
     :return: the columns
     :rtype: list[str | Selected]
     """
     tenancy = table.tenancy
+    held = str(tenancy.column) if held_in is None else held_in
     if tenancy.kind == "schema":
         tenant = f"to_json({_literal(schema_tenant(table.schema))}::text)::text"
     elif tenancy.kind == "column":
-        tenant = f"to_json({tenant_sql(tenancy, 't')})::text"
+        tenant = f"to_json({tenant_sql(Tenancy('column', held), 't')})::text"
     else:
         tenant = "NULL::text"
     keys = ", ".join(_key_term(table, column) for column in table.keys)
     # a column tenancy's tenant column is an invalidation column of every record of the table, as its notes carried it
     columns = (
-        f"json_build_object({_literal(str(tenancy.column))}, t.{quote_identifier(str(tenancy.column))}::text)::text"
+        f"json_build_object({_literal(str(tenancy.column))}, t.{quote_identifier(held)}::text)::text"
         if tenancy.kind == "column"
         else "NULL::text"
     )
@@ -394,6 +421,41 @@ async def _bucket_rows(pool: Any, table: StampedTable, bucket: int, floor: int) 
         where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
         force_quote=_FOLD_COLUMNS[:3],
         # a gone row is a delete the restore hears: read with the live ones
+        with_gone=True,
+    )
+
+
+async def _bucket_moves(pool: Any, table: StampedTable, column: str, bucket: int, floor: int) -> bytes:
+    """every row of the stamped ``table`` in ``bucket`` that a write moved off a tenant at ``floor`` or later, as the
+    fold's ``COPY`` text naming the tenant it LEFT (``<column>_moved_from``): the bucket bound, the same range of the
+    ``(bucket, epoch)`` index as :func:`_bucket_rows` (a move stamps the row, so its epoch is at or above its move's),
+    the move's epoch filtered within it.
+
+    :param pool: the keeper's L3 pool
+    :ptype pool: Any
+    :param table: the table
+    :ptype table: StampedTable
+    :param column: its moveable tenant column (:attr:`StampedTable.moved_tenant`)
+    :ptype column: str
+    :param bucket: the bucket, ``0`` to ``table.buckets - 1``
+    :ptype bucket: int
+    :param floor: X
+    :ptype floor: int
+    :return: the text, a line per moved row
+    :rtype: bytes
+    """
+    return await copy_keyed(
+        pool,
+        table.relation,
+        columns=_fold_columns(table, moved_from_column(column)),
+        by={table.bucket: bucket},
+        order=[Sort(EPOCH_COLUMN, cast="bigint")],
+        where=[
+            Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,)),
+            Fragment(f"t.{quote_identifier(moved_epoch_column(column))} >= $1", (floor,)),
+        ],
+        force_quote=_FOLD_COLUMNS[:3],
+        # a gone row moved before its delete is a move the old tenant hears like any other
         with_gone=True,
     )
 
@@ -527,9 +589,18 @@ class TableChanges:
         :rtype: AsyncIterator[NotedChange]
         """
         streamed = False
+        moved = table.moved_tenant
         for bucket in range(table.buckets):
             self.buckets += 1
             text = await _bucket_rows(self._pool, table, bucket, self._floor)
+            async for change in self._folded(text):
+                streamed = True
+                yield change
+            if moved is None:
+                continue
+            # the rows that moved since X, for the tenant each left: its followers evict the key
+            self.buckets += 1
+            text = await _bucket_moves(self._pool, table, moved, bucket, self._floor)
             async for change in self._folded(text):
                 streamed = True
                 yield change

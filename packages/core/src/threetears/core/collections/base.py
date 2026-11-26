@@ -61,6 +61,7 @@ from threetears.core.collections.delete_cascade import (
     read_delete_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
+from threetears.core.ddl.tenant_moves import taken_moves
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
@@ -5086,6 +5087,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         bump = _NO_BUMP
         # the row this save's message takes its invalidation columns from: as stored, where read back
         announced: dict[str, Any] = data
+        # the row as each tenant it just left held it, when the write moved it (tenant_moves): named beside it
+        left: list[dict[str, Any]] = []
 
         if defer:
             # the row is visible in L1 and L2 before L3 by design: L2 is ahead of L3 for up to one
@@ -5121,6 +5124,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             held = await self._store_uncommitted(entity, entity_id, data, original_timestamp, working, conn)
             # the eviction's broadcast takes its invalidation columns from the row as stored
             caller_transaction.restate(self, entity_id, row=held)
+            for each in self._rows_left(held):
+                # a key written twice is evicted twice (CallerTransaction.enroll): once for each tenant
+                caller_transaction.enroll(self, entity_id, row=each)
             # nothing is cached and nothing is broadcast until the caller's transaction ends
             # (CallerTransaction settles every key its writes touched).
             return
@@ -5147,7 +5153,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # the row is committed: advance the generation before anything else, so an absence
                 # a reader recorded from an L3 read that predated this commit stops answering as
                 # soon as possible. a failure is raised only once L1, L2 and the broadcast have run.
-                bump = await self._bump_after_commit([self.changed_row(entity_id, data)])
+                left = self._rows_left(data)
+                bump = await self._bump_after_commit(
+                    [self.changed_row(entity_id, data), *(self.changed_row(entity_id, each) for each in left)]
+                )
                 # the database may have filled in columns the row did not name; what every tier
                 # and the handle keep is the row L3 holds, never the row as sent.
                 stored = await self._stored_row(entity_id, data)
@@ -5180,9 +5189,29 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # a handle reading through it would answer None, or another version.
                     entity.hold_row({**carried, **stored})
 
-        await self._announce_row(entity_id, bump=bump, row=announced)
+        if left:
+            # one message a row the advance covers: the key for its new tenant, and for each tenant it left
+            await self._publish_rows(
+                [entity_id] * (1 + len(left)), [announced, *left], generation=bump.token, bump_rows=bump.rows
+            )
+        else:
+            await self._announce_row(entity_id, bump=bump, row=announced)
         if bump.failure is not None:
             raise bump.failure
+
+    def _rows_left(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        """the row as each tenant the write just made of it left held it: one copy a moveable column the write moved
+        (``TableSchema.moveable``), that column holding the value it left. The store noted the moves from the
+        statement's own ``RETURNING`` (:func:`~threetears.core.ddl.tenant_moves.note_moves`); taken here, so the next
+        write starts afresh. The write's record and messages name each copy beside the row, so the old tenant's
+        followers evict the key (:mod:`~threetears.core.ddl.tenant_moves`). Empty when the write moved nothing.
+
+        :param row: the row as the write sent (or stored) it
+        :ptype row: dict[str, Any]
+        :return: the copies, function-local
+        :rtype: list[dict[str, Any]]
+        """
+        return [{**row, column: former} for column, former in taken_moves(self.table_name)]
 
     async def _store_uncommitted(
         self,
