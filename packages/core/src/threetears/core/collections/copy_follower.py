@@ -185,6 +185,7 @@ from threetears.core.frozen_state import frozen, with_chunk, with_entries, with_
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage, WantedFile
 from threetears.core.collections.scope_epochs import ScopeEpochs
+from threetears.core.collections.whole_reloads import LOST_FILE, LOST_LOG, WHOLE_RELOADS
 from threetears.core.collections.volume_fulls import (
     FullAbsent,
     FullManifest,
@@ -286,6 +287,21 @@ _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "not
 #: :meth:`CopyFollower._wait_for_recovery`). A record whose file cannot name its keys (``keys_unknown``, ``notes_*``)
 #: is decision 29's, not a lost log
 _LOG_LOST: Final = frozenset({"replaced", "record_missing", "record_lost", "aged_out"})
+
+#: each why a copy waits for the writer's full under (:attr:`_FullAfter.why`), onto the why its whole reload is
+#: counted under (``collection_whole_reloads_total``, :data:`~threetears.core.collections.whole_reloads
+#: .WHOLE_RELOADS`): a lost file and one a fold swept because a full covers it are both a file that never comes
+_RELOAD_WHYS: Final[Mapping[str, str]] = frozen(
+    {
+        "lost epoch log": LOST_LOG,
+        "reset": "reset",
+        "schema_change": "schema_change",
+        "file_lost": LOST_FILE,
+        "file_covered": LOST_FILE,
+        "held_past_cap": "held_past_cap",
+        "partition_refused": "partition_refused",
+    }
+)
 
 #: the most values of a key prefix's last column one partition read names
 _PREFIX_BATCH: Final = 1000
@@ -2750,6 +2766,7 @@ class CopyFollower:
             "full on the volume once published, never read from L3; the copy serves it as it held it meanwhile",
             extra={"extra_data": {"table": table, "why": why, "token": token, "full_after": after.token}},
         )
+        self._count_reload(table, why)
         self._set_full_after(table, after)
         # a stage of the table from before the reset holds the table it replaced: never applied (its keys are put
         # back heard, then kept or forgotten below)
@@ -2802,11 +2819,32 @@ class CopyFollower:
             "serves it as it held it meanwhile",
             extra={"extra_data": {"table": table, "reason": reason, "read": token, "full_after": after.token}},
         )
+        self._count_reload(table, after.why)
         self._set_full_after(table, after)
         # a stage is put back as the keys it held, which are held with the rest of what was heard
         self._forget_tables_now([table])
         self._whole = without_entry(self._whole, table)
         self._look_for_full(table, after.why)
+
+    def _count_reload(self, table: str, why: str) -> None:
+        """count the whole reload a wait for ``table``'s full makes (``collection_whole_reloads_total``), said at
+        WARNING for a recovery (Pace, 2026-11-27: a recovery reload is never silent, and a replay fails on one).
+
+        Counted as the wait begins, so a reload still waiting when a replay ends is seen. One count a reload: a why
+        joining a wait already counted under the same why (a second lost file, a second reset) is the same reload; one
+        of another kind (a lost file while a reset waits) counts too. Before :meth:`_set_full_after`.
+
+        :param table: the table
+        :ptype table: str
+        :param why: what it waits for (:attr:`_FullAfter.why`)
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        counted = _RELOAD_WHYS[why]
+        waiting = self._full_after.get(table)
+        if waiting is None or _RELOAD_WHYS[waiting.why] != counted:
+            WHOLE_RELOADS.count(counted, table=table)
 
     def _set_full_after(self, table: str, after: _FullAfter | None) -> None:
         """record the full ``table`` waits for (None: it waits no more), and say in the status which states it reaches.
@@ -3828,6 +3866,8 @@ class CopyFollower:
         self._state_versions = frozen({name: frozen(held) for name, held in full.versions.items()})
         for name, mark in marks.items():
             self._registry.generation_marks.adopt_generation(name, mark)
+        for name in sorted(full.marks):
+            WHOLE_RELOADS.count("cold_start", table=name)
         if missing:
             await self._warm_tables(missing)
         self._say(

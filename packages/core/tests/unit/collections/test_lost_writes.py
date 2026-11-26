@@ -23,8 +23,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 
-from packages.core.tests.unit.collections.epoch_range_db import RUNS, STAMPED, RangeDb
+from packages.core.tests.unit.collections.epoch_range_db import RESULTS, RUNS, STAMPED, VERSIONED, RangeDb
+import threetears.core.collections.lost_writes as lost_writes_module
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.lost_writes import WriteBackstop, WriterBeats
 from threetears.core.coordination.lease import KVLease
@@ -266,3 +268,97 @@ async def test_writer_beats_tell_a_writer_gone_only_once_its_key_is_deleted_neve
     assert await beats.gone(backstop.key) is True
     with pytest.raises(ValueError, match="beat"):
         await beats.gone("leases.someone-else")
+
+
+def _lost_writes_reloads(table: str) -> float:
+    """``collection_whole_reloads_total{why="lost_writes"}`` of ``table``."""
+    return REGISTRY.get_sample_value("collection_whole_reloads_total", {"table": table, "why": "lost_writes"}) or 0.0
+
+
+class _RunDeletedPool(_Pool):
+    """the database: the versioned table alone declared, one of its runs deleted (its run marker) as the dead
+    writer's window began: a whole change of the window, recorded again by its prefixes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.declared = {VERSIONED: RESULTS}
+        self.run_marker("CA", "run9", int(_START * 1000) << 15)
+
+
+class _WholeSource(_Source):
+    """a recording source that records a whole change's tenant and prefixes too."""
+
+    async def advance_with_change(
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
+        prefixes: Sequence[Any] | None = None,
+        reason: str | None = None,
+    ) -> str:
+        return await super().advance_with_change(table_name, rows, keys_unknown=keys_unknown)
+
+
+async def test_a_dead_writer_s_whole_change_recorded_again_is_counted_as_a_lost_writes_reload_and_said_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flips if the backstop records a dead writer's whole change again (every copy then reloads the table whole)
+    without counting it under ``collection_whole_reloads_total{why="lost_writes"}`` with its table, or without saying
+    so at WARNING (Pace, 2026-11-27: a recovery reload is never silent, and a replay fails on one); or if a migration
+    run's own whole change, announced from its window, is counted as one."""
+    nats, pool, source = FakeNatsClient(), _RunDeletedPool(), _WholeSource()
+    clock = _Clock()
+    writer = _backstop(nats, "writer", _Clock(), source, pool, WriteLedger(clock=clock))
+    holder = _backstop(nats, "holder", clock, source, pool, WriteLedger(clock=clock))
+
+    migrated = await holder.announce_window(_at(_START - 1), _at(_START + 1))
+    assert migrated.advanced == (VERSIONED,)
+    before = _lost_writes_reloads(VERSIONED)
+    assert before == 0.0, "a migration's own window is no lost write"
+
+    await writer.beat()
+    clock.at += _STALE + 1
+    with caplog.at_level("WARNING"):
+        assert (await holder.recover_pass()).recovered == ("writer",)
+
+    assert _lost_writes_reloads(VERSIONED) == before + 1
+    said = [
+        record
+        for record in caplog.records
+        if record.levelname == "WARNING" and getattr(record, "extra_data", {}).get("why") == "lost_writes"
+    ]
+    assert said and said[0].extra_data["table"] == VERSIONED  # type: ignore[attr-defined]
+
+
+async def test_only_a_lost_writes_window_reaches_the_whole_changes_and_a_live_writer_never_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the proving test of the whole changes declared in lost_writes._changes_of (kind recovery, Pace 2026-11-27): only
+    a lost write's window reaches it, a dead writer's (the recovery pass) or a migration run's (its announcement);
+    a recovery pass that finds every writer live reads no window and records nothing whole. Flips if a pass with no
+    dead writer reaches it, or a dead writer's window holding a run deleted does not record that change whole."""
+    windows: list[str] = []
+    real = vars(lost_writes_module)["_changes_of"]
+
+    async def reached(*args: Any, **kwargs: Any) -> Any:
+        windows.append(str(kwargs["table"]))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(lost_writes_module, "_changes_of", reached)
+    nats, pool, source = FakeNatsClient(), _RunDeletedPool(), _WholeSource()
+    clock = _Clock()
+    writer = _backstop(nats, "writer", _Clock(), source, pool, WriteLedger(clock=clock))
+    holder = _backstop(nats, "holder", clock, source, pool, WriteLedger(clock=clock))
+    await holder.beat()
+    assert (await holder.recover_pass()).live == 1
+    assert windows == [], "a pass with every writer live reads no window"
+
+    await writer.beat()
+    clock.at += _STALE + 1
+    await holder.beat()  # the holder lives on; the writer died
+    before = _lost_writes_reloads(VERSIONED)
+    assert (await holder.recover_pass()).recovered == ("writer",)
+    assert windows == [VERSIONED]
+    assert _lost_writes_reloads(VERSIONED) == before + 1, "the run deleted in the window is recorded whole again"

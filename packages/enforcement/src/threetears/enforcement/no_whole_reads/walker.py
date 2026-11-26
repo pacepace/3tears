@@ -628,6 +628,9 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "whole-read",
             "whole-call",
             "calls-whole-read",
+            # (coordinator 2026-11-27) the shared copy's apply marking a table its whole change replaces, as the
+            # in-process copy's apply empties it (DuckDBBackend.apply_staged): under the kind that staged the change
+            "marks-whole",
         }
     ),
     # an answer for every state (a national panel): its rows are every state's, filtered or summed
@@ -683,6 +686,7 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "unknown-schema",
             "whole-call",
             "calls-whole-read",
+            "marks-whole",
         }
     ),
     # the drain of a process-local buffer (never an L3 table), and a call into a function declared the same
@@ -706,8 +710,15 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "whole-read",
             "whole-call",
             "calls-whole-read",
+            "marks-whole",
         }
     ),
+    # (Pace 2026-11-27: recovery reloads stay, but are never silent) a copy reloading a table from the writer's full on
+    # the delta-files volume, reading nothing from L3, after a lost epoch log or a lost delta file; and the lost-write
+    # backstop recording a lost window's whole change (a reset, a run deleted) again. Each is counted
+    # (collection_whole_reloads_total{why}), said at WARNING, and fails a replay. Never a read of L3 whole: its call
+    # into the reload, or the change it marks whole
+    "recovery": frozenset({"whole-call", "calls-whole-read", "marks-whole"}),
 }
 
 #: the kinds whose declaration names a speed test: they read our own tables at size. A ``backup_verification`` whose

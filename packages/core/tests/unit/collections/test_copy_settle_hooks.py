@@ -6,6 +6,7 @@ table cut again as it crosses the split floor. Each fails on the copy before the
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from threetears.core.collections.shared_copy import (
     held_parts,
 )
 from threetears.core.shared_arrow import SharedArrowStore, read_version
+from threetears.core.testing.calibrate import budget_problem
 
 SCHEMA = pa.schema(
     [
@@ -355,6 +357,38 @@ class TestWholeSettle:
             assert dict(zip(held["state"].to_pylist(), held["votes"].to_pylist(), strict=True))["AZ"] == 108
         finally:
             await backend.close()
+
+
+async def test_a_whole_settle_of_100k_rows_keeps_its_budget(store: SharedArrowStore) -> None:
+    """the speed test of the whole settle declared in shared_copy._settle_whole_job (derive_whole, a cold start's): a
+    whole settle over 100,000 rows of 50 states (every scope read in the apply worker, its totals derived and
+    published) within 2x of applying the same rows as one change with no hooks (the work its start already did: the
+    rows read and published). Flips if the settle pays more than the rows' own apply over again."""
+    states = [f"S{n:02d}" for n in range(50)]
+    rows = pa.concat_tables([_rows(state, 2000, votes=2) for state in states])
+    totals = PartRule(copy_hooks.TOTALS, ("state",))
+    tables = [("results", SCHEMA, BY_STATE), (copy_hooks.TOTALS, copy_hooks.TOTALS_SCHEMA, totals)]
+    took, baseline = [], []
+    for _ in range(3):
+        plain = await _backend(store, tables)
+        try:
+            began = time.perf_counter()
+            await plain.apply([ChangePage(ROWS, "results", rows)], whole={"results"})
+            baseline.append(time.perf_counter() - began)
+        finally:
+            await plain.close()
+        backend = await _backend(store, tables, hooks=copy_hooks.WholeTotals())
+        try:
+            backend.defer_hooks_until_whole()
+            await backend.apply([ChangePage(ROWS, "results", rows)], whole={"results"})
+            began = time.perf_counter()
+            assert await backend.settle_whole() is not None
+            took.append(time.perf_counter() - began)
+            assert _held(store, copy_hooks.TOTALS, copy_hooks.TOTALS_SCHEMA).num_rows == len(states)
+        finally:
+            await backend.close()
+    problem = budget_problem(f"a whole settle of {rows.num_rows} rows", min(took), min(baseline))
+    assert problem is None, problem
 
 
 def _let_go_rows(table: str) -> float:
