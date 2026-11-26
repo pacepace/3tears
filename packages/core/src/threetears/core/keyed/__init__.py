@@ -40,7 +40,8 @@ as keyed by construction, judged by the key it names):
   by its keys :func:`delete_matching`, the first row two hold otherwise :func:`first_difference`
   (:mod:`threetears.core.keyed.steps`; :func:`change_relation` declares the relation);
 - **a cache derived from rows**, kept by key: :class:`threetears.epoch.RowFollower`;
-- **the whole reads a component may still make**, named and counted: :class:`WholeReads`.
+- **the whole reads a component may still make**, named and counted: :class:`WholeReads`; a cold start's fill from a
+  stamped table's live rows: :func:`read_live_rows`.
 
 Every helper takes anything with an asyncpg-shaped ``fetch`` (and ``execute`` for a write): an L3 backend, the rail's
 proxy, a connection, DuckDB through :class:`ThreadedDuckDB`, or SQLite through :class:`ThreadedSQLite`; synchronous
@@ -171,7 +172,7 @@ from threetears.core.keyed.steps import (
     windowed,
     xor_hash,
 )
-from threetears.core.keyed.whole_reads import WholeReads
+from threetears.core.keyed.whole_reads import WholeReads, read_live_rows
 from threetears.core.keyed.writes import (
     Increment,
     KeyedWrite,
@@ -284,6 +285,7 @@ __all__ = [
     "read_by_joined",
     "read_reached",
     "read_link_chain",
+    "read_live_rows",
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",

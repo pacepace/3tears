@@ -832,6 +832,22 @@ class TestDeleteByGroupAndScope:
         assert keys == [("platform", ids[0]), ("platform", ids[1])]
 
     @pytest.mark.asyncio
+    async def test_a_revoke_whose_statement_raised_is_still_announced(self) -> None:
+        """Flips if a revoke announces its grants only after its statement returns: one that raised may still have
+        reached L3, and every pod would keep the grants it marked gone."""
+        ids = [uuid7(), uuid7()]
+        pool = AsyncMock()
+        pool.fetch.side_effect = [[{"assignment_id": i} for i in ids], ConnectionError("lost after the statement")]
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        group_id = uuid7()
+        with pytest.raises(ConnectionError):
+            await coll.delete_by_group_and_scope(group_id=group_id, scope_type="all", scope_id=None)
+        coll.invalidate_cache_many.assert_awaited_once_with(
+            [("platform", i) for i in ids], rows=[{"group_id": group_id}] * 2
+        )
+
+    @pytest.mark.asyncio
     async def test_managed_by_filter_appended(self) -> None:
         """``managed_by`` argument adds a fifth predicate."""
         pool = AsyncMock()

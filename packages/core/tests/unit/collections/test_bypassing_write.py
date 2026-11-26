@@ -17,7 +17,7 @@ import asyncio
 import json
 from datetime import datetime
 from types import TracebackType
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -66,6 +66,12 @@ class _Rows(BaseCollection[_Row]):
     def deserialize(self, data: bytes) -> dict[str, Any]:
         row: dict[str, Any] = json.loads(data)
         return row
+
+
+class _GroupedRows(_Rows):
+    """a collection whose rows name what a derived cache evicts by (a membership its member, a grant its group)."""
+
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("group_id",)
 
 
 class _SuspendingNats(FakeNatsClient):
@@ -174,6 +180,39 @@ class TestOnTheCollectionsPool:
                 raise RuntimeError("the outcome is unknown again")
 
         assert _evicted(nats) == ["a"]
+
+
+class TestTheRowsAWriteSaw:
+    """Flips if a bypassing write's broadcast drops the rows its caller named: a cache derived from the table (a
+    member's grants, a group's) evicts by those columns, so without them a pod keeps what the write changed."""
+
+    async def test_a_named_rows_columns_reach_every_pod(self) -> None:
+        nats = FakeNatsClient()
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=object(), kv_key_scope="bypass-principal")  # type: ignore[arg-type]
+        rows = _GroupedRows(
+            registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), nats_client=nats
+        )
+
+        with pytest.raises(ConnectionError):
+            async with rows.bypassing_write("a", rows=[{"group_id": "g1"}]) as write:
+                write.touches("b", rows=[{"group_id": "g2"}])
+                raise ConnectionError("connection lost after the statement was sent")
+
+        heard = [
+            (row.ids[0], row.columns)
+            for message in nats.published
+            if isinstance(message, CacheInvalidationMessage) and message.table == _TABLE
+            for row in message.each_row()
+        ]
+        assert sorted(heard) == [("a", {"group_id": "g1"}), ("b", {"group_id": "g2"})]
+
+    async def test_rows_that_do_not_name_one_a_key_are_refused(self) -> None:
+        rows = _rows(FakeNatsClient())
+
+        with pytest.raises(ValueError, match="one row a key"):
+            async with rows.bypassing_write("a", "b", rows=[{"group_id": "g1"}]):
+                pass
 
 
 class TestJoinedToACallersTransaction:
