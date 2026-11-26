@@ -86,9 +86,10 @@ def state_record_findings(source: str) -> list[str]:
         if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(method):
+            line = getattr(node, "lineno", 0)
             name = _self_attribute(node)
             if name in _RETIRED:
-                found.append(f"{node.lineno}: CopyFollower.{method.name} uses self.{name}, a retired per-table map")
+                found.append(f"{line}: CopyFollower.{method.name} uses self.{name}, a retired per-table map")
             targets: list[ast.expr] = []
             if isinstance(node, ast.Assign):
                 targets = list(node.targets)
@@ -97,9 +98,7 @@ def state_record_findings(source: str) -> list[str]:
             for target in targets:
                 for each in ast.walk(target):
                     if _self_attribute(each) == "_states" and method.name not in _STATE_WRITERS:
-                        found.append(
-                            f"{node.lineno}: CopyFollower.{method.name} assigns self._states; put a record (_put)"
-                        )
+                        found.append(f"{line}: CopyFollower.{method.name} assigns self._states; put a record (_put)")
     return found
 
 
