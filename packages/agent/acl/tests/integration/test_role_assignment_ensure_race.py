@@ -1,8 +1,8 @@
 """``RoleAssignmentCollection.ensure_group_role_assignment`` under concurrency, on a real database.
 
 The lookup and the insert are two statements, and every hub replica runs the ensure at once for
-the same manifest -- the aibots hub found grants held twice. Given the natural-key unique index the
-deploying application declares (the hub's v121), the ensure is race-safe: one row, one ``created``,
+the same manifest -- the aibots hub found grants held twice. Given the natural-key unique index (acl v001's
+``uq_role_assignments_namespace_grant``, the hub's v121), the ensure is race-safe: one row, one ``created``,
 every caller answered the same id -- including a winner filed under the other partition.
 """
 
@@ -14,92 +14,69 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from threetears.agent.acl import RoleAssignmentCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 
-pytestmark = pytest.mark.integration
+from .access_schema import access_pool, access_schema, empty_tables
 
-#: the hub's ``role_assignments`` shape, reduced to the columns the ensure reads and writes.
-_ROLE_ASSIGNMENTS_DDL = """
-CREATE TABLE IF NOT EXISTS role_assignments (
-    row_scope varchar(8) NOT NULL,
-    assignment_id uuid NOT NULL,
-    role_id uuid NOT NULL,
-    group_id uuid NOT NULL,
-    scope_type varchar(16) NOT NULL,
-    scope_namespace_id uuid,
-    scope_namespace_type varchar(255),
-    scope_customer_id uuid,
-    scope_namespace_name varchar(255),
-    granted_by uuid,
-    date_granted timestamptz NOT NULL DEFAULT now(),
-    managed_by varchar(32) NOT NULL DEFAULT 'manual',
-    source varchar(64),
-    customer_id uuid,
-    CONSTRAINT role_assignments_pkey PRIMARY KEY (row_scope, assignment_id)
-)
-"""
-
-#: the namespaces the ensure reads a grant's customer from (acl v005), reduced to the key and the customer.
-_NAMESPACES_DDL = """
-CREATE TABLE IF NOT EXISTS namespaces (
-    namespace_id uuid PRIMARY KEY,
-    customer_id uuid
-)
-"""
-
-#: the natural-key index the deploying application declares (the aibots hub's v121).
-_NATURAL_KEY_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_role_assignments_namespace_natural_key
-    ON role_assignments (group_id, role_id, scope_namespace_id, managed_by)
- WHERE scope_type = 'namespace'
-"""
+# one schema the acl migrations built, for the module's tests (each starts from empty tables)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
-async def _pool(db_container: str, schema: str, *, natural_key: bool) -> asyncpg.Pool:
-    from threetears.core.collections import init_connection
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_schema(db_container: str) -> AsyncIterator[str]:
+    """a schema of the module's own holding the access tables as the acl migrations build them, natural-key index
+    included; built once, as a build is slow on YugabyteDB. Its name.
+    """
+    async with access_schema(db_container, "ensure_race") as schema:
+        yield schema
 
-    conn = await asyncpg.connect(db_container)
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def indexed_pool(db_container: str, _module_schema: str) -> AsyncIterator[asyncpg.Pool]:
+    """a pool on the module's schema, its access tables emptied for this test."""
+    pool = await access_pool(db_container, _module_schema, max_size=12)
     try:
-        # IF NOT EXISTS throughout: YugabyteDB may retry a DDL statement that a concurrent session's catalog change
-        # interrupted, and the retry finds what its first attempt made
-        await conn.execute(f'CREATE SCHEMA "{schema}"')
-        await conn.execute(f'SET search_path TO "{schema}"')
-        await conn.execute(_ROLE_ASSIGNMENTS_DDL)
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS role_assignments_id_unique ON role_assignments (assignment_id)"
-        )
-        await conn.execute(_NAMESPACES_DDL)
-        if natural_key:
-            await conn.execute(_NATURAL_KEY_INDEX)
-    finally:
-        await conn.close()
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        db_container,
-        min_size=1,
-        max_size=12,
-        init=init_connection,
-        server_settings={"search_path": f'"{schema}"'},
-    )
-    return pool
-
-
-@pytest.fixture
-async def indexed_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """the ensure's tables in a schema of this test's own, dropped after it."""
-    schema = f"ensure_race_{uuid.uuid4().hex[:12]}"
-    pool = await _pool(db_container, schema, natural_key=True)
-    try:
+        await empty_tables(pool)
         yield pool
     finally:
         await pool.close()
-        conn = await asyncpg.connect(db_container)
-        try:
-            await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
-        finally:
-            await conn.close()
+
+
+async def _parents(pool: asyncpg.Pool) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """a grant's parents, each a row its foreign key names: a platform group, a platform role and a platform tool
+    namespace (no customer, so the grant records none).
+
+    :param pool: the pool
+    :ptype pool: asyncpg.Pool
+    :return: ``(group_id, role_id, namespace_id)``
+    :rtype: tuple[uuid.UUID, uuid.UUID, uuid.UUID]
+    """
+    group_id, role_id, namespace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await pool.execute(
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
+        group_id,
+        f"g{group_id.hex}",
+        next_epoch(),
+    )
+    await pool.execute(
+        "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, $2, '', '{}'::jsonb, $3)",
+        role_id,
+        f"r{role_id.hex}",
+        next_epoch(),
+    )
+    await pool.execute(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created,"
+        " date_updated, epoch) VALUES ('platform', $1, $2, 'tool', NULL, now(), now(), $3)",
+        namespace_id,
+        f"tools.n{namespace_id.hex}",
+        next_epoch(),
+    )
+    return group_id, role_id, namespace_id
 
 
 def _collection(pool: asyncpg.Pool) -> RoleAssignmentCollection:
@@ -110,7 +87,7 @@ def _collection(pool: asyncpg.Pool) -> RoleAssignmentCollection:
 
 async def _race(pool: asyncpg.Pool, callers: int) -> tuple[list[tuple[uuid.UUID, bool]], uuid.UUID, uuid.UUID]:
     """``callers`` concurrent ensures of one grant, each through its own collection, as replicas run them."""
-    group_id, role_id, namespace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    group_id, role_id, namespace_id = await _parents(pool)
     results = await asyncio.gather(
         *(
             _collection(pool).ensure_group_role_assignment(
@@ -141,14 +118,16 @@ async def test_concurrent_ensures_leave_one_row_given_the_natural_key_index(inde
 
 async def test_a_lost_race_finds_the_winner_in_the_other_partition(indexed_pool: asyncpg.Pool) -> None:
     """the lookup reads one partition; the race's winner is found wherever the grant is filed."""
-    group_id, role_id, namespace_id, winner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    group_id, role_id, namespace_id = await _parents(indexed_pool)
+    winner = uuid.uuid4()
     await indexed_pool.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, "
-        "scope_namespace_id, managed_by) VALUES ('platform', $1, $2, $3, 'namespace', $4, 'bootstrap')",
+        "scope_namespace_id, managed_by, epoch) VALUES ('platform', $1, $2, $3, 'namespace', $4, 'bootstrap', $5)",
         winner,
         role_id,
         group_id,
         namespace_id,
+        next_epoch(),
     )
 
     assignment_id, created = await _collection(indexed_pool).ensure_group_role_assignment(

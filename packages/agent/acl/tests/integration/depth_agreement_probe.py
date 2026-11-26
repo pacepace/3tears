@@ -8,7 +8,7 @@ the grant on the top one), asks the evaluator through the production
 :class:`CollectionMembershipLoader` and the SQL through :func:`caller_visible_customer_clause`,
 and prints one JSON object: the levels and depth this process resolved and, per chain length, both verdicts.
 
-usage: python depth_agreement_probe.py DSN
+usage: python depth_agreement_probe.py DSN SCHEMA
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from threetears.agent.acl.types import MAX_GROUP_NESTING_LEVELS
 from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import set_default_namespace
 
@@ -140,30 +141,41 @@ async def _seed_chain(conn: asyncpg.Connection, groups: int, user_id: uuid.UUID,
     # the clause reads the granting role's permissions, so the row the evaluator is handed as
     # READER is the row the SQL reads.
     await conn.execute(
-        "INSERT INTO roles (role_id, permissions) VALUES ($1, $2::text::jsonb) ON CONFLICT (role_id) DO NOTHING",
+        "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, $2, '', $3::text::jsonb, $4)"
+        " ON CONFLICT (role_id) DO NOTHING",
         READER.id,
+        READER.name,
         json.dumps({bucket: sorted(actions) for bucket, actions in READER.permissions.items()}),
+        next_epoch(),
     )
+    # every group of the chain has its row, the customer's: the evaluator resolves the granting group, and the clause
+    # counts a grant only through its group's row (and the grant and each membership name their group's row)
+    for group_id in chain:
+        await conn.execute(
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('customer', $1, $2, $3, $4)",
+            group_id,
+            customer_id,
+            f"g{group_id.hex}",
+            next_epoch(),
+        )
     await conn.execute(
-        "INSERT INTO role_assignments (assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-        " scope_namespace_type) VALUES ($1, $2, $3, 'type_customer', $4, 'thing')",
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type, epoch) VALUES ('customer', $1, $2, $3, 'type_customer', $4, 'thing', $5)",
         uuid.uuid4(),
         READER.id,
         chain[-1],
         customer_id,
+        next_epoch(),
     )
-    # every group of the chain has its row, the customer's: the evaluator resolves the granting group, and the clause
-    # counts a grant only through its group's row
-    for group_id in chain:
-        await conn.execute("INSERT INTO groups (group_id, customer_id) VALUES ($1, $2)", group_id, customer_id)
     edges = [(parent, "group", child) for child, parent in zip(chain, chain[1:], strict=False)]
     for group_id, member_type, member_id in [*edges, (chain[0], "user", user_id)]:
         await conn.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, $3, $4, $5)",
             uuid.uuid4(),
             group_id,
             member_type,
             member_id,
+            next_epoch(),
         )
 
 
@@ -199,16 +211,20 @@ async def _verdicts(pool: asyncpg.Pool, groups: int) -> dict[str, bool]:
     return {"granted": granted, "visible": visible == 1}
 
 
-async def main(dsn: str) -> None:
+async def main(dsn: str, schema: str) -> None:
     """print the resolved depth and both verdicts for every chain length up to one past it.
 
     :param dsn: the fixture database
     :ptype dsn: str
+    :param schema: the schema holding the fixture's tables
+    :ptype schema: str
     :return: nothing
     :rtype: None
     """
     set_default_namespace("depthagree")
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, init=init_connection)
+    pool = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=2, init=init_connection, server_settings={"search_path": f'"{schema}"'}
+    )
     try:
         chains = {groups: await _verdicts(pool, groups) for groups in range(1, MAX_GROUP_MEMBERSHIP_DEPTH + 2)}
     finally:
@@ -217,4 +233,4 @@ async def main(dsn: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1]))
+    asyncio.run(main(sys.argv[1], sys.argv[2]))

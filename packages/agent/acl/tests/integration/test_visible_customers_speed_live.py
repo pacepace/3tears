@@ -22,6 +22,7 @@ from threetears.agent.acl import MAX_GROUP_MEMBERSHIP_DEPTH, visible_customers
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 
 pytestmark = pytest.mark.integration
@@ -96,31 +97,37 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         await held.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
         role = uuid.uuid4()
         await held.execute(
-            "INSERT INTO roles (role_id, name, description, permissions) VALUES ($1, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)",
+            "INSERT INTO roles (role_id, name, description, permissions, epoch)"
+            " VALUES ($1, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb, $2)",
             role,
+            next_epoch(),
         )
         await held.execute(
-            "INSERT INTO groups (row_scope, group_id, customer_id, name)"
-            f" SELECT 'platform', gen_random_uuid(), NULL, 'g' || g FROM generate_series(1, {_GROUPS}) g"
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch)"
+            f" SELECT 'platform', gen_random_uuid(), NULL, 'g' || g, $1 FROM generate_series(1, {_GROUPS}) g",
+            next_epoch(),
         )
         await held.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id)"
-            " SELECT gen_random_uuid(), group_id, 'user', gen_random_uuid() FROM groups, generate_series(1, 4)"
+            "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+            " SELECT gen_random_uuid(), group_id, 'user', gen_random_uuid(), $1 FROM groups, generate_series(1, 4)",
+            next_epoch(),
         )
         await held.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id)"
-            " SELECT gen_random_uuid(), b.group_id, 'group', a.group_id"
+            "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+            " SELECT gen_random_uuid(), b.group_id, 'group', a.group_id, $1"
             " FROM (SELECT group_id, row_number() OVER (ORDER BY group_id) n FROM groups) a"
             " JOIN (SELECT group_id, row_number() OVER (ORDER BY group_id) n FROM groups) b ON b.n = a.n + 1"
-            " WHERE a.n % 5 = 0"
+            " WHERE a.n % 5 = 0",
+            next_epoch(),
         )
         await held.execute(
             "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-            " scope_namespace_type, customer_id)"
-            " SELECT 'platform', gen_random_uuid(), $1, group_id, 'type_customer', c, $2, c"
+            " scope_namespace_type, customer_id, epoch)"
+            " SELECT 'platform', gen_random_uuid(), $1, group_id, 'type_customer', c, $2, c, $3"
             " FROM (SELECT group_id, gen_random_uuid() c FROM groups, generate_series(1, 2)) g",
             role,
             _TYPE,
+            next_epoch(),
         )
         for table in ("groups", "group_members", "role_assignments", "namespaces"):
             await held.execute(f"ANALYZE {table}")
@@ -131,10 +138,11 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         plain = await held.fetchval("SELECT group_id FROM groups ORDER BY group_id OFFSET 7 LIMIT 1")
         for group in (nested, plain):
             await held.execute(
-                "INSERT INTO group_members (id, group_id, member_type, member_id)"
-                " VALUES (gen_random_uuid(), $1, 'user', $2)",
+                "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+                " VALUES (gen_random_uuid(), $1, 'user', $2, $3)",
                 group,
                 caller,
+                next_epoch(),
             )
         yield schema, caller
     finally:

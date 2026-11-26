@@ -34,6 +34,7 @@ from threetears.agent.tools.platform_migrations import register as register_tool
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 pytestmark = pytest.mark.integration
@@ -87,29 +88,34 @@ async def _grant(conn: asyncpg.Connection, scope: str, **values: Any) -> None:
     """one group holding the caller, with one grant of ``scope`` (its other columns from ``values``)."""
     group, role = uuid.uuid4(), uuid.uuid4()
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
         group,
         f"g{group}",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+        " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb, $3)",
         role,
         f"r{role}",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'user', $3)",
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, 'user', $3, $4)",
         uuid.uuid4(),
         group,
         _CALLER,
+        next_epoch(),
     )
     if scope == "type_customer":
         # acl v005: a type grant records its scope's customer
         values = {**values, "customer_id": values.get("scope_customer_id")}
+    values = {**values, "epoch": next_epoch()}
     columns = ", ".join(values)
     marks = ", ".join(f"${index}" for index in range(5, 5 + len(values)))
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type"
-        f"{', ' + columns if values else ''}) VALUES ('platform', $1, $2, $3, $4{', ' + marks if values else ''})",
+        f"INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, {columns})"
+        f" VALUES ('platform', $1, $2, $3, $4, {marks})",
         uuid.uuid4(),
         role,
         group,
@@ -149,11 +155,12 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         namespace = uuid.uuid4()
         await connection.execute(
             "INSERT INTO namespaces (row_scope, namespace_id, customer_id, namespace_type, name, schema_name,"
-            " date_created, date_updated) VALUES ('customer', $1, $2, 'datasource', $3, $4, now(), now())",
+            " date_created, date_updated, epoch) VALUES ('customer', $1, $2, 'datasource', $3, $4, now(), now(), $5)",
             namespace,
             _NAMESPACE_GRANTED,
             f"n{namespace.hex}",
             f"s{namespace.hex[-16:]}",
+            next_epoch(),
         )
         await _grant(connection, "namespace", scope_namespace_id=namespace)
         yield connection

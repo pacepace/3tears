@@ -57,9 +57,9 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
-        # acl v001-v008 and agent-tools platform v001-v004; v007 creates the moves table namespaces' moveable row_scope
+        # acl v001-v009 and agent-tools platform v001-v004; v007 creates the moves table namespaces' moveable row_scope
         # needs, so the run's end passes refuse_moveable_without_moves with nothing created beside the chain
-        assert await _runner().apply_for_platform_schema(_Store(conn)) == 12
+        assert await _runner().apply_for_platform_schema(_Store(conn)) == 13
     finally:
         await conn.close()
     pool: asyncpg.Pool = await asyncpg.create_pool(

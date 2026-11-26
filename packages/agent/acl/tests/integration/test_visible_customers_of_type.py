@@ -24,6 +24,7 @@ from threetears.agent.acl import (
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.plans import PlanRecorder, plan_uses_index
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
@@ -68,29 +69,34 @@ async def _grant(conn: asyncpg.Connection, user: uuid.UUID, scope: str, **values
     """one group holding the caller, with one grant of ``scope`` (its other columns from ``values``)."""
     group, role = uuid.uuid4(), uuid.uuid4()
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
         group,
         f"g{group}",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+        " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb, $3)",
         role,
         f"r{role}",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'user', $3)",
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, 'user', $3, $4)",
         uuid.uuid4(),
         group,
         user,
+        next_epoch(),
     )
     if scope == "type_customer":
         # acl v005: a type grant records its scope's customer
         values = {**values, "customer_id": values.get("scope_customer_id")}
+    values = {**values, "epoch": next_epoch()}
     columns = ", ".join(values)
     marks = ", ".join(f"${index}" for index in range(5, 5 + len(values)))
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type"
-        f"{', ' + columns if values else ''}) VALUES ('platform', $1, $2, $3, $4{', ' + marks if values else ''})",
+        f"INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, {columns})"
+        f" VALUES ('platform', $1, $2, $3, $4, {marks})",
         uuid.uuid4(),
         role,
         group,
@@ -104,12 +110,13 @@ async def _namespace(conn: asyncpg.Connection, customer: uuid.UUID) -> uuid.UUID
     namespace = uuid.uuid4()
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, customer_id, namespace_type, name, schema_name,"
-        " date_created, date_updated) VALUES ('customer', $1, $2, $3, $4, $5, now(), now())",
+        " date_created, date_updated, epoch) VALUES ('customer', $1, $2, $3, $4, $5, now(), now(), $6)",
         namespace,
         customer,
         _TYPE,
         f"n{namespace.hex}",
         f"s{namespace.hex[-16:]}",
+        next_epoch(),
     )
     return namespace
 
@@ -202,30 +209,35 @@ async def test_a_group_with_no_row_still_carries_the_walk_to_its_parent(conn: as
     await conn.execute("INSERT INTO listed_things VALUES ($1, $2)", uuid.uuid4(), customer)
     rowless, granting, role = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, 'granting')",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, 'granting', $2)",
         granting,
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+        " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb, $3)",
         role,
         f"r{role}",
+        next_epoch(),
     )
     for group, kind, member in ((rowless, "user", user), (granting, "group", rowless)):
         await conn.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, $3, $4, $5)",
             uuid.uuid4(),
             group,
             kind,
             member,
+            next_epoch(),
         )
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-        " scope_namespace_type, customer_id) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4)",
+        " scope_namespace_type, customer_id, epoch) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4, $6)",
         uuid.uuid4(),
         role,
         granting,
         customer,
         _TYPE,
+        next_epoch(),
     )
     assert await conn.fetchval("SELECT count(*) FROM groups WHERE group_id = $1", rowless) == 0
     by_set, by_clause = await _admitted(conn, user)
@@ -239,20 +251,24 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
     idx_group_members_reverse, or their groups' grants through idx_role_assignments_group_scope, in its one statement:
     among 500 groups of 4 members each, it reads about the caller's own rows."""
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name)"
-        " SELECT 'platform', gen_random_uuid(), NULL, 'g' || g FROM generate_series(1, 500) g"
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch)"
+        " SELECT 'platform', gen_random_uuid(), NULL, 'g' || g, $1 FROM generate_series(1, 500) g",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id)"
-        " SELECT gen_random_uuid(), group_id, 'user', gen_random_uuid() FROM groups, generate_series(1, 4)"
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+        " SELECT gen_random_uuid(), group_id, 'user', gen_random_uuid(), $1 FROM groups, generate_series(1, 4)",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions)"
-        " VALUES (gen_random_uuid(), NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)"
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+        " VALUES (gen_random_uuid(), NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb, $1)",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type)"
-        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'type_customer' FROM groups"
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, epoch)"
+        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'type_customer', $1 FROM groups",
+        next_epoch(),
     )
     for table in ("groups", "group_members", "role_assignments"):
         await conn.execute(f"ANALYZE {table}")
@@ -328,15 +344,18 @@ async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:
     of the customer's, type_customer on another type, type_customer on the type again), group 21 also ``all``."""
     role = uuid.uuid4()
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+        " VALUES ($1, NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb, $2)",
         role,
+        next_epoch(),
     )
     groups = [uuid.uuid4() for _ in range(_GROUPS)]
     for k, group in enumerate(groups):
         await conn.execute(
-            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
             group,
             f"g{k}",
+            next_epoch(),
         )
         customer = uuid.UUID(int=k + 1)
         grant: dict[str, Any] = {
@@ -350,6 +369,7 @@ async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:
             if values["scope_type"] == "type_customer":
                 # acl v005: a type grant records its scope's customer
                 values = {**values, "customer_id": values["scope_customer_id"]}
+            values = {**values, "epoch": next_epoch()}
             columns = ", ".join(values)
             marks = ", ".join(f"${index}" for index in range(4, 4 + len(values)))
             await conn.execute(
@@ -431,23 +451,26 @@ async def test_the_set_reaches_a_grant_through_a_nested_group(conn: asyncpg.Conn
     granting, role = uuid.uuid4(), await conn.fetchval("SELECT role_id FROM roles")
     caller_group = await conn.fetchval("SELECT group_id FROM group_members WHERE member_id = $1", user)
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, 'granting')",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, 'granting', $2)",
         granting,
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'group', $3)",
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, 'group', $3, $4)",
         uuid.uuid4(),
         granting,
         caller_group,
+        next_epoch(),
     )
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-        " scope_namespace_type, customer_id) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4)",
+        " scope_namespace_type, customer_id, epoch) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4, $6)",
         uuid.uuid4(),
         role,
         granting,
         customer,
         _TYPE,
+        next_epoch(),
     )
     visible = await visible_customers(conn, user_id=user, namespace_type=_TYPE)
     assert (visible.is_all, list(visible.customer_ids)) == (False, [customer])
