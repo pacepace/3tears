@@ -5,8 +5,9 @@ The root serves its exports lazily through a module ``__getattr__``. A checker t
 and fail only at run time in the host. The root keeps the function out of the checker's sight and declares each name
 to it instead, ``__version__`` as a ``str``.
 
-Each public root that serves its names this way is held the same: the package root and
-:mod:`~threetears.evals.providers`.
+Each public root that serves its names this way is held the same: the package root,
+:mod:`~threetears.evals.providers` and :mod:`~threetears.evals.testing`. The list of them is kept by hand, so a second
+test holds it to every public root that has a module ``__getattr__`` at run time: a new lazy root cannot be left out.
 
 This runs strict mypy, with the repository's configuration, over one program that imports every name of each such
 root's ``__all__``, imports one misspelt name from each, and assigns ``__version__`` to an ``int``. The refusals must be
@@ -17,6 +18,7 @@ temporary directory.
 
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from mypy import api
 
 import threetears.evals
 import threetears.evals.providers
+import threetears.evals.testing
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -33,7 +36,11 @@ _ERROR = re.compile(r"^[^:]+:(\d+): error: .*\[([a-z-]+)\]$", re.MULTILINE)
 
 
 #: Each root whose exports a module ``__getattr__`` serves, and a misspelling of one of its names.
-_LAZY_ROOTS = ((threetears.evals, "Evall"), (threetears.evals.providers, "ProviderErrorr"))
+_LAZY_ROOTS = (
+    (threetears.evals, "Evall"),
+    (threetears.evals.providers, "ProviderErrorr"),
+    (threetears.evals.testing, "Modell"),
+)
 
 
 def _program() -> tuple[str, dict[int, str]]:
@@ -69,3 +76,15 @@ def test_a_misspelt_root_name_fails_strict_mypy_and_every_real_one_checks(
     )
     errors = {int(line): code for line, code in _ERROR.findall(stdout)}
     assert status == 1 and errors == refused, f"mypy gave status {status}:\n{stdout}{stderr}"
+
+
+def test_every_public_root_that_serves_its_names_lazily_is_checked_above() -> None:
+    lazy = {
+        name
+        for name in ("threetears.evals", *threetears.evals.PUBLIC_ROOTS)
+        if hasattr(importlib.import_module(name), "__getattr__")
+    }
+    listed = {root.__name__ for root, _ in _LAZY_ROOTS}
+    assert lazy <= listed, (
+        f"public roots with a module __getattr__ that the misspelt-name check leaves out: {sorted(lazy - listed)}"
+    )
