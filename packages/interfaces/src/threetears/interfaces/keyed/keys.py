@@ -79,7 +79,6 @@ __all__ = [
     "NEWEST_KEPT",
     "NEWEST_LIVE",
     "NEWEST_VERSIONS",
-    "key_only",
     "key_pins_within",
     "newest_lateral",
     "newest_page_statement",
@@ -872,7 +871,7 @@ class VersionedTable:
     def judged_within(self, condition: str, *, alias: str | None = None) -> bool:
         """whether a read's condition holds of every version of a key alike, so it is judged inside the newest
         relation's ``DISTINCT ON`` (:func:`newest_relation`'s ``within``) without changing which version is a key's
-        newest: it names the key's columns and the :attr:`fixed` ones alone (:func:`key_only`).
+        newest: it names the key's columns and the :attr:`fixed` ones alone (:func:`_key_only`).
 
         :param condition: the condition's SQL
         :ptype condition: str
@@ -881,7 +880,7 @@ class VersionedTable:
         :return: whether it is judged inside
         :rtype: bool
         """
-        return key_only(condition, (*self.key, *self.fixed), alias=alias)
+        return _key_only(condition, (*self.key, *self.fixed), alias=alias)
 
 
 #: every ``(relation, table)`` a versioned declaration registered, a tuple replaced whole (as the keys are)
@@ -1000,7 +999,7 @@ def next_newest_keys(keys: int, versions: int, asked: int) -> int:
     return max(1, min(asked, _NEWEST_ROWS_A_READ * keys // versions))
 
 
-#: the words a condition may hold beside the key's own columns and still be judged by the key alone (:func:`key_only`)
+#: the words a condition may hold beside the key's own columns and still be judged by the key alone (:func:`_key_only`)
 _KEY_ONLY_WORDS: Final = frozenset(
     {"and", "or", "not", "is", "null", "in", "any", "between", "true", "false", "select", "unnest", "as"}
 )
@@ -1011,7 +1010,7 @@ _CONDITION_TOKEN: Final = re.compile(
 )
 
 
-def key_only(condition: str, key: Sequence[str], *, alias: str | None = None) -> bool:
+def _key_only(condition: str, key: Sequence[str], *, alias: str | None = None) -> bool:
     """whether a read's condition names the key's columns and nothing past them, so it holds of every version of a key
     alike and may be judged before each key's newest version is chosen (inside :func:`newest_relation`'s ``within``).
 
@@ -1146,7 +1145,7 @@ def newest_relation(
     ``DISTINCT ON (key...) ... ORDER BY key..., epoch DESC`` over the rows ``within`` names, then the gone flag and the
     run markers (a ``LEFT JOIN``) judged on the one row each key keeps.
 
-    The read's conditions on the key's columns alone go ``within`` (:func:`key_only`): they hold of every version of a
+    The read's conditions on the key's columns alone go ``within`` (:func:`_key_only`): they hold of every version of a
     key, so they narrow what is read. Its other conditions are judged on the newest version, after (a status an older
     version held never makes a key read). A plain condition on a ``DISTINCT ON`` column the read puts outside the
     relation, the planner pushes inside itself (PostgreSQL's and YugabyteDB's qual pushdown); a join's keys and a
@@ -1413,7 +1412,7 @@ NEWEST_KEPT: Final = "_newest_kept"
 
 
 def key_pins_within(table: VersionedTable, by: Mapping[str, Any]) -> tuple[list[str], list[Any]]:
-    """the pins of ``by`` on the key's columns alone, written on ``t`` from ``$1`` (:func:`key_only`), and their
+    """the pins of ``by`` on the key's columns alone, written on ``t`` from ``$1`` (:func:`_key_only`), and their
     values: what a newest read names inside its relation's ``DISTINCT ON`` itself (``within``), never left to the
     planner to push there, so the relation reads only the pinned scope's versions whatever the statement around it.
 

@@ -169,7 +169,7 @@ class _PerRowTriggerError(RuntimeError):
             "How to fix:\n"
             "  1. Drop the trigger in a migration: DROP TRIGGER IF EXISTS <trigger> ON <schema>.<table>;\n"
             "     A change-note trigger (threetears_change_note*) left by an older release goes with\n"
-            "     threetears.core.data.migrations.ring_cutover.drop_ring (the cutover's step).\n"
+            "     threetears.core.data.migrations.ring_cutover.drop_ring_on (the cutover's step).\n"
             "  2. Whatever the trigger computed, compute in the write itself (the broker stamps every row's epoch;\n"
             "     a derived column is a GENERATED column, never a trigger).\n"
             "  3. Run the migrations again; this check runs at the end of every migration run and at the keeper's\n"

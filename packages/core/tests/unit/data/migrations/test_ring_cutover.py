@@ -1,7 +1,7 @@
 """The cutover's ring step takes down every ring trigger, function and table, keeps the marks, and never truncates.
 
-Append-only L3 chunk 7 (decision 3: the ring is retired entirely). ``drop_ring`` runs once per database in the outage
-window. The connection here is a stand-in for the catalog, recording every statement, with the DDL lock as a session
+Append-only L3 chunk 7 (decision 3: the ring is retired entirely). ``drop_ring_on`` runs once per database, on the
+boot migration's session. The connection here is a stand-in for the catalog, recording every statement, with the DDL lock as a session
 lock: re-entrant on the session holding it, refused to any other. The live run on Postgres is
 ``tests/integration/migrations/test_drop_ring_on_held_session_against_postgres.py``.
 """
@@ -9,13 +9,11 @@ lock: re-entrant on the session holding it, refused to any other. The live run o
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from threetears.core.data.migrations.ring_cutover import RING_TABLE, RING_TABLES, drop_ring, drop_ring_on
+from threetears.core.data.migrations.ring_cutover import RING_TABLE, RING_TABLES, drop_ring_on
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -104,20 +102,11 @@ class _Conn:
         return "OK"
 
 
-class _Pool:
-    def __init__(self, conn: _Conn) -> None:
-        self.conn = conn
-
-    @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[_Conn]:
-        yield self.conn
-
-
 async def test_the_ring_goes_whole_and_the_marks_stay() -> None:
     """Flips if a ring trigger, note function or ring table survives the cutover, if the keeper's marks (which a restore
     from the tables still reads X from) are dropped, or if a trigger that is not the ring's is touched."""
     conn = _Conn()
-    dropped = await drop_ring(_Pool(conn))
+    dropped = await drop_ring_on(ConnectionSession(conn))
     assert conn.triggers == {("agent_x", "rows", "rows_search_vector")}
     assert conn.functions == set()
     assert conn.tables == {("platform", MARKS_TABLE)}
@@ -130,13 +119,13 @@ async def test_the_cutover_never_truncates_or_deletes_and_a_second_run_drops_not
     """Flips if the step empties a table by TRUNCATE (it bumps YugabyteDB's catalog version cluster-wide) or by DELETE
     instead of dropping it, drops with CASCADE, or is not idempotent."""
     conn = _Conn()
-    await drop_ring(_Pool(conn))
+    await drop_ring_on(ConnectionSession(conn))
     assert all(
         each.startswith(("DROP TRIGGER IF EXISTS ", "DROP FUNCTION IF EXISTS ", "DROP TABLE IF EXISTS "))
         for each in conn.executed
     )
     assert not [each for each in conn.executed if each.upper().rstrip().endswith("CASCADE")]
-    again = await drop_ring(_Pool(conn))
+    again = await drop_ring_on(ConnectionSession(conn))
     assert again.triggers == again.functions == again.tables == ()
 
 
@@ -169,12 +158,12 @@ async def test_a_migration_body_s_store_is_used_as_it_is_under_the_run_s_lock() 
 
 
 async def test_a_second_connection_of_the_database_is_refused_the_held_lock() -> None:
-    """The premise the held-session form exists for: while one session holds the DDL lock, the pool form, on a
-    connection of its own, cannot get it. Flips if the stand-in stops modelling a session lock (and the test above
+    """The premise the held-session form exists for: while one session holds the DDL lock, the step on another
+    connection of the database cannot get it. Flips if the stand-in stops modelling a session lock (and the test above
     stops proving anything)."""
     lock = _Lock()
     held, other = _Conn(lock), _Conn(lock)
     async with database_ddl_lock(ConnectionSession(held)):
         with pytest.raises(DdlLockTimeoutError):
-            await drop_ring(_Pool(other), policy=DdlLockPolicy(poll_interval=0.01, max_wait=0.05))
+            await drop_ring_on(ConnectionSession(other), policy=DdlLockPolicy(poll_interval=0.01, max_wait=0.05))
     assert other.executed == []

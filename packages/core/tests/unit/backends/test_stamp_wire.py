@@ -25,7 +25,6 @@ from threetears.core.backends.broker_generation import (
     CLEANUP_FLOOR_FIELD,
     STAMP_S_MIN_FIELD,
     CleanupMixedWriteError,
-    CleanupWriteNotDeleteError,
     STAMPS_EPOCH_FIELD,
     cleanup_deleting,
     stamp_fields,
@@ -588,7 +587,7 @@ async def test_a_request_marked_cleanups_that_is_no_delete_is_refused_before_it_
     """Flips if a request marked quiet-time cleanup's that writes by anything but a delete (an insert, an update, a
     copy's rows, a versioned table's run markers) is sent, on any door: its commit's records would name cleanup's floor,
     and every copy skips them reading nothing."""
-    with pytest.raises(CleanupWriteNotDeleteError, match="only deletes"):
+    with pytest.raises(ValueError, match="only deletes"):  # the refusal's class is the module's own
         await _marked_on_door(door, query)
 
 

@@ -4,7 +4,7 @@ Against a real database (the session ``db_container``). A schema holds coordinat
 the platform schema does; a table there carries the write-mark trigger (put back by hand, as an older replica would)
 and a trigger of its own. :func:`switch_off` drops the write-mark trigger ``IF EXISTS``, so the step runs twice and on
 a dropped table. A same-named table in another schema keeps its own. The change-note triggers a table carried until the
-ring retired are the cutover's (``ring_cutover.drop_ring``), never a switch's.
+ring retired are the cutover's (``ring_cutover.drop_ring_on``), never a switch's.
 """
 
 from __future__ import annotations
