@@ -2042,6 +2042,31 @@ async def test_a_reask_citing_a_fact_not_listed_for_its_claim_cites_no_evidence_
     assert _grade((_MOVED_TO_YORK,), verification).claims[0].verdict == "unverifiable"
 
 
+@pytest.mark.parametrize(
+    ("fact", "stance", "value"),
+    [("Ann Lee lives in York.", "supports", "York"), (_LEEDS, "contradicts", "Leeds")],
+    ids=["as-support", "as-contradiction"],
+)
+async def test_a_fact_listed_for_one_claim_in_the_reask_never_decides_another(
+    fact: str, stance: str, value: str
+) -> None:
+    """One re-ask holds two claims about different key entities, and its reply cites a fact listed for the first as
+    bearing on the second: it is refused for the second as evidence not shown for it, repaired, and never reads
+    supported or contradicted, though the call showed that fact and the quote passes every other check."""
+    segments = (Segment(text="Ann Lee lives in York. Ada Moss lives in York.", unit=0),)
+    ann = _claim(segments, 0, "Ann Lee lives in York.", "Ann Lee lives in York")
+    ada = _claim(segments, 0, "Ada Moss lives in York.", "Ada Moss lives in York")
+    borrowed = _cite("K2", stance, quote=fact, subject="Ann Lee", value=value)
+    client = _FakeScriptedClient([_doubted(0, 1), _reasked((0, []), (1, [borrowed])), _repair(suspect=True)])
+
+    verification = await _verify(client, (ann, ada), key=_key(_ADA, ("Ann Lee", fact)), documents=())
+
+    assert f"K2. A key fact about Ann Lee: {fact}" in client.calls[1]["user"], "the call showed the fact"
+    assert "it cites K2, which is no evidence shown here" in client.calls[2]["user"]
+    claims = _grade((ann, ada), verification).claims
+    assert [(claim.verdict, claim.nominated_by) for claim in claims] == [("unverifiable", "judge")] * 2
+
+
 async def test_a_fact_filed_under_the_subject_about_someone_else_passes_every_code_check_and_is_left_to_the_model() -> (
     None
 ):
