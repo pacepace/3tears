@@ -38,7 +38,7 @@ from threetears.core.keyed._filters import (
     live_only,
     live_read,
     narrowing,
-    newest_read,
+    versions_read,
     reads_l3,
     relation,
     selected_column,
@@ -133,7 +133,7 @@ def _where(by: Mapping[str, Any], live: Sequence[Fragment] = ()) -> tuple[str, l
 def _live(conn: Any, table: Any) -> list[str]:
     """the live guard of a stamped L3 table read as ``r`` (:func:`~threetears.core.keyed.live_only`): one condition
     binding no parameter, or none. The stamped half of :func:`~threetears.core.keyed.live_read`, for a statement
-    naming each relation's guard in its own clause; its versioned half (``newest_read``) names the relation."""
+    naming each relation's guard in its own clause; its versioned half (``versions_read``) names the relation."""
     return [fragment.sql for fragment in live_only(conn, table, row="r")]
 
 
@@ -507,7 +507,7 @@ async def _counts_paged(
     last: Any = None
     # the index holding (by, column) in the column's order, named to YugabyteDB (_COUNTED's why)
     hint = await yugabyte_index_hint(conn, table, by, [Sort(column)], alias="r")
-    read_from = newest_read(conn, table)
+    read_from = versions_read(conn, table)
     while True:
         conditions, params = by_conditions(by)
         conditions += _live(conn, table)
@@ -769,7 +769,7 @@ async def counts_by_relations(
             params += list(fragment.params)
         clauses = _branch_clauses(labels, conditions, params, own, live=live)
         parts = [
-            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(newest_read(conn, tables[label]), 'r', params)} "
+            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(versions_read(conn, tables[label]), 'r', params)} "
             f"WHERE {clauses[label]} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
@@ -874,7 +874,7 @@ async def _counts_seeking(
         )
         parts = [
             f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
-            f"(SELECT count(*) AS held FROM {relation(newest_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]}) AS c "
+            f"(SELECT count(*) AS held FROM {relation(versions_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]}) AS c "
             "WHERE c.held > 0"
             for index, label in enumerate(labels)
         ]
@@ -936,7 +936,7 @@ async def _counts_packed(
     texts = " UNION ALL ".join(
         f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS {_PACKED_TEXT}) "
         f"AS {alias} "
-        f"FROM {relation(newest_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]} GROUP BY {quoted}"
+        f"FROM {relation(versions_read(conn, tables[label]), 'r', params)} WHERE {clauses[label]} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
     for fields in await _packed_rows(conn, texts, params, items, packed_rows, alias):
@@ -1133,7 +1133,7 @@ async def _counts_since(
         group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
         flag = "0" if fresh is None else f"max(CASE {fresh_when}ELSE 0 END)"
         clause = " AND ".join([*conditions, past, *_live(conn, tables[label])])
-        source = relation(newest_read(conn, tables[label]), "r", params)
+        source = relation(versions_read(conn, tables[label]), "r", params)
         tail = f"FROM {source} WHERE {clause} GROUP BY {quoted}"
         extra = "" if grouped is None else f", {quote_identifier(grouped)}"
         parts.append((index, group_text, flag, tail, extra))

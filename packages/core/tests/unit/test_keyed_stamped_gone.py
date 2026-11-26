@@ -55,13 +55,17 @@ from threetears.core.keyed import (
     holds_any,
     keyset_page,
     keyset_rows,
+    newest_read,
     read_by,
     read_keyed,
     read_keyed_arrow,
     read_row,
     read_step,
+    read_step_arrow,
     read_value,
     scan,
+    semi,
+    Match,
 )
 from threetears.core.collections.complete_copy import read_l3_rows
 from threetears.core.tenancy import Tenancy
@@ -377,8 +381,31 @@ class TestDeclaredColumnsOnly:
         assert list(row) == _DECLARED
         held = await read_row(reader, _TABLE, by={"state": "NV", "run_id": "r1"})
         assert held is not None and list(held) == _DECLARED
-        stepped = await read_step(reader, scan(_TABLE, where=()))
+        # a step reads a stamped L3 table through its live relation (a plain one is refused: TestSteps)
+        stepped = await read_step(reader, scan(newest_read(reader, _TABLE), where=()))
         assert {tuple(row) for row in stepped} == {tuple(_DECLARED)}
         projected = schema_sql.build_select_column_list(_RUNS).split(", ")
         assert BUCKET_COLUMN not in projected and GONE_COLUMN not in projected
         assert projected == _DECLARED
+
+
+# -- a generic step: refused on a stamped L3 table named plainly, its live rows through newest_read ---------------------
+
+
+class TestSteps:
+    async def test_a_step_over_a_stamped_table_on_l3_is_refused_or_reads_its_live_rows(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a step naming a stamped L3 table as a plain relation runs (it answers the gone rows), if a step
+        over a local copy is refused, or if a step over the table's live relation (newest_read) answers a gone row."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="newest_read"):
+            await read_step(reader, scan(_TABLE, ["state", "run_id", "rows"]))
+        with pytest.raises(ValueError, match="newest_read"):
+            await read_step_arrow(reader, _TABLE, types={"state": pa.string()})
+        keys = scan(_TABLE, ["state", "run_id"])
+        with pytest.raises(ValueError, match="newest_read"):
+            await read_step(reader, semi(_GONE_ONLY, keys, on=[Match("state"), Match("run_id")]))
+        assert len(await read_step(ThreadedDuckDB(db), scan(_TABLE, ["rows"]))) == 3
+        rows = await read_step(reader, scan(newest_read(reader, _TABLE), ["state", "run_id", "rows"]))
+        assert _read(rows) == _LIVE

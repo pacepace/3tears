@@ -83,6 +83,7 @@ __all__ = [
     "declared_columns",
     "default_projection",
     "live_guard",
+    "live_relation",
     "register_stamped_table",
     "stamped_table",
     "index_hint",
@@ -1138,6 +1139,24 @@ def live_guard(declared: StampedTable, row: str | None = "t") -> str:
     """
     column = f'"{declared.gone}"'
     return f"NOT {column}" if row is None else f"NOT {row}.{column}"
+
+
+def live_relation(declared: StampedTable, table: str) -> str:
+    """a stamped table's live rows as a relation of their own: its declared columns (never its gone flag nor its L3
+    restore bucket) of the rows no delete marked gone. What a generic step reads a stamped L3 table through
+    (``threetears.core.keyed.newest_read``), as it reads a versioned one through :func:`newest_relation`: a step's
+    relations are written before it knows where it runs, and a local copy holds no gone flag to guard by.
+
+    :param declared: the table's declaration
+    :ptype declared: StampedTable
+    :param table: the table as the read names it, a TRUSTED identifier (``schema.table`` or bare)
+    :ptype table: str
+    :return: the relation's ``SELECT``
+    :rtype: str
+    """
+    named = ".".join(f'"{part}"' for part in table.replace('"', "").split("."))
+    columns = ", ".join(f'"{column}"' for column in declared.columns)
+    return f'SELECT {columns} FROM {named} WHERE NOT "{declared.gone}"'
 
 
 def declared_columns(table: Any) -> tuple[str, ...] | None:

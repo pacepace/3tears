@@ -22,10 +22,11 @@ class Step:
     :ptype sql: str
     :param params: its parameters, ``$1`` first
     :ptype params: tuple[Any, ...]
-    :param versioned: the versioned L3 tables it names as plain relations (``threetears.interfaces.keyed.keys``'s
-        registry): a step is written with no reader in hand, so a reader that goes to L3 refuses to run one (each
-        table's every version would be read), and a step reads such a table through its newest relation instead
-        (``threetears.core.keyed.newest_read``, a derived relation)
+    :param versioned: the append-only L3 tables (versioned or stamped) it names as plain relations
+        (``threetears.interfaces.keyed.keys``'s registries): a step is written with no reader in hand, so a reader that
+        goes to L3 refuses to run one (a versioned table's every version, a stamped one's gone rows would be read), and
+        a step reads such a table through its live relation instead (``threetears.core.keyed.newest_read``, a derived
+        relation: a versioned table's newest live versions, a stamped one's live rows)
     :ptype versioned: tuple[str, ...]
     """
 

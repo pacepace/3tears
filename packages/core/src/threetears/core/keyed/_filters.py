@@ -22,6 +22,7 @@ from threetears.interfaces.keyed.keys import (
     VersionedTable,
     index_hint,
     live_guard,
+    live_relation,
     newest_relation,
     newest_settings,
     not_null_guards,
@@ -80,6 +81,7 @@ __all__ = [
     "newest_of",
     "newest_read",
     "newest_sent",
+    "versions_read",
     "refuse_versioned",
     "one_use_each",
     "refuse_in_place",
@@ -247,12 +249,13 @@ def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
         )
 
 
-def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:
-    """what a read of ``table`` on ``conn`` reads in its place: a versioned L3 table's newest live versions, a
+def versions_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:
+    """what a read of ``table`` on ``conn`` reads in its place when it guards a stamped table itself
+    (:func:`live_read`, the keyed counts naming each relation's guard): a versioned L3 table's newest live versions, a
     :class:`Derived` relation answering one row a key (:func:`~threetears.interfaces.keyed.keys.newest_relation`), so
     the read sees only each key's newest version, never an older one, a key whose newest version is a "gone" marker,
     or a key under a newer run marker. ``table`` itself for a read that does not go to L3, a derived relation, or a
-    table no versioned declaration names.
+    table no versioned declaration names (a stamped one among them: its guard is :func:`live_only`).
 
     For a read whose conditions on the key are plain ones (pins, ranges: the planner pushes them into the relation's
     ``DISTINCT ON``); a keyed batch, a join and a fill page name their keys or ``LIMIT`` inside it themselves
@@ -275,6 +278,31 @@ def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | D
     if lock is not None:
         raise ValueError(f"{table} is versioned (append-only): its newest versions are read, never locked")
     return Derived(newest_relation(versioned, table))
+
+
+def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:
+    """what a read of ``table`` on ``conn`` reads in its place, so it sees only live rows: a versioned L3 table's
+    newest live versions (:func:`versions_read`), a stamped one's live rows (a :class:`Derived` relation of its
+    declared columns, :func:`~threetears.interfaces.keyed.keys.live_relation`). ``table`` itself for a read that does
+    not go to L3, a derived relation, or a table neither declaration names. What a generic step, or any read naming
+    no guard of its own, reads an append-only table through.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: str | Derived
+    :param lock: the row lock the read takes; an append-only table's relation is never locked
+    :ptype lock: Lock | None
+    :return: the relation to read
+    :rtype: str | Derived
+    :raises ValueError: when a read of a versioned or stamped table's relation takes a row lock
+    """
+    stamped = stamped_table(table, l3=reads_l3(conn)) if isinstance(table, str) else None
+    if stamped is None:
+        return versions_read(conn, table, lock=lock)
+    if lock is not None:
+        raise ValueError(f"{table} is stamped: its live rows are read through a relation, never locked")
+    return Derived(live_relation(stamped, str(table)))
 
 
 class _NewestSettings:
@@ -344,7 +372,7 @@ def live_only(conn: Any, table: Any, where: Sequence[Fragment] = (), *, row: str
     names.
 
     The stamped half of :func:`live_read`, the one place a shared keyed read asks both: a versioned table is read
-    through its newest relation (:func:`newest_read`), a stamped one by this guard, so no read answers a gone row.
+    through its newest relation (:func:`versions_read`), a stamped one by this guard, so no read answers a gone row.
 
     :param conn: the connection or reader the read was handed
     :ptype conn: Any
@@ -373,7 +401,7 @@ def live_read(
     row: str | None = "t",
 ) -> tuple[str | Derived, tuple[Fragment, ...]]:
     """what a shared keyed read of ``table`` on ``conn`` reads, and the filters it reads by, so it answers only live
-    rows: a versioned L3 table's newest live versions in its place (:func:`newest_read`: one row a key, never an older
+    rows: a versioned L3 table's newest live versions in its place (:func:`versions_read`: one row a key, never an older
     version, a "gone" marker or a key under a newer run marker), a stamped one by its live guard beside ``where``
     (:func:`live_only`: never a row its delete marked gone). ``table`` and ``where`` as given for a read that does not
     go to L3 (a local copy holds only live rows), a derived relation, or a table neither declaration names.
@@ -393,9 +421,9 @@ def live_read(
     :ptype row: str | None
     :return: the relation to read, and the filters to read it by
     :rtype: tuple[str | Derived, tuple[Fragment, ...]]
-    :raises ValueError: when a read of a versioned table takes a row lock (:func:`newest_read`)
+    :raises ValueError: when a read of a versioned table takes a row lock (:func:`versions_read`)
     """
-    return newest_read(conn, table, lock=lock), live_only(conn, table, where, row=row)
+    return versions_read(conn, table, lock=lock), live_only(conn, table, where, row=row)
 
 
 def refuse_in_place(conn: Any, table: Any, write: str) -> None:

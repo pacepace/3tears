@@ -55,7 +55,7 @@ from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
-from threetears.interfaces.keyed.keys import default_projection, versioned_table
+from threetears.interfaces.keyed.keys import default_projection, stamped_table, versioned_table
 from threetears.interfaces.keyed.steps import Match, Quoted, Rel, Step, change_relation
 
 __all__ = [
@@ -96,7 +96,8 @@ class _Statement:
 
     def __init__(self) -> None:
         self.params: list[Any] = []
-        #: the versioned L3 tables the statement names as plain relations (:attr:`Step.versioned`)
+        #: the append-only L3 tables (versioned or stamped) the statement names as plain relations
+        #: (:attr:`Step.versioned`)
         self.versioned: list[str] = []
 
     def source(self, rel: Rel, alias: str) -> str:
@@ -109,7 +110,7 @@ class _Statement:
             return f"({text}) AS {alias}"
         if isinstance(rel, Quoted):
             return f"{rel.name} AS {alias}"
-        if versioned_table(rel, l3=True) is not None:
+        if versioned_table(rel, l3=True) is not None or stamped_table(rel, l3=True) is not None:
             self.versioned.append(rel)
         return f"{quoted_table(rel)} AS {alias}"
 
@@ -133,8 +134,9 @@ class _Statement:
 
 
 def _runs(conn: Any, *steps: Step) -> None:
-    """refuse to run on L3 a step naming a versioned table as a plain relation: it would read every version of it
-    (an older one, a gone marker, a key under a newer run marker). A step built over a local copy (one row a key) runs.
+    """refuse to run on L3 a step naming an append-only table as a plain relation: a versioned one's every version
+    (an older one, a gone marker, a key under a newer run marker), a stamped one's gone rows. A step built over a local
+    copy (one row a key, only live ones) runs; on L3 a step reads each through ``newest_read(conn, table)``.
 
     :param conn: the reader
     :ptype conn: Any
@@ -147,9 +149,9 @@ def _runs(conn: Any, *steps: Step) -> None:
     named = [table for step in steps for table in step.versioned]
     if named and reads_l3(conn):
         raise ValueError(
-            f"a step reads the versioned table(s) {', '.join(dict.fromkeys(named))} as plain relations on L3, every "
-            "version of each: read each through threetears.core.keyed.newest_read(conn, table), its newest live "
-            "versions"
+            f"a step reads the append-only table(s) {', '.join(dict.fromkeys(named))} as plain relations on L3, a "
+            "versioned one's every version, a stamped one's gone rows: read each through "
+            "threetears.core.keyed.newest_read(conn, table), its newest live versions or its live rows"
         )
 
 
