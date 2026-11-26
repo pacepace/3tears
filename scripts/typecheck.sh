@@ -48,7 +48,7 @@ source "$REPO_ROOT/scripts/_tool.sh"
 # skipped six packages this script checks. Keep both in step. A package added to the
 # workspace without a line in each is a package nobody is checking, and the gap is
 # invisible because the gate still passes.
-MYPYPATH_ALL=packages/conversations/src:packages/mcp/src:packages/agent/workspace/src:packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/interfaces/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
+MYPYPATH_ALL=packages/conversations/src:packages/mcp/src:packages/agent/workspace/src:packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/interfaces/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-contract/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
 
 PART=all
 case "${1:-}" in
@@ -106,6 +106,7 @@ else
         -p threetears.backup
         -p threetears.scrape
         -p threetears.search
+        -p threetears.tool_contract
         -p threetears.tool_schema
         -p threetears.registry
         -p threetears.epoch

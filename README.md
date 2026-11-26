@@ -89,6 +89,7 @@ Browser/frontend packages live in [`web/`](web/): JavaScript, published to npm a
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Multi-pod-safe scheduled jobs: a cross-pod-locked tick loop, reschedule math, and store protocols |
 | [`3tears-langgraph`](packages/langgraph/) | `threetears.langgraph` | A three-tier LangGraph checkpoint saver, agent middleware (prompt caching, summarizing, tool-result offload, tool-loop budgets), and streaming |
 | [`3tears-mcp`](packages/mcp/) | `threetears.mcp` | Model Context Protocol framework: an RBAC-gated `McpServer`, `McpTool`, and an auth-aware HTTP client |
+| [`3tears-tool-contract`](packages/tool-contract/) | `threetears.tool_contract` | The `TearsTool` contract (`TearsTool`, `ToolResult`, `MCPToolDefinition`) without the platform's dependencies, and its MCP face (`[mcp]`) |
 | [`3tears-tool-schema`](packages/tool-schema/) | `threetears.tool_schema` | Dependency-free helpers that make a tool's JSON Schema self-contained for models and validators |
 | [`3tears-models`](packages/models/) | `threetears.models` | LangChain-native model adapters (Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, image providers, and Claude through the Claude CLI) with capability metadata, circuit breakers and usage tracking |
 | [`3tears-channels`](packages/channels/) | `threetears.channels` | One message protocol with Slack, Discord and WebSocket adapters, plus email sending and an HTTP webhook receiver |

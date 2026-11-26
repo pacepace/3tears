@@ -18,12 +18,12 @@ import anyio
 import httpx2
 import mcp
 import mcp.types as mcp_types
+from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.client.subscriptions import ResourceUpdated
 from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
-from mcp_types.jsonrpc import INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
 from threetears.mcp import (
     Identity,
     McpResource,

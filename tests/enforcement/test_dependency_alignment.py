@@ -60,6 +60,18 @@ _DEPENDENCY_FLOORS = (
         ),
     ),
     DependencyFloor(
+        package="packages/tool-contract",
+        allowed=("3tears-observe", "3tears-tool-schema"),
+        rationale=(
+            "the TearsTool contract installable on its own: a host that serves its tools locally -- over MCP, with "
+            "no platform behind it -- takes TearsTool, ToolResult and MCPToolDefinition and must not install a NATS "
+            "client, a Postgres driver, LangGraph or LangChain, which 3tears-agent-tools' base pulls. TearsTool.run "
+            "reports a coercion fallback through observe's contain() and reads declared types through tool-schema; "
+            "the REST face's type comes from core for type checking only. The MCP face rides the [mcp] extra. "
+            "tests/enforcement/test_tool_contract_installs_light.py checks what the lock resolves an install to"
+        ),
+    ),
+    DependencyFloor(
         package="packages/iam",
         allowed=(
             "3tears-observe",
@@ -211,6 +223,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-nats",
             "3tears-observe",
             "3tears-search",
+            "3tears-tool-contract",
             "3tears-tool-schema",
             "langchain-core",
             "httpx",

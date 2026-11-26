@@ -44,6 +44,7 @@ langchain-openrouter = "2026-09-22T05:00:00Z"
 claude-agent-sdk = "2026-09-30T20:00:00Z"
 3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-tool-contract = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
@@ -79,6 +80,7 @@ members = [
     "3tears-scheduled-jobs",
     "3tears-scrape",
     "3tears-search",
+    "3tears-tool-contract",
     "3tears-tool-schema",
 ]
 constraints = [
@@ -437,6 +439,7 @@ dependencies = [
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "3tears-search", extra = ["standalone"] },
+    { name = "3tears-tool-contract" },
     { name = "3tears-tool-schema" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -501,6 +504,7 @@ requires-dist = [
     { name = "3tears-search", extras = ["extract"], marker = "extra == 'all'", editable = "packages/search" },
     { name = "3tears-search", extras = ["extract"], marker = "extra == 'fetch'", editable = "packages/search" },
     { name = "3tears-search", extras = ["standalone"], editable = "packages/search" },
+    { name = "3tears-tool-contract", editable = "packages/tool-contract" },
     { name = "3tears-tool-schema", editable = "packages/tool-schema" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -1286,6 +1290,28 @@ requires-dist = [
     { name = "trafilatura", marker = "extra == 'extract'", specifier = ">=2.0.0" },
 ]
 provides-extras = ["standalone", "extract"]
+
+[[package]]
+name = "3tears-tool-contract"
+version = "0.95.0"
+source = { editable = "packages/tool-contract" }
+dependencies = [
+    { name = "3tears-observe" },
+    { name = "3tears-tool-schema" },
+]
+
+[package.optional-dependencies]
+mcp = [
+    { name = "3tears-mcp" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears-mcp", marker = "extra == 'mcp'", editable = "packages/mcp" },
+    { name = "3tears-observe", editable = "packages/observe" },
+    { name = "3tears-tool-schema", editable = "packages/tool-schema" },
+]
+provides-extras = ["mcp"]
 
 [[package]]
 name = "3tears-tool-schema"

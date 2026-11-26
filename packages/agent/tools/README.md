@@ -4,6 +4,14 @@ Tool framework for LLM agents. Provides tool routing, execution, context managem
 
 Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
+## The tool contract
+
+`TearsTool`, `ToolResult`, `MCPToolDefinition`, the result codes and the input coercion are defined in
+[3tears-tool-contract](../../tool-contract/), which installs without this package's dependencies (NATS, Postgres
+drivers, LangGraph, LangChain). `threetears.agent.tools.base_tool` and `threetears.agent.tools.coercion` re-export
+the same objects, so existing imports keep working and a tool written against either path is the same class: the
+`ToolServer` here serves it on the mesh, and `threetears.tool_contract.mcp_face` serves it over MCP.
+
 ## ToolServer baseline audit
 
 `ToolServer.handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id`, which ties a request's events together and is not a deduplication key: every `tool.call` in a turn shares it, and each is its own row. Each envelope's `id` is its identity, so a JetStream redelivery (which repeats the `id`) collapses to one row. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.

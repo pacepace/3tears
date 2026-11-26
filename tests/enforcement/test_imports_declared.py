@@ -29,6 +29,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: them for having nothing to check.
 _DEPENDENCY_FREE_PACKAGES = frozenset({"packages/interfaces", "packages/tool-schema"})
 
+#: packages whose imports are the family's alone (``threetears.*``, first-party here), so this gate has nothing to
+#: check in them: the TearsTool contract imports observe, tool-schema and, behind its ``mcp`` extra, 3tears-mcp.
+#: ``test_dependency_alignment.py`` holds their family declarations, and its dependency floor pins the contract's
+_FAMILY_ONLY_PACKAGES = frozenset({"packages/tool-contract"})
+
 _PACKAGES = sorted(
     pyproject.parent.relative_to(_REPO_ROOT).as_posix()
     for pattern in ("packages/*/pyproject.toml", "packages/agent/*/pyproject.toml")
@@ -40,9 +45,13 @@ def test_the_packages_were_found() -> None:
     """a glob that stopped matching would pass every package by checking none."""
     assert len(_PACKAGES) > 20, _PACKAGES
     assert _DEPENDENCY_FREE_PACKAGES <= set(_PACKAGES), sorted(_DEPENDENCY_FREE_PACKAGES - set(_PACKAGES))
+    assert _FAMILY_ONLY_PACKAGES <= set(_PACKAGES), sorted(_FAMILY_ONLY_PACKAGES - set(_PACKAGES))
 
 
-@pytest.mark.parametrize("package", [package for package in _PACKAGES if package not in _DEPENDENCY_FREE_PACKAGES])
+@pytest.mark.parametrize(
+    "package",
+    [package for package in _PACKAGES if package not in _DEPENDENCY_FREE_PACKAGES | _FAMILY_ONLY_PACKAGES],
+)
 def test_every_import_comes_from_a_declared_distribution(package: str) -> None:
     run_imports_declared_enforcement(
         ImportsDeclaredConfig(repo_root=_REPO_ROOT / package, first_party=frozenset({"threetears"}))

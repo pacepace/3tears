@@ -34,11 +34,11 @@ from types import MappingProxyType
 from typing import Any, Final
 
 import mcp.types as mcp_types
+from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
 from mcp.server.context import ServerRequestContext
 from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.uri_template import UriTemplate
-from mcp_types.jsonrpc import INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, Identity, IdentityProvider

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-tool-contract"
+version = "0.95.0"
+description = "The TearsTool contract -- TearsTool, ToolResult, MCPToolDefinition -- installable without the platform, and its MCP face"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# A host that serves its tools on its own (over MCP, locally) takes the contract and nothing of the platform: no
+# NATS client, Postgres driver, LangGraph or LangChain. The floor is pinned in
+# tests/enforcement/test_dependency_alignment.py, and tests/enforcement/test_tool_contract_installs_light.py checks
+# what the lock resolves an install of it to.
+dependencies = [
+    "3tears-observe>=0.95.0,<0.96.0",  # TearsTool.run reports a coercion fallback through contain()
+    "3tears-tool-schema>=0.95.0,<0.96.0",  # the coercion reads each property's declared type
+]
+
+[project.optional-dependencies]
+# the MCP face: a TearsTool served by 3tears-mcp's McpServer (threetears.tool_contract.mcp_face)
+mcp = ["3tears-mcp>=0.95.0,<0.96.0"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-mcp = { workspace = true }
+3tears-observe = { workspace = true }
+3tears-tool-schema = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.tool_contract"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+# no [tool.pytest.ini_options] block: inherit the workspace's (tests/enforcement/test_one_pytest_config.py).

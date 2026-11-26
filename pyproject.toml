@@ -223,6 +223,7 @@ dev-dependencies = [
 "3tears-scheduled-jobs" = "PT0S"
 "3tears-scrape" = "PT0S"
 "3tears-search" = "PT0S"
+"3tears-tool-contract" = "PT0S"
 "3tears-tool-schema" = "PT0S"
 # A fixed date, not a span: it admits langchain-openrouter 0.2.9 (published 2026-09-22T04:15Z),
 # the first release that surfaces OpenRouter's served `provider` in response_metadata, and admits
@@ -519,6 +520,7 @@ mypy_path = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/search/src",
+    "packages/tool-contract/src",
     "packages/tool-schema/src",
     "packages/geo/src",
     "packages/iam/src",
@@ -562,6 +564,7 @@ files = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/search/src",
+    "packages/tool-contract/src",
     "packages/tool-schema/src",
 ]
 exclude = [

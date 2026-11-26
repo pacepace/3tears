@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### tool-contract (new package): the TearsTool contract installs without the platform
+
+**Added:** `3tears-tool-contract` (`threetears.tool_contract`): `TearsTool`, `ToolResult`, `MCPToolDefinition`, the
+five result codes and `TOOL_RESULT_ERROR_CODES`, and `coerce_value` / `normalize_kwargs`, moved from
+3tears-agent-tools. Its dependencies are 3tears-observe and 3tears-tool-schema only, so a host serving its tools
+locally installs no NATS client, Postgres driver, LangGraph or LangChain. `TearsTool.face_rest`'s type,
+`RestAffordance`, stays in core and is imported for type checking only.
+
+**Changed:** `threetears.agent.tools.base_tool` and `threetears.agent.tools.coercion` re-export the contract's
+objects (the same classes and functions; every existing import keeps working), and 3tears-agent-tools depends on
+3tears-tool-contract.
+
+**Tests:** `tests/enforcement/test_tool_contract_installs_light.py` reads `uv.lock` (`uv export --frozen`) for what
+an install of the contract (with and without its `mcp` extra), of 3tears-mcp's base, of 3tears-tool-schema and of
+3tears-observe pulls, and fails on a NATS client, a Postgres driver, LangGraph or LangChain.
+
+**Release:** the first release with this package needs its PyPI pending trusted publisher registered first
+(`docs/releasing.md`, "A release that adds a package").
+
 ### mcp: resources
 
 **Added:** `threetears.mcp.resources`: `McpResource`, `McpResourceTemplate` (RFC 6570, read with the URI's

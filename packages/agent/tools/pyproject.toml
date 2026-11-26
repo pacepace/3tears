@@ -37,6 +37,7 @@ dependencies = [
     # candidate-derived URLs under a byte cap, which the traced client cannot
     # do -- see threetears.agent.tools.search_transport for the split.
     "3tears-search[standalone]>=0.95.0,<0.96.0",
+    "3tears-tool-contract>=0.95.0,<0.96.0",  # TearsTool, ToolResult, MCPToolDefinition (re-exported by base_tool)
     "3tears-tool-schema>=0.95.0,<0.96.0",
     "langchain-core",
     "httpx",
@@ -80,4 +81,5 @@ packages = ["src/threetears"]
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-search = { workspace = true }
+3tears-tool-contract = { workspace = true }
 3tears-tool-schema = { workspace = true }
