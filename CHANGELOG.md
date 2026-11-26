@@ -67,6 +67,13 @@ an install of the contract (with and without its `mcp` extra), of 3tears-mcp's b
 **Release:** the first release with this package needs its PyPI pending trusted publisher registered first
 (`docs/releasing.md`, "A release that adds a package").
 
+### mcp: a server advertises its version and instructions
+
+**Added:** `McpServer(..., version: str = "", instructions: str | None = None)`, passed to the SDK server. On the
+handshake-era protocols both ride the `initialize` result (`serverInfo.version`, `instructions`); on 2026-07-28 the
+instructions ride `server/discover` and the version each result's `serverInfo` stamp. Unset, the version is empty
+and no instructions are sent, as before.
+
 ### mcp: resources and tool calls under one gate; the call context read through type aliases
 
 **Added:** `ResourceRequest(uri, variables, required_permission, action)` and the `ResourceAuthorizer` protocol

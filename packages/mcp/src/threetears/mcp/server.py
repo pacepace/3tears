@@ -190,6 +190,13 @@ class McpServer:
     :param resource_provider: called on every resource request for the resources as they stand, in place of
         ``resources``
     :ptype resource_provider: ResourceProvider | None
+    :param version: the server's version, advertised as ``serverInfo.version``: in the ``initialize`` result on the
+        handshake-era protocols, in each result's ``serverInfo`` stamp on 2026-07-28. Empty is advertised empty, as
+        before
+    :ptype version: str
+    :param instructions: how a client should use the server, for its model: in the ``initialize`` result on the
+        handshake-era protocols, in the ``server/discover`` result on 2026-07-28. None sends none, as before
+    :ptype instructions: str | None
     """
 
     def __init__(
@@ -203,6 +210,8 @@ class McpServer:
         error_codes: ErrorCodes | None = None,
         resources: ResourceRegistry | None = None,
         resource_provider: ResourceProvider | None = None,
+        version: str = "",
+        instructions: str | None = None,
     ) -> None:
         """capture deps; no I/O until :meth:`serve_stdio`.
 
@@ -222,6 +231,10 @@ class McpServer:
         :ptype resources: ResourceRegistry | None
         :param resource_provider: the live resource set, in place of ``resources``
         :ptype resource_provider: ResourceProvider | None
+        :param version: the server's advertised version
+        :ptype version: str
+        :param instructions: the server's instructions to a client
+        :ptype instructions: str | None
         :return: nothing
         :rtype: None
         :raises ValueError: when ``name`` is empty, not exactly one of
@@ -278,7 +291,7 @@ class McpServer:
             )
         )
         self._listen = ListenHandler(self._pushes.bus)
-        self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
+        self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name, version=version, instructions=instructions)
 
     @property
     def name(self) -> str:
@@ -298,7 +311,7 @@ class McpServer:
         """
         return self._error_codes
 
-    def _build_sdk_server(self, name: str) -> _SdkServer[Any]:
+    def _build_sdk_server(self, name: str, *, version: str, instructions: str | None) -> _SdkServer[Any]:
         """build the SDK server with this server's ``tools/list`` + ``tools/call`` handlers.
 
         each :class:`McpServer` gets its own SDK server (no cross-pollination); both handlers
@@ -306,6 +319,10 @@ class McpServer:
 
         :param name: advertised server name
         :ptype name: str
+        :param version: advertised server version
+        :ptype version: str
+        :param instructions: the server's instructions to a client
+        :ptype instructions: str | None
         :return: the wired SDK server
         :rtype: mcp.server.Server
         """
@@ -331,6 +348,8 @@ class McpServer:
             warnings.simplefilter("ignore", MCPDeprecationWarning)
             sdk_server = _HandshakeLoggingServer(
                 name,
+                version=version,
+                instructions=instructions,
                 on_list_tools=_on_list_tools,
                 on_call_tool=_on_call_tool,
                 on_set_logging_level=_on_set_logging_level,

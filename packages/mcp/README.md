@@ -29,6 +29,26 @@ uvicorn only. Everything below that needs the rest of the family -- `LocalGrantA
 | `rbac` | `McpToolGrantCollection` -- `BaseCollection` over `mcp_tool_grants`. Exposes the in-memory grant cache that `LocalGrantAuthorizer` consults. |
 | `migrations/` | `v01_create_mcp_tool_grants` -- platform-scope DDL. Consumers register via `MigrationRunner.register(epoch_pkg)` (same shape as `threetears.epoch`). |
 
+## Server version and instructions
+
+```python
+server = McpServer(
+    name="sessions",
+    version="2.0.0",
+    instructions="Use session_send for long work, and poll with session_status.",
+    identity_provider=identity_provider,
+    authorizer=authorizer,
+    registry=registry,
+)
+```
+
+| | handshake-era protocols (up to 2025-11-25) | 2026-07-28 |
+|---|---|---|
+| `version` | `serverInfo.version` in the `initialize` result | `version` in the `io.modelcontextprotocol/serverInfo` stamp in each result's `_meta` |
+| `instructions` | `instructions` in the `initialize` result | `instructions` in the `server/discover` result |
+
+Both are optional. Left unset, the version is advertised empty and no instructions are sent, as before.
+
 ## Tool metadata
 
 `McpTool` (and `register_tool`) take three optional fields, listed by `tools/list` under their
