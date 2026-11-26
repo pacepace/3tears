@@ -78,7 +78,7 @@ def _results(name: str, *, versioned: bool) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
-        row_epoch=row_versions("join_state_code") if versioned else None,
+        row_epoch=row_versions("join_state_code", epochs=_EPOCHS, scope_prefix="state:") if versioned else None,
         l1_eviction=TEST_L1_TABLE,
     )
 
@@ -97,7 +97,7 @@ _PROJECTIONS = TableSchema(
         Column("geo_id", STRING_TYPE),
         Column("value", INT_TYPE),
     ],
-    row_epoch=row_versions("join_state_code"),
+    row_epoch=row_versions("join_state_code", epochs=_EPOCHS, scope_prefix="state:"),
     l1_eviction=TEST_L1_TABLE,
 )
 

@@ -59,6 +59,17 @@ stored table, ``gone OR (c IS NOT NULL AND ...)``), so the database still refuse
 run deleted (a key prefix) is one row of the run-marker table (:mod:`~threetears.core.ddl.run_markers`), never a
 marker a row.
 
+**Every scope a stamped write's rows name is touched before its COMMIT, by 3tears itself.** A restore finds the scopes
+changed since X by ``last_epoch`` alone, so a version whose scope ``scope_prefix + v`` its transaction did not raise is
+never read back, silently, and the scrub cannot see it. So no writer is trusted to name its scopes: the store's one
+stamped-write path (``broker_generation.stamped_send``, every write ``SqlL3Backend`` makes of a versioned table) reads the
+distinct scope values of the rows it sends, by Arrow on the building thread, and hands them to the transaction the write
+joins, which raises each one's ``last_epoch`` to its highest stamp just before its COMMIT
+(:func:`touch_last_epoch_sql`): one statement a batch of scopes, one index entry a scope a transaction, never one a row. A
+versioned write that joins no transaction to touch them in is refused (:class:`UntouchedScopesError`). A load commits
+its own transactions, so it touches its scopes in one of their own before its rows (``SqlL3Backend.load_files``; the
+hub's broker for a load it runs).
+
 **A write that carries no epoch is refused**: by 3tears before it is sent (:class:`UnstampedWriteError`), and by the
 database for any write that bypasses 3tears (the column is ``NOT NULL`` with no default).
 
@@ -83,12 +94,15 @@ __all__ = [
     "RowEpoch",
     "TransactionTooOldError",
     "UnstampedWriteError",
+    "UntouchedScopesError",
     "epoch_wall_ms",
     "next_epoch",
     "RESTORE_DECLARATION_MARK",
     "restore_declaration",
+    "declared_versions",
     "restore_floor",
     "scope_epoch_index_name",
+    "touch_last_epoch_sql",
     "observe_epoch",
     "rising_epoch_assignment",
     "row_versions",
@@ -141,6 +155,12 @@ class AppendOnlyWriteError(ValueError):
 
 class UnstampedWriteError(ValueError):
     """a write to a table that declares a row epoch, without one: refused before anything is sent."""
+
+
+class UntouchedScopesError(RuntimeError):
+    """a stamped write of a versioned table on a connection no transaction holds to touch its scopes in before its
+    COMMIT: refused before anything is sent, since a restore would never hear its rows (the module's "Every scope a
+    stamped write's rows name is touched")."""
 
 
 class TransactionTooOldError(RuntimeError):
@@ -263,6 +283,27 @@ def restore_declaration(
     )
 
 
+def declared_versions(text: str | None) -> RowEpoch | None:
+    """the versioned table's declaration a ``(scope, epoch)`` index's comment carries (:func:`restore_declaration`):
+    its scope column, scope epochs table and prefix, for whatever writes the table without its class (the hub's broker,
+    which loads files into it and touches the scopes they name). None for a comment that is no restore declaration.
+
+    :param text: the index's comment, or None when it has none
+    :ptype text: str | None
+    :return: the declaration, or None
+    :rtype: RowEpoch | None
+    """
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(value, dict) or value.get(RESTORE_DECLARATION_MARK) != 1:
+        return None
+    return row_versions(str(value["scope"]), epochs=str(value["epochs"]), scope_prefix=str(value["scope_prefix"]))
+
+
 def restore_floor(mark_ms: int) -> int:
     """X, the lowest epoch a restore from a keeper's mark taken at ``mark_ms`` reads: ``(mark_ms - M) << 15``.
 
@@ -274,6 +315,28 @@ def restore_floor(mark_ms: int) -> int:
     :rtype: int
     """
     return max(0, mark_ms - _RESTORE_MARGIN_MS) << _LOGICAL_BITS
+
+
+def touch_last_epoch_sql(quoted_table: str) -> str:
+    """the statement that touches scopes of a scope epochs table with a transaction's highest stamp, just before its
+    COMMIT: each scope's ``last_epoch`` raised to it (never lowered), the scope's row made when it has none.
+
+    ``$1`` is the stamp, ``$2`` the scopes (``text[]``), unnested in the select list (no ``FROM``, so the broker's
+    inspector names no table but the target). A row it makes carries epoch 0 and no pending mark: to a reader exactly a
+    scope no write has changed (``EpochSnapshot.epoch`` answers 0 for one), so only the restore and the next writer's
+    ``begin``, which read ``last_epoch``, see it. WHY an upsert and not ``UPDATE``: the scope a writer forgot to touch
+    may have no row, and an ``UPDATE`` of none would miss it again without a word.
+
+    :param quoted_table: the scope epochs table, quoted
+    :ptype quoted_table: str
+    :return: the statement
+    :rtype: str
+    """
+    return (
+        f"INSERT INTO {quoted_table} (scope, epoch, last_epoch, date_created, date_updated) "  # noqa: S608 - a quoted identifier
+        "SELECT unnest($2::text[]), 0, $1::bigint, now(), now() ON CONFLICT (scope) DO UPDATE SET "
+        f"last_epoch = GREATEST(COALESCE({quoted_table}.last_epoch, 0), EXCLUDED.last_epoch)"
+    )
 
 
 #: a stamped table's declaration: one row a key, carrying its last write's epoch

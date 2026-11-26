@@ -59,12 +59,15 @@ from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.core.backends.broker_generation import (
+    StampedScopes,
     collecting_advanced_generations,
+    holding_touched_scopes,
     committed_generations_record,
     naming_commit_generations,
     naming_commit_s_min,
     naming_commit_scopes,
     naming_delta_files,
+    releasing_touched_scopes,
     reply_generations_since,
 )
 from threetears.core.collections.delta_files import (
@@ -82,11 +85,13 @@ from threetears.core.ddl.row_epoch import (
     UnstampedWriteError,
     epoch_wall_ms,
     next_epoch,
+    touch_last_epoch_sql,
     wall_clock_ms,
 )
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.frozen_state import with_chunk
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -95,6 +100,10 @@ if TYPE_CHECKING:
 __all__ = ["CallerTransaction", "SharedAdvance", "save_delta_files", "shared_advance_for"]
 
 log = get_logger(__name__)
+
+#: the most scopes one touch statement names (:meth:`CallerTransaction._touch_scopes`), one array of them, as
+#: ``ScopeEpochs`` batches its own
+_TOUCH_BATCH: Final = 500
 
 #: every CallerTransaction open in this context, outermost first. A context variable, so a task
 #: started inside the transaction still finds it, and one started outside never does.
@@ -364,6 +373,8 @@ class CallerTransaction:
         "_scopes",
         "_states",
         "_token",
+        "_touch_token",
+        "_touched",
         "_transaction",
         "_write_version",
         "conn",
@@ -421,6 +432,12 @@ class CallerTransaction:
         # what runs on the transaction's connection just before its COMMIT, given the highest stamp, in order
         # (before_commit): a tuple replaced whole, owned by the task that runs the transaction
         self._before_commit: tuple[Callable[[Any, int], Awaitable[None]], ...] = ()
+        # the scope epochs scopes this transaction's stamped writes touched, by scope epochs table: each one's last_epoch
+        # raised to the highest stamp just before the COMMIT (_touch_scopes). Read off the rows by the store
+        # (stamped_send) and named by ScopeEpochs.touch alike, so a scope both name is one index entry. A read-only
+        # map of frozensets replaced whole, owned by the task that runs the transaction; a scope count, never a row's
+        self._touched: Mapping[str, frozenset[str]] = MappingProxyType({})
+        self._touch_token: Token[Any] | None = None
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -719,8 +736,60 @@ class CallerTransaction:
         """
         self._before_commit = (*self._before_commit, step)
 
+    def touch_scopes(self, epochs: str, scopes: Iterable[str]) -> None:
+        """raise ``last_epoch`` of ``scopes`` of the scope epochs table ``epochs`` to this transaction's highest stamp
+        just before its COMMIT, when it stamped one: how a stamped write's scopes reach the restore, which finds the
+        scopes changed since X by ``last_epoch`` alone (``ddl.row_epoch``). Every scope named across the transaction is
+        touched once, by one statement a batch of scopes, whoever named it (the store, from the rows it sent; or
+        ``ScopeEpochs.touch``).
+
+        :param epochs: the scope epochs table, as the transaction's connection names it
+        :ptype epochs: str
+        :param scopes: the scopes
+        :ptype scopes: Iterable[str]
+        :return: nothing
+        :rtype: None
+        """
+        named = frozenset(scopes)
+        if not named:
+            return
+        held = self._touched.get(epochs, frozenset())
+        if named <= held:
+            return
+        self._touched = MappingProxyType({**self._touched, epochs: held | named})
+
+    def _take_stamped_scopes(self, touched: StampedScopes) -> None:
+        """take one stamped write's scopes and stamps, read off its rows by the store (``stamped_send``): its scopes to
+        touch, and its stamps into the transaction's lowest and highest, which its age and its touch are measured by.
+
+        :param touched: the write's scopes and stamps
+        :ptype touched: StampedScopes
+        :return: nothing
+        :rtype: None
+        """
+        self.touch_scopes(touched.epochs, touched.scopes)
+        self._s_min = touched.s_min if self._s_min is None else min(self._s_min, touched.s_min)
+        self._s_max = touched.s_max if self._s_max is None else max(self._s_max, touched.s_max)
+
+    async def _touch_scopes(self, s_max: int) -> None:
+        """touch every scope this transaction's stamped writes named with ``s_max`` (:meth:`touch_scopes`), on its
+        connection, just before its COMMIT: one statement a batch of scopes, the scopes in order.
+
+        :param s_max: the highest stamp the transaction wrote
+        :ptype s_max: int
+        :return: nothing
+        :rtype: None
+        """
+        for epochs, scopes in sorted(self._touched.items()):
+            ordered = sorted(scopes)
+            quoted = quote_identifier(epochs)
+            for start in range(0, len(ordered), _TOUCH_BATCH):
+                batch = ordered[start : start + _TOUCH_BATCH]
+                await self.conn.execute(touch_last_epoch_sql(quoted), s_max, batch)
+
     async def _ready_to_commit(self) -> None:
-        """refuse a commit older than W, then run the steps owed before the COMMIT (:meth:`before_commit`).
+        """refuse a commit older than W, touch the scopes its stamped writes named (:meth:`touch_scopes`), then run the
+        steps owed before the COMMIT (:meth:`before_commit`).
 
         :return: nothing
         :rtype: None
@@ -738,6 +807,7 @@ class CallerTransaction:
                 "transaction may run: its commit is refused and it is rolled back. Write in smaller transactions"
             )
         steps, s_max = self._before_commit, self._s_max
+        await self._touch_scopes(s_max)
         for step in steps:
             await step(self.conn, s_max)
 
@@ -841,6 +911,9 @@ class CallerTransaction:
         await transaction.__aenter__()
         self._transaction = transaction
         self._token = _OPEN.set((*_OPEN.get(), self))
+        if self._outermost is None:
+            # the store hands every stamped write made on this connection its scopes here, before it is sent
+            self._touch_token = holding_touched_scopes(self.conn, self._take_stamped_scopes)
         return self
 
     async def __aexit__(
@@ -927,6 +1000,9 @@ class CallerTransaction:
             if self._saved_delta_files:
                 # a commit that did not land leaves its files orphans, the only files the fold's sweep removes
                 OWN_DELTA_SAVES.settled(list(self._saved_delta_files.values()), landed=landed and exc_type is None)
+            if self._touch_token is not None:
+                releasing_touched_scopes(self._touch_token)
+                self._touch_token = None
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None

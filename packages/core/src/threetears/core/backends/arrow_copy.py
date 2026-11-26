@@ -79,7 +79,9 @@ __all__ = [
     "arrow_copy_available",
     "arrow_python_columns",
     "arrow_python_rows",
+    "column_max",
     "column_min",
+    "distinct_scopes",
     "copy_rows_arrow",
     "first_request_rows",
     "framed_copy_request",
@@ -544,6 +546,56 @@ def column_min(table: Any, name: str) -> Any:
     :rtype: Any
     """
     return pc.min(table.column(name), memory_pool=_POOL).as_py()
+
+
+def column_max(table: Any, name: str) -> Any:
+    """:func:`column_min`'s greatest value: a write's highest row epoch, what its transaction touches its scopes with.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param name: the column
+    :ptype name: str
+    :return: the greatest value, as Python, or None
+    :rtype: Any
+    """
+    return pc.max(table.column(name), memory_pool=_POOL).as_py()
+
+
+def distinct_scopes(values: Any, prefix: str) -> tuple[str, ...]:
+    """the scope epochs scopes a versioned write's rows name: each distinct value of their scope column, as text, after
+    ``prefix`` (``state:`` before ``VA``), sorted. Found by Arrow (``pyarrow.compute.unique``), never a Python value a
+    row: what scales with the rows stays in Arrow, and only the distinct scopes (a few dozen states) become Python. Pure,
+    for the building thread.
+
+    Sorted, so every transaction touches the scope rows it shares with another in one order and two never wait on each
+    other crosswise. Without pyarrow (the SDK's agents carry none) the values' set is taken by the interpreter's own
+    C loop and only the distinct ones are named, never a Python step a row.
+
+    :param values: the scope column: an Arrow array or chunked array, or a Python sequence of the values as bound
+    :ptype values: pyarrow.Array | pyarrow.ChunkedArray | Sequence[Any]
+    :param prefix: what the scope epochs table writes before a value
+    :ptype prefix: str
+    :return: the scopes, distinct and sorted
+    :rtype: tuple[str, ...]
+    :raises ValueError: when a row names no scope (a null)
+    """
+    if not _PYARROW:
+        held = set(values)
+        if None in held:
+            raise ValueError("a versioned table's row names no scope: its scope column is null")
+        return tuple(sorted(f"{prefix}{value}" for value in held))
+    arrow = values if isinstance(values, (pa.Array, pa.ChunkedArray)) else pa.array(values, memory_pool=_POOL)
+    if isinstance(arrow, pa.ChunkedArray):
+        arrow = arrow.combine_chunks(memory_pool=_POOL)
+    if pa.types.is_dictionary(arrow.type):
+        arrow = arrow.dictionary_decode()
+    unique = pc.unique(arrow, memory_pool=_POOL)
+    if unique.null_count:
+        raise ValueError("a versioned table's row names no scope: its scope column is null")
+    text = unique if pa.types.is_string(unique.type) else pc.cast(unique, pa.string(), memory_pool=_POOL)
+    if prefix:
+        text = pc.binary_join_element_wise(pa.scalar(prefix), text, pa.scalar(""), memory_pool=_POOL)
+    return tuple(sorted(text.to_pylist()))
 
 
 def planned_write_table(
