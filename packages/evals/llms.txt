@@ -92,12 +92,12 @@ LATER TASKS, BY RUNG (https://github.com/pacepace/3tears/blob/<tag>/packages/eva
     (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/cost-and-budgets.md)
 
 EMBEDDING IT IN AN APP (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/adopting-a-host.md)
-  A product builds one kernel.host.EvalHost and hands it to every entrypoint. The 18 ports a host
-    may implement: schema.AsyncDocumentStore, schema.AsyncStoreClock, schema.BoundCompletionClient,
-    schema.CompletionClient, schema.CompletionResult, schema.DocumentStore,
-    schema.ProviderFailureDescriber, schema.StoreClock, schema.ToolTurnClient, schema.TraceSink,
-    kernel.ActionSeam, kernel.CandidateKind, kernel.DeliverySeam, kernel.Recordable,
-    kernel.host.CompletionClients, run.CellExecutor, run.KindFactory, providers.Pricer.
+  A product builds one kernel.host.EvalHost and hands it to every entrypoint. The 19 ports a host
+    may implement, by root: schema: AsyncDocumentStore, AsyncStoreClock, BoundCompletionClient,
+    CompletionClient, CompletionResult, DocumentStore, ProviderFailureDescriber, StoreClock,
+    ToolTurnClient, TraceSink; kernel: ActionSeam, CandidateKind, DeliverySeam, Recordable;
+    kernel.host: CompletionClients, ModelListingReader; run: CellExecutor, KindFactory; providers:
+    Pricer.
   Every declared name, with one line each:
     https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md
 

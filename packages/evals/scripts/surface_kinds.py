@@ -245,11 +245,13 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.providers.Clients": "bound",
         "threetears.evals.providers.Model": "bound",
         "threetears.evals.schema.RunDisclosure": "bound",
-        # Shapes a host builds and hands the engine: a kind's trace, a describer's failure, a launch registry's entry
-        # and what its callables answer, a writer's limits, and the base a host's own stored models extend.
+        # Shapes a host builds and hands the engine: a kind's trace, a describer's failure, a factory's model listing, a
+        # launch registry's entry and what its callables answer, a writer's limits, and the base a host's own stored
+        # models extend.
         "threetears.evals.schema.CellTrace": "bound",
         "threetears.evals.schema.EvalBaseModel": "bound",
         "threetears.evals.schema.ProviderFailure": "bound",
+        "threetears.evals.schema.ModelListing": "bound",
         "threetears.evals.run.LaunchableKind": "bound",
         "threetears.evals.ops.WriterLimits": "bound",
         "threetears.evals.run.ArmPlan": "bound",

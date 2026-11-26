@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.kernel.host.timeouts import CellTimeoutFactory
     from threetears.evals.schema.traces import TraceSink
-    from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+    from threetears.evals.schema.completion import BoundCompletionClient, ModelListing, ProviderFailureDescriber
     from threetears.evals.schema.models import EvalTemplate
     from threetears.evals.kernel.storage import EvalStorage
 
@@ -84,6 +84,12 @@ class CompletionClients(Protocol):
     The engine never builds a client and never names a provider. It asks the host for one bound to
     a model, uses it, and releases it (:meth:`~threetears.evals.schema.completion.CompletionClient.aclose`)
     — so a client is built per unit of work, never cached here.
+
+    **Optional: ``async model_listing(model, *, role)``.** A factory that can read its providers' lists of the models
+    they serve also offers this method, declared by :class:`ModelListingReader`, and launch admission asks it of every
+    model an arm names. It is not a member of this protocol, so a factory without it still is one: the engine checks
+    ``isinstance(factory, ModelListingReader)`` and, when that is false, makes no served check; the method must be
+    defined on the factory's class, since one reached only through ``__getattr__`` is not found.
     """
 
     def __call__(
@@ -100,6 +106,33 @@ class CompletionClients(Protocol):
             completion (``CompletionResult.temperature`` is ``None``), because the score records what was
             sent, never what was asked.
         :return: The client, owned by the caller.
+        """
+        ...  # pragma: no cover — protocol
+
+
+@runtime_checkable
+class ModelListingReader(Protocol):
+    """A completion-client factory that also reads its providers' lists of the models they serve: the optional half of
+    :class:`CompletionClients`.
+
+    Launch admission asks it of each model an arm names (its candidate, every judge, its simulator) before the arm is
+    priced, and refuses an arm naming a model its provider no longer lists. The engine finds it by
+    ``isinstance(factory, ModelListingReader)`` on :attr:`EvalHost.clients`, so a host opts in by defining the method
+    and declares nothing else. The method must be defined on the factory's class (or set on the instance): since Python
+    3.12 that check looks it up statically, so a ``model_listing`` reached only through ``__getattr__``, as a wrapper
+    forwarding to another factory serves it, is not found, and that factory's models go unchecked. A factory without
+    it is not asked, and its models are not checked. The shipped ``threetears.evals.providers.Clients`` is one.
+    """
+
+    async def model_listing(self, model: str, *, role: CompletionRole | None) -> ModelListing | None:
+        """What the provider ``model`` goes to in ``role`` lists of it, read now.
+
+        :param model: The model an arm names.
+        :param role: The factory role it is called in, or ``None`` for a candidate the host calls through its own route,
+            where only the factory can say which provider it goes to.
+        :return: The listing (:class:`~threetears.evals.schema.ModelListing`), whose ``listed`` is ``None`` when no
+            current list could be read; ``None`` for a model whose provider the factory reads no list of, which is not
+            checked. Any other answer refuses the launch as a defect in the factory.
         """
         ...  # pragma: no cover — protocol
 

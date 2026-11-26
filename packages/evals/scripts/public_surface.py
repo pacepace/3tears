@@ -578,6 +578,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.EvalHost",
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
+        # The factory's optional model-list read, which launch admission asks of every model an arm names: a port a
+        # host implements beside CompletionClients, so a factory without it still is one.
+        "threetears.evals.kernel.host.ModelListingReader",
+        # What it answers: a host-contract port answers only with declared types (tests/test_host_contract_ports.py).
+        "threetears.evals.schema.ModelListing",
         # What a page calls each goal check, and the cap on a declared name: a host declares each check a reader name
         # within the cap.
         "threetears.evals.analysis.GOAL_CHECK",
