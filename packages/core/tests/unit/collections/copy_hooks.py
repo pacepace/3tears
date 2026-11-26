@@ -7,6 +7,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -16,6 +17,10 @@ from threetears.core.collections.shared_copy import ROWS, AppliedTables, ChangeP
 #: the derived table: each state's votes, from the results' parts a change leaves
 TOTALS = "totals"
 TOTALS_SCHEMA = pa.schema([pa.field("state", pa.string()), pa.field("votes", pa.int64())])
+
+#: a derived table held as one part, as big as a test asks: a file no change's own tables foretell
+BULK = "bulk"
+BULK_SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("value", pa.int64())])
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,3 +227,28 @@ class OlderThan:
         olds = frozenset(old.to_pylist())
         group = [part for first, last, level, part in parts if level == 0 and first == last and first in olds]
         return (0, group) if len(group) >= 2 else None
+
+
+@dataclass(frozen=True, slots=True)
+class WaitThenBulk:
+    """holds each change in the apply worker until a file exists (:class:`WaitFor`), then derives ``rows`` rows of
+    :data:`BULK` (16 bytes each): one part bigger than the change's own tables say its result needs.
+
+    :ivar path: the file
+    :ivar rows: the derived rows
+    """
+
+    path: str
+    rows: int
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """wait for the file, then derive the bulk table's rows.
+
+        :param applied: what the change did
+        :ptype applied: AppliedTables
+        :return: one rows page of :data:`BULK`
+        :rtype: Sequence[ChangePage]
+        """
+        WaitFor(self.path).derive(applied)
+        ids = pa.array(np.arange(self.rows, dtype=np.int64))
+        return [ChangePage(ROWS, BULK, pa.table({"id": ids, "value": ids}, schema=BULK_SCHEMA))]

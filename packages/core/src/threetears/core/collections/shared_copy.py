@@ -172,6 +172,7 @@ __all__ = [
     "apply_job",
     "file_name",
     "held_parts",
+    "apply_piece_bytes",
     "reload_piece_bytes",
 ]
 
@@ -219,9 +220,11 @@ MARK_TABLE: Final = "__staged_mark__"
 #: once a level
 _FAN_OUT: Final = 10
 
-#: the most one piece of a change's result may take (``SharedArrowStore.reserve_pieces``): each piece is reserved as
-#: the one before fills, so a store is never asked for this much room at once. Moved from reports
-#: (``shared_backend.SHARED_COPY_RESULT_BYTES``): a fixed 1 GiB slot refused every change of a store with less room
+#: the most one file of a change's, a merge's or a reload's result may take: the most a piece grows to for a file of
+#: its own (``SharedArrowStore.reserve_pieces``' ``grow_to``), and the most one is reserved at. Moved from reports
+#: (``shared_backend.SHARED_COPY_RESULT_BYTES``): a fixed 1 GiB slot refused every change of a store with less room.
+#: A piece is reserved at what its job is expected to write as one file (:func:`apply_piece_bytes`,
+#: :func:`reload_piece_bytes`), never at this: it grows here only for a file that needs it
 _APPLY_PIECE_BYTES: Final = 1 << 30
 
 #: the least room a change's piece is reserved at: one part's bound, a piece holding each file whole. Moved from
@@ -232,6 +235,26 @@ _APPLY_PIECE_MINIMUM_BYTES: Final = 16 << 20
 #: a reload's result piece is reserved at its largest table's bytes and this share more (an IPC file's padding and
 #: metadata, its locator and packs index), at :data:`_APPLY_PIECE_MINIMUM_BYTES` at least
 _RELOAD_PIECE_SLACK_DIVISOR: Final = 8
+
+#: a change's result piece is reserved at the largest file it may rewrite and this share more (the IPC file's
+#: padding and metadata, a scope's rows cut again), at :data:`_APPLY_PIECE_MINIMUM_BYTES` more at least
+#: (:func:`apply_piece_bytes`)
+_APPLY_PIECE_SLACK_DIVISOR: Final = 8
+
+#: a change's result piece is reserved at most at this share of the store's ``max_bytes`` (a file that needs more
+#: grows its piece, up to :data:`_APPLY_PIECE_BYTES`, while the store has the room).
+#:
+#: **Why** (``test_copy_lane``'s second-death test, refused "no room for a hand-off in a 1 GiB store", 2026-11-25).
+#: An apply reserved a piece of :data:`_APPLY_PIECE_BYTES` (1 GiB), or all the room a smaller store had, for as long
+#: as it applied, whatever the change: a change is a few MiB on a busy night (``copy_reload._MAX_REPLAY_BYTES``) and
+#: rewrites only the parts it lands in (the largest file the 2026-11-03 replay's cold start wrote was a few MiB, its
+#: 123 MB table in 53 parts), so the GiB held was almost all room nobody wrote, and a reload staging or a hand-off
+#: beside it found none. Now a piece is reserved at the largest file of the change's tables the version holds (a part,
+#: its locator, its packs index) plus the change's own rows of that table and an eighth: the most one rewritten file
+#: can hold, unless a hook derives a table or a whole rewrite cuts parts afresh, and then the file grows its piece. It
+#: is never past a quarter of the store, beside a reload's quarter (:data:`_RELOAD_STORE_SHARE`): half the store
+#: (4 GiB of reports' 8 GiB, ``values.yaml``' ``maxBytes``) stays for versions and hand-offs
+_APPLY_STORE_SHARE: Final = 4
 
 #: a reload's result piece takes at most this share of the store's ``max_bytes``.
 #:
@@ -2743,8 +2766,9 @@ class SharedCopyBackend:
                 self._plan(sent, whole, reloads),
                 read=False if base is None else base,
                 tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
-                result_pieces=_APPLY_PIECE_BYTES,
+                result_pieces=apply_piece_bytes(self._store.max_bytes, sent, self._held_largest(base, sent)),
                 result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=_APPLY_PIECE_BYTES,
             )
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
@@ -2801,8 +2825,10 @@ class SharedCopyBackend:
                 _let_go_job,
                 plan,
                 read=version,
-                result_pieces=_APPLY_PIECE_BYTES,
+                # as a merge: a piece of the least, each rewritten file growing its own, never a GiB held for the run
+                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
                 result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=_APPLY_PIECE_BYTES,
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the change is published; what it let go waits for a later settle
             contain(
@@ -2899,8 +2925,11 @@ class SharedCopyBackend:
                 _settle_whole_job,
                 replace(self._plan((), ()), hooks=hooks),
                 read=current.name,
-                result_pieces=_APPLY_PIECE_BYTES,
+                # which derived tables it writes is the hooks' to find: a piece of the least, each file growing its
+                # own (:data:`_APPLY_STORE_SHARE`'s why), never a GiB held for the settle's whole run
+                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
                 result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=_APPLY_PIECE_BYTES,
             )
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
@@ -2928,6 +2957,19 @@ class SharedCopyBackend:
             merge_due=outcome.pack_due or over,
             let_go=LetGone(version=version, parts=EMPTY, rows=frozen(outcome.lost)) if outcome.lost else None,
             rules_changed=changed,
+        )
+
+    def _held_largest(self, base: str | None, pages: Sequence[ChangePage]) -> Mapping[str, int]:
+        """each table ``pages`` change and the largest file ``base`` holds of it (a part, its locator, its packs
+        index), from the store's manifest: no file read. Empty for no base."""
+        if base is None:
+            return EMPTY
+        return frozen(
+            (
+                table,
+                self._store.largest_file_bytes(base, (table, f"{LOCATED_PREFIX}{table}", f"{PACKED_PREFIX}{table}")),
+            )
+            for table in sorted({page.table for page in pages})
         )
 
     def _said_over(self, version: str, files: int) -> bool:
@@ -2993,6 +3035,7 @@ class SharedCopyBackend:
             tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
             result_pieces=reload_piece_bytes(self._store.max_bytes, sent),
             result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+            result_grow_to=_APPLY_PIECE_BYTES,
         )
         return _staged(running, rules, frozen(scopes))
 
@@ -3055,8 +3098,11 @@ class SharedCopyBackend:
                     run_times=self._run_times,
                 ),
                 read=current.name,
-                result_pieces=_APPLY_PIECE_BYTES,
+                # which table merges is the worker's to find: a piece of the least, each merged file growing its own
+                # to its rows (a pack's target, a tier's parts), never a GiB held for the merge's whole run
+                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
                 result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=_APPLY_PIECE_BYTES,
             )
             if done.value is None:
                 if done.segment is not None:
@@ -3158,6 +3204,30 @@ def _canonical_keys(
         if columns:
             found.append((table, tuple(sorted(columns.items()))))
     return tuple(found)
+
+
+def apply_piece_bytes(max_bytes: int, pages: Sequence[ChangePage], held: Mapping[str, int] = EMPTY) -> int:
+    """the bytes a change's result piece is reserved at: over the tables it changes, the largest of a table's largest
+    file the version holds and the change's rows of that table, and an eighth more, at least
+    ``_APPLY_PIECE_MINIMUM_BYTES`` (16 MiB) more, at most ``_APPLY_PIECE_BYTES`` (1 GiB) and a quarter of the store
+    (:data:`_APPLY_STORE_SHARE`'s why). A file that needs more grows its piece. Arrow ``nbytes``, no row read.
+
+    :param max_bytes: the store's bound
+    :ptype max_bytes: int
+    :param pages: the change's pages
+    :ptype pages: Sequence[ChangePage]
+    :param held: each changed table's largest file in the version the change applies to; empty for none
+    :ptype held: Mapping[str, int]
+    :return: bytes
+    :rtype: int
+    """
+    by_table: dict[str, int] = {}
+    for page in pages:
+        by_table[page.table] = by_table.get(page.table, 0) + page.rows.nbytes
+    largest = max((held.get(table, 0) + rows for table, rows in by_table.items()), default=0)
+    wanted = largest + largest // _APPLY_PIECE_SLACK_DIVISOR + _APPLY_PIECE_MINIMUM_BYTES
+    bound = min(_APPLY_PIECE_BYTES, max(_APPLY_PIECE_MINIMUM_BYTES, max_bytes // _APPLY_STORE_SHARE))
+    return max(_APPLY_PIECE_MINIMUM_BYTES, min(wanted, bound))
 
 
 def reload_piece_bytes(max_bytes: int, pages: Sequence[ChangePage]) -> int:

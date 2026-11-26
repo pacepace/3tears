@@ -288,6 +288,11 @@ _PIECE_SEPARATOR: Final = ".p"
 #: the least room a piece is reserved at when the caller names none: about one part's bound
 _PIECE_MINIMUM_BYTES: Final = 64 << 20
 
+#: a piece grown for a file that passed it (:meth:`SharedArrowStore.reserve_pieces`' ``grow_to``) is grown to the
+#: bytes the file then needs and this share more, so a file written in many batches asks again only as it passes that
+#: too. A copy's part is one batch (``shared_copy._Result.write``): it asks once
+_PIECE_GROWTH_DIVISOR: Final = 8
+
 #: what a version's and a table's name may hold: one path segment, never hidden
 _NAME_CHARS: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 _NAME_MAX: Final = 128
@@ -2117,15 +2122,18 @@ class PiecedSlot:
     every piece as one result when it is claimed, so a publish of it is one version, never part of one.
 
     A file that would pass its piece moves, open, to the next piece, which the worker asks the serving process for
-    (``address``): no row is written twice. A file bigger than one piece fails the result; so does a store with no
-    room for the next piece (counted in ``refused``).
+    (``address``): no row is written twice. A file that would pass a piece it is the only file of grows the piece in
+    place, the store's room checked again, up to ``grow_to``. A file bigger than that fails the result; so does a
+    store with no room for the next piece or the growth (counted in ``refused``).
 
     :ivar root: the store's directory
     :ivar slot_id: the slot
-    :ivar piece_bytes: the most one piece may take
+    :ivar piece_bytes: the bytes each piece is reserved at
     :ivar first_bytes: the first piece's bytes (the room there was for it, at most ``piece_bytes``)
     :ivar address: the serving process's piece server
     :ivar authkey: the key it takes
+    :ivar grow_to: the most one piece may grow to for a file of its own: the bound on one file; ``piece_bytes`` (or
+        less) for none
     """
 
     root: str
@@ -2134,6 +2142,7 @@ class PiecedSlot:
     first_bytes: int
     address: str
     authkey: bytes = field(repr=False)
+    grow_to: int = 0
 
     def write(self, tables: Mapping[str, Any]) -> int:
         """write the result's tables (in the worker), as :meth:`SegmentSlot.write` does, a piece at a time.
@@ -2219,14 +2228,15 @@ class _Pieces(_Place):
         :ptype what: str
         :return: its path in the next piece
         :rtype: Path
-        :raises SharedArrowFullError: when it is the piece's only file (bigger than a piece, or than the room the
-            store had for this one), or the store has no room for another piece
+        :raises SharedArrowFullError: when it is the piece's only file and bigger than a piece may grow to (or than
+            the room the store had for this one), or the store has no room for another piece
         """
         if self._begun <= 1:
-            if self._bytes >= self._slot.piece_bytes:
-                raise SharedArrowFullError(
-                    f"{what} needs {needs} bytes, more than one piece of {self._slot.piece_bytes} bytes"
-                )
+            most = max(self._slot.piece_bytes, self._slot.grow_to)
+            if needs <= most and self._slot.grow_to > self._slot.piece_bytes:
+                return self._grown(path, needs, what)
+            if self._bytes >= most:
+                raise SharedArrowFullError(f"{what} needs {needs} bytes, more than one piece of {most} bytes")
             raise SharedArrowFullError(
                 f"{what} needs {needs} bytes, more than the {self._bytes} bytes the store had room for"
             )
@@ -2252,6 +2262,30 @@ class _Pieces(_Place):
         self._index, self._bytes, self._begun = index, int(answer["piece"]), 1
         self.written = 0
         return moved
+
+    def _grown(self, path: Path, needs: int, what: str) -> Path:
+        """the piece's only file would pass it: the store is asked to grow the piece, in place, to what the file
+        needs (and :data:`_PIECE_GROWTH_DIVISOR`'s share more, up to ``grow_to``); the file stays where it is.
+
+        :param path: the file
+        :ptype path: Path
+        :param needs: the bytes it would then hold
+        :ptype needs: int
+        :param what: what it holds
+        :ptype what: str
+        :return: its path, the same
+        :rtype: Path
+        :raises SharedArrowFullError: when the store has no room for the growth
+        """
+        answer = _ask_store(
+            self._slot.address,
+            self._slot.authkey,
+            {"slot": self._slot.slot_id, "piece": self._index, "grow": needs},
+        )
+        if "piece" not in answer:
+            raise SharedArrowFullError(f"{what} needs {needs} bytes: {answer.get('refused', 'the slot is gone')}")
+        self._bytes = int(answer["piece"])
+        return path
 
     def finish(self, *, written: bool) -> None:
         """the block ended: the piece being written takes its name (or, nothing written at all, goes).
@@ -2476,14 +2510,16 @@ def query_batches(
 class _OpenPieces:
     """an open slot in pieces, as its store keeps it.
 
-    :ivar piece_bytes: the most one piece may take
+    :ivar piece_bytes: the bytes each piece is reserved at
     :ivar minimum: the least room a piece is reserved at
     :ivar names: its pieces so far, in order; replaced whole (under the store's lock) as a piece is added
+    :ivar grow_to: the most one piece may grow to for a file of its own; ``piece_bytes`` or less for none
     """
 
     piece_bytes: int
     minimum: int
     names: tuple[str, ...]
+    grow_to: int = 0
 
 
 def _serve_pieces(answer: weakref.WeakMethod[Callable[[Mapping[str, Any]], dict[str, Any]]], listener: Any) -> None:
@@ -2692,6 +2728,8 @@ class SharedArrowStore:
         self._pieces: Mapping[str, _OpenPieces] = EMPTY
         #: pieces claimed, every result's together
         self._pieces_used = 0
+        #: pieces grown for a file of their own (:meth:`reserve_pieces`' ``grow_to``)
+        self._pieces_grown = 0
         #: what serves a worker the next piece of its slot, started with the first slot in pieces
         self._piece_server: _PieceServer | None = None
         self._serving = threading.Lock()
@@ -2842,6 +2880,27 @@ class SharedArrowStore:
         """
         return tuple(sorted(entry.name for entry in self._handoffs.iterdir() if not entry.name.startswith(".")))
 
+    def largest_file_bytes(self, version: str, tables: Collection[str]) -> int:
+        """the bytes of the largest file any of ``tables`` holds in ``version``, read from the manifest the store
+        holds for it (no file read): what a job rewriting those tables' files may write as one file, before what it
+        adds. 0 for a version the store holds no manifest of (one written before manifests, or gone) or tables it
+        does not hold.
+
+        :param version: the version
+        :ptype version: str
+        :param tables: its tables
+        :ptype tables: Collection[str]
+        :return: bytes
+        :rtype: int
+        """
+        manifest = self._manifests.get(version)
+        if manifest is None:
+            return 0
+        return max(
+            (_line_fields(line)[2] for table in tables for line in manifest.lines.get(table, EMPTY).values()),
+            default=0,
+        )
+
     def held_bytes(self) -> int:
         """the bytes the directory's files hold now, staged ones included, a file shared by versions once.
 
@@ -2879,6 +2938,7 @@ class SharedArrowStore:
             "slots_open": len(self._slots),
             "pieces_open": sum(len(each.names) for each in self._pieces.values()),
             "pieces_used": self._pieces_used,
+            "pieces_grown": self._pieces_grown,
             "segments_claimed": len(self._claimed),
             "handoffs_open": len(self._handing) + len(self._handed),
             # in the directory: the open ones, and those released that a worker still maps
@@ -3060,28 +3120,40 @@ class SharedArrowStore:
             raise SharedArrowFullError(f"no room for a {max_bytes}-byte result in {self._max_bytes} bytes")
         return SegmentSlot(root=str(self._root), slot_id=slot_id, max_bytes=max_bytes)
 
-    def reserve_pieces(self, piece_bytes: int, *, minimum: int | None = None) -> PiecedSlot:
+    def reserve_pieces(self, piece_bytes: int, *, minimum: int | None = None, grow_to: int | None = None) -> PiecedSlot:
         """reserve a slot for one worker's result that grows a piece at a time: one piece of ``piece_bytes`` (or the
         room there is, when less) now, each next one as the one before it fills, checked against the store's room
         then. However big the result, the store is never asked for more than one piece's room at once, and a small
         result in a store with less room than a piece still lands. Claimed (:meth:`claim`) as one result; discarded
         (:meth:`discard`) whole.
 
-        :param piece_bytes: the most one piece may take: the bound on one file (a table given whole, or one part)
+        With ``grow_to``, a piece is reserved at what the caller expects one file to take, not its bound: a file that
+        would pass a piece it is the only file of grows that piece in place, the room checked again, up to
+        ``grow_to``. So a slot holds the room its result needs, never its worst case, and a large file still fits.
+
+        :param piece_bytes: the bytes each piece is reserved at; without ``grow_to``, the bound on one file (a table
+            given whole, or one part)
         :ptype piece_bytes: int
         :param minimum: the least room a piece is reserved at; less refuses it (counted in ``refused``). None for
             64 MiB, or ``piece_bytes`` when that is less
         :ptype minimum: int | None
+        :param grow_to: the most one piece may grow to for a file of its own (the bound on one file); None for no
+            growth
+        :ptype grow_to: int | None
         :return: the slot, to hand to the worker
         :rtype: PiecedSlot
         :raises SharedArrowFullError: when the store has less room than ``minimum``, after a sweep
-        :raises ValueError: when ``piece_bytes`` is not positive, or ``minimum`` is not within 1..``piece_bytes``
+        :raises ValueError: when ``piece_bytes`` is not positive, ``minimum`` is not within 1..``piece_bytes``, or
+            ``grow_to`` is under ``piece_bytes``
         """
         if piece_bytes <= 0:
             raise ValueError("a slot's piece_bytes must be positive")
         least = min(piece_bytes, _PIECE_MINIMUM_BYTES) if minimum is None else minimum
         if not 0 < least <= piece_bytes:
             raise ValueError(f"a slot's minimum must be within 1..{piece_bytes} bytes, not {least}")
+        if grow_to is not None and grow_to < piece_bytes:
+            raise ValueError(f"a slot's grow_to must be at least its piece_bytes ({piece_bytes}), not {grow_to}")
+        most = piece_bytes if grow_to is None else grow_to
         server = self._served()
         self.sweep()
         slot_id = f"s-{uuid.uuid7().hex}"
@@ -3091,7 +3163,7 @@ class SharedArrowStore:
             if room is not None:
                 piece = _piece_name(slot_id, 0)
                 self._slots = with_entries(self._slots, {piece: room})
-                opened = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=(piece,))
+                opened = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=(piece,), grow_to=most)
                 self._pieces = with_entries(self._pieces, {slot_id: opened})
             return room
 
@@ -3110,6 +3182,7 @@ class SharedArrowStore:
             first_bytes=first,
             address=server.address,
             authkey=server.authkey,
+            grow_to=most,
         )
 
     def _piece_room(self, piece_bytes: int, least: int) -> int | None:
@@ -3145,11 +3218,13 @@ class SharedArrowStore:
         server's thread.
 
         :param request: ``slot``, ``piece`` (the full one's number), ``staging`` (its staging directory's name) and
-            ``carried`` (the file moving on)
+            ``carried`` (the file moving on); or ``slot``, ``piece`` and ``grow`` (:meth:`_grown_piece`)
         :ptype request: Mapping[str, Any]
         :return: ``{"piece": bytes}``, or ``{"refused": why}``
         :rtype: dict[str, Any]
         """
+        if "grow" in request:
+            return self._grown_piece(str(request["slot"]), int(request["piece"]), int(request["grow"]))
         slot_id = str(request["slot"])
         index = int(request["piece"])
         staging = str(request["staging"])
@@ -3191,6 +3266,49 @@ class SharedArrowStore:
                 extra={"extra_data": {"minimum_bytes": least, "max_bytes": self._max_bytes, "pieces": index + 1}},
             )
         return answer
+
+    def _grown_piece(self, slot_id: str, index: int, needs: int) -> dict[str, Any]:
+        """a worker's piece is too small for the one file it holds (:class:`PiecedSlot`'s ``grow_to``): the piece is
+        reserved again at what the file needs and :data:`_PIECE_GROWTH_DIVISOR`'s share more (at most ``grow_to``,
+        at most the room there is), the room checked again -- cached versions evicted for it as for any reservation
+        -- or refused. On the piece server's thread.
+
+        :param slot_id: the slot
+        :ptype slot_id: str
+        :param index: the piece's number
+        :ptype index: int
+        :param needs: the bytes its file would then hold
+        :ptype needs: int
+        :return: ``{"piece": bytes}``, or ``{"refused": why}``
+        :rtype: dict[str, Any]
+        """
+        self.sweep()
+        name = _piece_name(slot_id, index)
+
+        def reserved() -> int | None:
+            pieces = self._pieces.get(slot_id)
+            if pieces is None or pieces.names[-1] != name or needs > pieces.grow_to:
+                return -1
+            held = self._slots.get(name, 0)
+            room = self._max_bytes - self._committed_bytes() + held
+            if room < needs:
+                return None
+            grown = min(pieces.grow_to, needs + needs // _PIECE_GROWTH_DIVISOR, room)
+            self._slots = with_entries(self._slots, {name: grown})
+            self._pieces_grown += 1
+            return grown
+
+        room = self._with_room(reserved)
+        if room == -1:
+            return {"refused": f"slot {slot_id} piece {index} is not open, or may not grow to {needs} bytes"}
+        if room is None:
+            self._refuse()
+            log.warning(
+                "shared Arrow result piece refused: no room to grow it for its file",
+                extra={"extra_data": {"needs_bytes": needs, "max_bytes": self._max_bytes}},
+            )
+            return {"refused": f"no room to grow a piece to {needs} bytes in {self._max_bytes} bytes"}
+        return {"piece": room}
 
     def claim(self, slot: SegmentSlot | PiecedSlot) -> MappedSegment | None:
         """map a slot's result here, the serving process's from now until it is closed. A slot in pieces is mapped as
@@ -4639,6 +4757,7 @@ class SharedArrowPool:
         result_pieces: int | None = None,
         result_minimum: int | None = None,
         reader: bool = False,
+        result_grow_to: int | None = None,
     ) -> JobResult:
         """run ``job(context, *args)`` in a worker, once one is free for it: a reader's job ahead of every background
         job waiting, first come first served within each.
@@ -4663,6 +4782,9 @@ class SharedArrowPool:
         :ptype result_pieces: int | None
         :param result_minimum: the least room a piece is reserved at (``reserve_pieces``' ``minimum``)
         :ptype result_minimum: int | None
+        :param result_grow_to: the most a piece may grow to for a file of its own (``reserve_pieces``' ``grow_to``);
+            None for no growth
+        :ptype result_grow_to: int | None
         :param reader: a reader's job (a page a client waits on), given the next free worker ahead of every background
             job (a pass, a build) waiting
         :ptype reader: bool
@@ -4677,7 +4799,7 @@ class SharedArrowPool:
         """
         if result_bytes is not None and result_pieces is not None:
             raise ValueError("a job's result is one slot (result_bytes) or pieces (result_pieces), not both")
-        pieces = None if result_pieces is None else (result_pieces, result_minimum)
+        pieces = None if result_pieces is None else (result_pieces, result_minimum, result_grow_to)
         # a worker of its own first, waited for off every thread: a caller that stops waiting gives its turn up, or
         # back once given
         turn = self._turns.ask(reader)
@@ -4744,7 +4866,7 @@ class SharedArrowPool:
         args: tuple[Any, ...],
         tables: Mapping[str, Any] | None = None,
         tables_bytes: int | None = None,
-        pieces: tuple[int, int | None] | None = None,
+        pieces: tuple[int, int | None, int | None] | None = None,
     ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]:
         """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
         fresh one; on a thread, the job's turn taken (:class:`_Turns`) and given back once the job is done, or now
@@ -4762,8 +4884,9 @@ class SharedArrowPool:
         :ptype tables: Mapping[str, Any] | None
         :param tables_bytes: as :meth:`run`
         :ptype tables_bytes: int | None
-        :param pieces: ``result_pieces`` and ``result_minimum`` as :meth:`run`; None for no result in pieces
-        :ptype pieces: tuple[int, int | None] | None
+        :param pieces: ``result_pieces``, ``result_minimum`` and ``result_grow_to`` as :meth:`run`; None for no
+            result in pieces
+        :ptype pieces: tuple[int, int | None, int | None] | None
         :return: the run (its lease, hand-off and slot) and the job's future (the lease and the handed tables are released when it is
             done)
         :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]
@@ -4777,7 +4900,7 @@ class SharedArrowPool:
                 if result_bytes is not None:
                     run.slot = self._store.reserve(result_bytes)
                 elif pieces is not None:
-                    run.slot = self._store.reserve_pieces(pieces[0], minimum=pieces[1])
+                    run.slot = self._store.reserve_pieces(pieces[0], minimum=pieces[1], grow_to=pieces[2])
                 given = functools.partial(
                     _run_job,
                     str(self._store.root),

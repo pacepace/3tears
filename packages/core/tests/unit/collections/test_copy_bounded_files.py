@@ -10,7 +10,9 @@ The contracts pinned here:
 - a pack outgrown is cut again as it is rewritten, its big scope moving to a part of its own;
 - a version over its file bound makes a merge due, and the merge packs more until it is under;
 - a per-scope reload of a packed scope replaces its rows alone, the pack's other scopes kept;
-- a reload staging in its worker reserves room for its own rows, never the store's, so an apply beside it lands.
+- a reload staging in its worker reserves room for its own rows, never the store's, so an apply beside it lands;
+- an apply reserves room for the files its change rewrites, never the store's, so a reload stages beside it, and a
+  part bigger than the change foretells grows its piece and still applies.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -42,6 +45,7 @@ from threetears.core.collections.shared_copy import (
     ChangePage,
     ReloadScope,
     SharedCopyBackend,
+    apply_piece_bytes,
     held_parts,
     reload_piece_bytes,
 )
@@ -300,3 +304,124 @@ class TestReloads:
         assert reload_piece_bytes(256 << 20, big) == 64 << 20
         assert reload_piece_bytes(64 << 30, [ChangePage(ROWS, "results", _rows("VA", 40_000_000))]) == 1 << 30
         assert reload_piece_bytes(16 << 20, small) == 16 << 20
+
+
+async def _until_queued(reloads: ReloadLane, reload_done: asyncio.Future[Any], what: str) -> None:
+    """wait until the reload is staged and its publish waits its turn, or fails (raised here)."""
+    deadline = asyncio.get_running_loop().time() + 30
+    while reloads.status().queued != 1:
+        if reload_done.done():
+            reload_done.result()
+            raise AssertionError(f"{what}: the reload ended before its publish's turn")
+        assert asyncio.get_running_loop().time() < deadline, f"{what}: the reload never staged"
+        await asyncio.sleep(0.01)
+
+
+async def _until_piece_held(store: SharedArrowStore) -> None:
+    """wait until a job holds a result piece (the apply waiting in its worker)."""
+    deadline = asyncio.get_running_loop().time() + 20
+    while store.status()["pieces_open"] < 1:
+        assert asyncio.get_running_loop().time() < deadline, "the apply never reserved its piece"
+        await asyncio.sleep(0.01)
+
+
+class TestApplyPieces:
+    async def test_an_apply_leaves_room_for_a_staging_reload(self, tmp_path: Path) -> None:
+        """Flips if a change's result piece takes the store's room: it reserved 1 GiB, or all a 512 MiB store had,
+        for as long as it applied, and a reload staging beside it found no room for its hand-off or its piece."""
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=512 << 20)
+        gate = tmp_path / "apply-go"
+        gate.touch()
+        backend = SharedCopyBackend(
+            store,
+            {"results": SCHEMA},
+            {"results": BY_STATE},
+            hooks=copy_hooks.WaitFor(str(gate)),
+            preload=(copy_hooks.__name__,),
+        )
+        lane = ApplyLane(backend)
+        reloads = ReloadLane(backend, lane, preload=(copy_hooks.__name__,))
+        try:
+            await lane.apply([ChangePage(ROWS, "results", _rows("VA", 10))])
+            gate.unlink()
+            applying = await lane.submit([ChangePage(ROWS, "results", _rows("VA", 1, votes=5))])
+            await _until_piece_held(store)
+            # the apply holds its piece in the worker: a reload stages beside it
+            reload = await reloads.reload([ChangePage(ROWS, "results", _rows("NC", 50))])
+            await _until_queued(reloads, reload.done, "beside an apply")
+            gate.touch()
+            await applying
+            await reload.done
+            held = _held(store)
+            assert held.num_rows == 50
+            assert set(held["state"].to_pylist()) == {"NC"}
+            assert store.refused == 0
+        finally:
+            gate.touch()
+            await reloads.close()
+            await lane.close()
+            await backend.close()
+
+    async def test_a_part_bigger_than_its_change_foretells_still_applies(self, tmp_path: Path) -> None:
+        """Flips if a change's piece is its bound on one file: a hook derives a 40 MB part no table of the change
+        foretells, past the 16 MiB piece the change is reserved at, and it fails; or if the apply takes the store, and
+        the reload staging beside it is refused. The piece grows for the part, in a 512 MiB store beside a reload."""
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=512 << 20)
+        gate = tmp_path / "apply-go"
+        gate.touch()
+        bulk_rows = 2_500_000
+        backend = SharedCopyBackend(
+            store,
+            {"results": SCHEMA, copy_hooks.BULK: copy_hooks.BULK_SCHEMA},
+            {"results": BY_STATE, copy_hooks.BULK: PartRule(copy_hooks.BULK, ("id",))},
+            hooks=copy_hooks.WaitThenBulk(str(gate), bulk_rows),
+            preload=(copy_hooks.__name__,),
+        )
+        lane = ApplyLane(backend)
+        reloads = ReloadLane(backend, lane, preload=(copy_hooks.__name__,))
+        try:
+            page = [ChangePage(ROWS, "results", _rows("VA", 10))]
+            assert apply_piece_bytes(store.max_bytes, page) < bulk_rows * 16
+            await lane.apply(page)
+            assert store.status()["pieces_grown"] >= 1
+            gate.unlink()
+            applying = await lane.submit([ChangePage(ROWS, "results", _rows("VA", 1, votes=5))])
+            await _until_piece_held(store)
+            reload = await reloads.reload(
+                [ChangePage(ROWS, "results", _rows("NC", 50))],
+                scopes={"results": ReloadScope("state", frozenset({"NC"}))},
+            )
+            await _until_queued(reloads, reload.done, "beside a big apply")
+            grown = store.status()["pieces_grown"]
+            gate.touch()
+            await applying
+            await reload.done
+            assert store.status()["pieces_grown"] > grown
+            held = _held(store)
+            assert sorted(set(held["state"].to_pylist())) == ["NC", "VA"]
+            assert held.filter(pc.equal(held["state"], "VA"))["votes"].to_pylist()[0] == 5
+            current = store.current
+            assert current is not None
+            with read_version(store.root, current.name) as mapped:
+                assert mapped.tables[copy_hooks.BULK].num_rows == bulk_rows
+            assert store.refused == 0
+        finally:
+            gate.touch()
+            await reloads.close()
+            await lane.close()
+            await backend.close()
+
+    def test_an_applys_piece_is_sized_to_the_files_it_rewrites(self) -> None:
+        small = [ChangePage(ROWS, "results", _rows("VA", 10))]
+        rows = small[0].rows.nbytes
+        assert apply_piece_bytes(8 << 30, small) == (16 << 20) + rows + rows // 8
+        # the largest file the version holds of the table, plus the change's rows of it
+        held = 40 << 20
+        assert apply_piece_bytes(8 << 30, small, {"results": held}) == (16 << 20) + (held + rows) + (held + rows) // 8
+        # a table the change does not touch counts nothing
+        assert apply_piece_bytes(8 << 30, small, {"other": 1 << 30}) == apply_piece_bytes(8 << 30, small)
+        # never past a quarter of the store, nor 1 GiB, nor under 16 MiB
+        assert apply_piece_bytes(512 << 20, small, {"results": 1 << 30}) == 128 << 20
+        assert apply_piece_bytes(64 << 30, small, {"results": 4 << 30}) == 1 << 30
+        assert apply_piece_bytes(16 << 20, small) == 16 << 20
+        assert apply_piece_bytes(8 << 30, []) == 16 << 20
