@@ -67,6 +67,16 @@ an install of the contract (with and without its `mcp` extra), of 3tears-mcp's b
 **Release:** the first release with this package needs its PyPI pending trusted publisher registered first
 (`docs/releasing.md`, "A release that adds a package").
 
+### mcp: a dropped connection cancels the call it carried
+
+**Fixed:** a stateful session's `tools/call` ran on after the client closed the connection carrying it, with no
+`notifications/cancelled` and no DELETE (SDK 2.3 cancels only on those two, and stateless, when the request's task
+ends). The HTTP transport now watches each request (`http.disconnect` on its receive, a failed send before its
+response is complete) and cancels the call that request carried, only that one; the handler sees `CancelledError` and
+`ctx.cancelled` is set, as for `notifications/cancelled`. Tested over uvicorn with a raw client dropping its
+connection, stateless and stateful, on 2025-11-25 and 2026-07-28, with a call that completes and a second call on the
+same session left running. **Added:** `threetears.mcp.http_server.on_request_drop(callback)`, the hook it rests on.
+
 ### mcp: an authorizer's refusal can carry the server's own content
 
 **Added:** `Refusal(..., content: Mapping[str, Any] | str | None = None)`. A call refused with `content` is answered as

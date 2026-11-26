@@ -27,7 +27,7 @@ writes to stdout / stderr; all logging goes through
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from typing import Any
 
@@ -37,11 +37,12 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from threetears.observe import get_logger
 
 __all__ = [
     "McpHttpTransport",
+    "on_request_drop",
     "build_mcp_http_app",
     "current_bearer_token",
     "current_request_streams",
@@ -94,6 +95,71 @@ def current_transport_pushes() -> bool:
     :rtype: bool
     """
     return _PUSHES_CONTEXT.get()
+
+
+class _Drop:
+    """one HTTP request's drop: the callbacks to run if its client goes before its response is complete.
+
+    Fired once, by the endpoint, when the request's ``receive`` answers ``http.disconnect`` or a ``send`` of its
+    response fails before the response's last body; never after the response is complete.
+    """
+
+    __slots__ = ("_callbacks", "complete", "fired")
+
+    def __init__(self) -> None:
+        self._callbacks: dict[int, Callable[[], None]] = {}
+        self.fired = False
+        self.complete = False
+
+    def watch(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """run ``callback`` if the request drops; at once when it has dropped already.
+
+        :param callback: what to run
+        :ptype callback: Callable[[], None]
+        :return: what stops watching
+        :rtype: Callable[[], None]
+        """
+        key = id(callback)
+        if self.fired:
+            callback()
+        else:
+            self._callbacks = {**self._callbacks, key: callback}
+
+        def stop() -> None:
+            self._callbacks = {held: each for held, each in self._callbacks.items() if held != key}
+
+        return stop
+
+    def fire(self) -> None:
+        """the request dropped: run every callback watching it, once.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self.fired or self.complete:
+            return
+        self.fired = True
+        callbacks, self._callbacks = self._callbacks, {}
+        for callback in callbacks.values():
+            callback()
+
+
+_DROP_CONTEXT: ContextVar[_Drop | None] = ContextVar("threetears_mcp_request_drop", default=None)
+"""the drop signal of the HTTP request being served, set by :class:`_BearerTokenAsgiEndpoint`; the SDK runs each
+message's handler in the contextvars of the request that carried it, so a handler reads its own request's.
+:func:`on_request_drop` is the public reader."""
+
+
+def on_request_drop(callback: Callable[[], None]) -> Callable[[], None] | None:
+    """run ``callback`` if the HTTP request carrying the current message drops before its response is complete.
+
+    :param callback: what to run (at once, when the request has dropped already)
+    :ptype callback: Callable[[], None]
+    :return: what stops watching, or None outside an HTTP request (stdio), where nothing drops
+    :rtype: Callable[[], None] | None
+    """
+    drop = _DROP_CONTEXT.get()
+    return None if drop is None else drop.watch(callback)
 
 
 def current_request_streams() -> bool:
@@ -220,9 +286,31 @@ class _BearerTokenAsgiEndpoint:
         reset = _BEARER_TOKEN_CONTEXT.set(token)
         reset_streams = _STREAMS_CONTEXT.set(not self._json_response)
         reset_pushes = _PUSHES_CONTEXT.set(not self._stateless)
+        # the request's drop, which cancels the call it carries (McpServer's dispatch watches it): the SDK cancels a
+        # handler on notifications/cancelled, a DELETE and, stateless, the end of the request's own task, but a stateful
+        # session's handler ran on after its POST's connection dropped (SDK 2.3, 2026-11-26)
+        drop = _Drop()
+        reset_drop = _DROP_CONTEXT.set(drop)
+
+        async def watched_receive() -> Message:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                drop.fire()
+            return message
+
+        async def watched_send(message: Message) -> None:
+            try:
+                await send(message)
+            except OSError:
+                drop.fire()
+                raise
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                drop.complete = True
+
         try:
-            await self._session_manager.handle_request(scope, receive, send)
+            await self._session_manager.handle_request(scope, watched_receive, watched_send)
         finally:
+            _DROP_CONTEXT.reset(reset_drop)
             _PUSHES_CONTEXT.reset(reset_pushes)
             _STREAMS_CONTEXT.reset(reset_streams)
             _BEARER_TOKEN_CONTEXT.reset(reset)

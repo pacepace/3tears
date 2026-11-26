@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import warnings
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, get_args
 
@@ -81,6 +81,7 @@ from threetears.mcp.http_server import (
     build_mcp_http_app,
     current_request_streams,
     current_transport_pushes,
+    on_request_drop,
     serve_mcp_http,
 )
 from threetears.mcp.push import Pushes
@@ -708,12 +709,24 @@ class McpServer:
         kwargs = dict(arguments)
         if tool.context_parameter is not None:
             kwargs[tool.context_parameter] = self._call_context(tool_name, request, cancelled)
+        dropped: list[bool] = []
         try:
-            result = await tool.handler(**kwargs)
+            result = await _handled(tool.handler(**kwargs), dropped)
         except asyncio.CancelledError:
             # the client cancelled the call or went away; work the call started outside its own task
             # sees it through the context
             cancelled.set()
+            current = asyncio.current_task()
+            if dropped and (current is None or current.cancelling() == 0):
+                # the call's own connection dropped: the handler was cancelled, this dispatch was not. Answered for
+                # the protocol's sake; the request that would read it is gone
+                log.info(
+                    "MCP dispatch: the call's connection dropped; its handler was cancelled",
+                    extra={"extra_data": {"tool_name": tool_name}},
+                )
+                return _error_result(
+                    tool_name=tool_name, code=HANDLER_ERROR, message="the call's connection dropped; it was cancelled"
+                )
             raise
         except McpToolError as exc:
             # the handler named its failure: not a bug, so not logged as one
@@ -1079,6 +1092,35 @@ class McpServer:
             json_response=json_response,
         )
         await serve_mcp_http(app, host=host, port=port)
+
+
+async def _handled(call: Awaitable[Any], dropped: list[bool]) -> Any:
+    """a handler's result, its call cancelled if the HTTP request carrying it drops first.
+
+    The handler runs as a task of its own, which the request's drop cancels (:func:`~threetears.mcp.http_server.
+    on_request_drop`; nothing drops over stdio), ``True`` then appended to ``dropped``. A cancellation of the dispatch
+    reaches it as well: a cancelled task cancels the task it awaits.
+
+    :param call: the handler's call
+    :ptype call: Awaitable[Any]
+    :param dropped: appended ``True`` when the request's drop cancelled the call
+    :ptype dropped: list[bool]
+    :return: what the handler returned
+    :rtype: Any
+    :raises asyncio.CancelledError: when the call was cancelled, by the drop or with the dispatch
+    """
+    task = asyncio.ensure_future(call)
+
+    def drop() -> None:
+        dropped.append(True)
+        task.cancel()
+
+    stop = on_request_drop(drop)
+    try:
+        return await task
+    finally:
+        if stop is not None:
+            stop()
 
 
 def _call_tool_result(

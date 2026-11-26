@@ -195,7 +195,15 @@ app = server.build_http_app(json_response=False)            # or build_http_tran
 | | `json_response=False` (SSE) | `json_response=True` (the default, plain JSON) |
 |---|---|---|
 | progress and log entries | sent on the call's stream, before the result | not sent: the response is the result alone. The server logs one warning, the first time a handler's entry is dropped, naming `json_response=False` |
-| the client gives up on the call (cancels it, dropping its stream) | the handler is cancelled, and `ctx.cancelled` is set | in stateless mode the handler is not cancelled; it runs to its end |
+| the client gives up on the call (cancels it, or drops its connection) | the handler is cancelled, and `ctx.cancelled` is set, in stateless and stateful mode and on both protocol eras | in stateless mode the handler is not cancelled; it runs to its end |
+
+A dropped connection is a client that closes the connection carrying a `tools/call` before its result, without a
+`notifications/cancelled` or a DELETE. The SDK (2.3) cancels a handler on those two, and in stateless mode when the
+request's own task ends, but a stateful session's handler ran on after its POST dropped. The transport now watches
+each request (`http.disconnect` on its receive, or a failed send before the response is complete) and cancels the
+call that request carried, and only that one: the handler sees `CancelledError` at its next `await`, and
+`ctx.cancelled` is set, as for `notifications/cancelled`. A call whose result was sent is never cancelled.
+`threetears.mcp.http_server.on_request_drop(callback)` is the hook, for a host with work of its own to stop.
 
 `json_response=True` stays the default, so a client that reads a plain JSON body is unaffected. A
 server whose tools report progress builds its transport with `json_response=False`; every MCP client
@@ -298,7 +306,7 @@ await server.notify_tools_changed()            # notifications/tools/list_change
 | the bearer | resolved for every message | resolved for every message: a token revoked while a session is open is refused (`IDENTITY_UNAVAILABLE`) on the session's next message, and no tool runs |
 | `tools.listChanged`, `resources.listChanged`, `resources.subscribe` capabilities (handshake era) | not declared | declared |
 | `notify_tools_changed()` | reaches no handshake-era client (it lists again on its next request) | sent on each open session's standalone stream |
-| cancellation (`notifications/cancelled`, the client deleting its session, a dropped stream) | cancels the handler with an SSE transport (the progress table above) | cancels the handler, and `ctx.cancelled` is set |
+| cancellation (`notifications/cancelled`, the client deleting its session, a dropped connection) | cancels the handler with an SSE transport (the progress table above) | cancels the handler, and `ctx.cancelled` is set; a dropped connection cancels only the call its POST carried |
 
 On 2026-07-28 there are no sessions in either mode: a client asks for change notifications with a
 `subscriptions/listen` request, whose response stream the server keeps open, and `notify_tools_changed()`
