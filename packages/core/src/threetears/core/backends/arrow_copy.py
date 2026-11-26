@@ -89,6 +89,7 @@ __all__ = [
     "rows_digest",
     "split_copy_request",
     "with_constant_columns",
+    "with_time_filled",
     "with_typed_constants",
     "write_request_rows",
     "write_type",
@@ -540,6 +541,27 @@ def with_constant_columns(table: Any, values: Mapping[str, datetime | int | bool
         position = table.schema.get_field_index(name)
         table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
     return table
+
+
+def with_time_filled(table: Any, name: str, value: datetime) -> Any:
+    """``table`` with its column ``name`` as ``timestamp[us, UTC]``, each row's own time kept and ``value`` in every
+    row that has none. Laid out by Arrow, never a Python value a row. A versioned table's new version keeps the
+    ``date_created`` its writer carried forward from the key's first version, and a row with none (a new key) is
+    stamped with the write's time (``SchemaBackedCollection.save_arrow``).
+
+    :param table: the rows, holding the column
+    :ptype table: pyarrow.Table
+    :param name: the column
+    :ptype name: str
+    :param value: the time a row with none is given, an aware datetime
+    :ptype value: datetime
+    :return: the rows with it
+    :rtype: pyarrow.Table
+    """
+    kind = pa.timestamp("us", tz="UTC")
+    position = table.schema.get_field_index(name)
+    column = pc.fill_null(pc.cast(table.column(position), kind), pa.scalar(value, kind))
+    return table.set_column(position, name, column)
 
 
 def column_min(table: Any, name: str) -> Any:

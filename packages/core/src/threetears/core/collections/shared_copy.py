@@ -95,6 +95,11 @@ worker died under it, ``BrokenProcessPool``, and :class:`~threetears.core.collec
 change once more to a fresh one; ``failed``, anything else), the copy serving its last good version meanwhile. After
 each, failed or not, the store's room is set (``shared_copy_store_room_bytes``: its bound less what it holds), from the
 store's own tallies (``SharedArrowStore.status``), never a directory walk, so the event loop sets it at no cost.
+
+**What the copy lets go** (moved from reports' ``CountedCopyBackend``). Every row the hooks let go, of an apply, a
+reload publish or a whole settle, is counted by table (``shared_copy_let_go_rows_total{table}``), and
+:attr:`SharedCopyBackend.let_go` holds the same counts since the copy started, for a product's status: each
+``Applied.let_go`` added up on the event loop as it publishes, no row read.
 """
 
 from __future__ import annotations
@@ -210,6 +215,15 @@ _APPLY_FAILURES = counter(
 _STORE_ROOM = gauge(
     "shared_copy_store_room_bytes",
     description="bytes the shared copy's store has left: its bound less what it holds, set after each change",
+)
+
+#: the rows the copy's hooks let go (:class:`DerivedPages`'s ``let_go``), by table, of every apply, reload publish and
+#: whole settle that published them (``Applied.let_go``). A product's dashboard reads it (reports' retention row)
+_LET_GO_ROWS = counter(
+    "shared_copy_let_go_rows_total",
+    description="rows the shared copy's hooks let go (retention), by table, of each apply, reload publish and whole "
+    "settle that published them",
+    label_names=("table",),
 )
 
 #: a page of rows to upsert (:class:`ChangePage`)
@@ -2717,6 +2731,8 @@ class SharedCopyBackend:
         #: whether a whole settle is due (:meth:`defer_hooks_until_whole`): until it publishes, changes apply with no
         #: ``derive``
         self._whole_due = False
+        #: each table's rows the hooks let go since the copy started (:attr:`let_go`): replaced whole on the loop
+        self._let_go: Mapping[str, int] = EMPTY
         self._pool = SharedArrowPool(
             store,
             workers=1,
@@ -2729,6 +2745,27 @@ class SharedCopyBackend:
         current = store.current
         found = None if current is None else _VERSION.match(current.name)
         self._next = 0 if found is None else int(found["n"]) + 1
+
+    @property
+    def let_go(self) -> Mapping[str, int]:
+        """each table's rows the hooks let go since the copy started (``shared_copy_let_go_rows_total``), read-only.
+
+        :return: table -> rows; a table appears once any of its rows was let go
+        :rtype: Mapping[str, int]
+        """
+        return self._let_go
+
+    def _count_let_go(self, gone: LetGone | None) -> None:
+        """add what a publish let go to :attr:`let_go` and :data:`_LET_GO_ROWS`. On the event loop: a count a table."""
+        if gone is None or not gone.rows:
+            return
+        for table, rows in gone.rows.items():
+            if rows:
+                _LET_GO_ROWS.labels(table=table).inc(int(rows))
+        self._let_go = frozen(
+            (table, self._let_go.get(table, 0) + int(gone.rows.get(table, 0)))
+            for table in sorted({*self._let_go, *gone.rows})
+        )
 
     @property
     def rules(self) -> Mapping[str, PartRule]:
@@ -2910,6 +2947,7 @@ class SharedCopyBackend:
             parts.setdefault(table, {})[part] = True
         for table, part, name in outcome.parts:
             parts.setdefault(table, {})[part] = name is not None
+        self._count_let_go(let_gone)
         return Applied(
             version=version,
             parts=frozen((table, frozen(done_parts)) for table, done_parts in parts.items()),
@@ -3072,6 +3110,8 @@ class SharedCopyBackend:
         parts: dict[str, dict[str, bool]] = {}
         for table, part, name in outcome.parts:
             parts.setdefault(table, {})[part] = name is not None
+        let_gone = LetGone(version=version, parts=EMPTY, rows=frozen(outcome.lost)) if outcome.lost else None
+        self._count_let_go(let_gone)
         return Applied(
             version=version,
             parts=frozen((table, frozen(done_parts)) for table, done_parts in parts.items()),
@@ -3080,7 +3120,7 @@ class SharedCopyBackend:
             worker=outcome.worker,
             files=files,
             merge_due=outcome.pack_due or over,
-            let_go=LetGone(version=version, parts=EMPTY, rows=frozen(outcome.lost)) if outcome.lost else None,
+            let_go=let_gone,
             rules_changed=changed,
         )
 
