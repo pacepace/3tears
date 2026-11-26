@@ -955,6 +955,14 @@ async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_no
     assert follower.stamp == lock.version
 
 
+def _put_and_noted_one_a_microsecond(l3: _L3, since: datetime) -> tuple[list[tuple[str, str]], _Notes]:
+    """a commit of 25,000 rows put in L3, its keys, and its change notes from ``since``, one key a microsecond."""
+    changed = [("VA", i, 3) for i in range(10, 25_010)]
+    l3.put(changed)
+    keys = [(s, str(g)) for s, g, _ in changed]
+    return keys, _Notes([(since + timedelta(microseconds=index), key) for index, key in enumerate(keys)])
+
+
 async def test_a_large_commits_noted_keys_reach_a_copy_as_one_arrow_batch_a_page(noted_world: Any) -> None:
     """Flips if a page of the keys the change notes name reaches a cache that takes key batches (a copy, ``on_keys``)
     as anything but one Arrow batch a page (a row message a key: a Python object a key on the loop, decision 35), or
@@ -962,11 +970,10 @@ async def test_a_large_commits_noted_keys_reach_a_copy_as_one_arrow_batch_a_page
     world, registry = noted_world
     l3, log, lock, _backend, follower = world
     await _warmed(world, 10)
-    changed = [("VA", i, 3) for i in range(10, 25_010)]
-    l3.put(changed)
     since, _ = _too_large(log)
-    keys = [(s, str(g)) for s, g, _ in changed]
-    notes = _Notes([(since + timedelta(microseconds=index), key) for index, key in enumerate(keys)])
+    # the commit's 25,000 rows put in L3 and its notes built on a thread, as setup: on the loop they held it past the
+    # loop-stall guard's limit (0.30 s on the pool host brooks-nas, 2026-11-25, most of it in l3.put)
+    keys, notes = await asyncio.to_thread(_put_and_noted_one_a_microsecond, l3, since)
     registry.set_noted_keys_reader(notes)
     batches: list[Any] = []
     rows: list[Any] = []
@@ -2745,14 +2752,14 @@ async def test_a_large_pass_takes_its_keys_in_the_worker_process(
     assert await follower.catch_up()
     assert "taken_job" in jobs, f"the pass's {count} keys were not taken in the worker process: {jobs}"
     assert not [rows for rows in taken if rows > _TAKEN_HERE], f"taken here: {taken}"
-    assert _copy(backend) == l3.held()
+    assert await asyncio.to_thread(lambda: _copy(backend) == l3.held())
     jobs.clear()
     l3.put([("IL", 0, 9)])
     log.commit([("IL", 0)])
     lock.version += 1
     assert await follower.catch_up()
     assert "taken_job" not in jobs, "a pass of one key went to the worker process: its round trip costs more"
-    assert _copy(backend) == l3.held()
+    assert await asyncio.to_thread(lambda: _copy(backend) == l3.held())
 
 
 async def test_a_whole_read_and_a_partition_past_the_bound_are_judged_in_the_worker_process(
@@ -2771,11 +2778,13 @@ async def test_a_whole_read_and_a_partition_past_the_bound_are_judged_in_the_wor
     lock.held = frozenset({"state:IL"})
     await follower.warm()
     assert await follower.catch_up()
-    assert _of(backend, "VA") == _l3_of(l3, "VA") and _of(backend, "IL") == []
+    # the copy and L3 compared on a thread, as setup: 8,000 rows read and sorted on the loop held it 1.07 s on the pool host
+    # monad-1 (2026-11-25, _L3.held under _l3_of)
+    assert await asyncio.to_thread(lambda: _of(backend, "VA") == _l3_of(l3, "VA") and _of(backend, "IL") == [])
     lock.held = None
     lock.commit("state:IL")
     assert await follower.catch_up()
-    assert _copy(backend) == l3.held()
+    assert await asyncio.to_thread(lambda: _copy(backend) == l3.held())
     assert {"whole_page_job", "partition_page_job"} <= set(jobs), f"judged in the serving process: {jobs}"
     assert not [rows for rows in (*whole, *parts) if rows >= INLINE_KEYS], f"here: {whole}, {parts}"
 

@@ -29,11 +29,15 @@ from threetears.core.keyed import (
     run_inline,
     update_keyed,
 )
+from threetears.core.keyed import binding
 from threetears.core.keyed.binding import binder_for
-from threetears.interfaces.keyed.rows import PLAIN_KEYS, read_keyed_statements
+from threetears.interfaces.keyed.rows import PLAIN_KEYS, key_chunks, read_keyed_statements
 
 #: a batch whose column arrives as Arrow: a serving path's keys, bound in Arrow mode
 _ARROW_KEYS = KeyBatch(("k",), [pa.array(["a"])])
+
+#: the fewest keys the binder makes distinct in its worker process (``binding._INLINE_DISTINCT_KEYS``), read by name
+_INLINE_DISTINCT_KEYS: int = getattr(binding, "_INLINE_DISTINCT_KEYS")
 
 #: keys a real-size read names: a page of a night's changed rows
 _REAL_KEYS = 50_000
@@ -319,3 +323,62 @@ class TestNoKeyIsAPythonObjectOnTheWayIn:
             finally:
                 tracemalloc.stop()
             assert len(held[0]) == len(keys) and per_key > bound
+
+
+def _repeating_batches(count: int) -> list[KeyBatch]:
+    """batches of ``count`` keys, each named twice (a text column, a UUID column, a composite key), first-named order
+    not sorted."""
+    half = count // 2
+    order = [(i * 7_919) % half for i in range(half)]
+    named = order + order[::-1]
+    ids = [uuid.UUID(int=at + 1) for at in range(half)]
+    return [
+        KeyBatch(("k",), [pa.chunked_array([pa.array([f"g{at}" for at in named])])]),
+        KeyBatch(("id",), [pa.array([ids[at].bytes for at in named], pa.uuid())], ("uuid",)),
+        KeyBatch(
+            ("state", "geo"),
+            [pa.array([f"S{at % 50}" for at in named]), pa.array([at for at in named], pa.int64())],
+            ("text", "bigint"),
+        ),
+    ]
+
+
+class TestALargeBatchIsMadeDistinctOffTheLoop:
+    """A copy's page of 600,000 keys made distinct on the loop held it 0.45 s (``_unique`` under
+    ``read_keyed_arrow``, the loop-stall guard on brooks-5950x and brooks-nas, 2026-11-25): a batch of
+    ``_INLINE_DISTINCT_KEYS`` keys or more is made distinct in a worker process."""
+
+    async def test_a_real_size_batch_is_never_made_distinct_on_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if a keyed read of 50,000 Arrow keys finds their distinct keys in the serving process (the old code:
+        ``binder.distinct`` on the loop, inside ``key_chunks``); a small batch still does, on the loop."""
+        assert _REAL_KEYS >= _INLINE_DISTINCT_KEYS
+        in_process: list[int] = []
+        # the binder's one hash kernel a column, watched by name: a call in the worker process is not seen
+        name = "_unique"
+        unique = getattr(binding, name)
+
+        def recorded(values: Any) -> Any:
+            in_process.append(len(values))
+            return unique(values)
+
+        monkeypatch.setattr(binding, name, recorded)
+        half = _REAL_KEYS // 2
+        keys = KeyBatch(("k",), [pa.array([f"g{i % half}" for i in range(_REAL_KEYS)])])
+        sent = _Sent(native=False)
+        await read_keyed(sent, "t", keys=keys, columns=["v"], batch=half // 2)
+        assert in_process == [], "a real-size batch was made distinct in the serving process"
+        assert len(sent.sent) == 2, "its distinct keys, half the batch, in statements of a quarter"
+        await read_keyed(sent, "t", keys=KeyBatch(("k",), [pa.array(["a", "b", "a"])]), columns=["v"])
+        assert in_process == [3], "a small batch is made distinct here, where the worker's round trip costs more"
+
+    async def test_the_worker_finds_what_the_loop_finds(self) -> None:
+        """Flips if the worker's distinct keys differ from the binder's own (a value, a type, their first-named
+        order, a chunk's bounds): a text, a UUID and a composite key, each named twice."""
+        for keys in _repeating_batches(2 * _INLINE_DISTINCT_KEYS):
+            binder = binder_for(object(), keys)
+            off_loop = await binding.key_chunks_off_loop(keys, 3_000, binder)
+            here = await asyncio.to_thread(key_chunks, keys, 3_000, binder)
+            assert len(off_loop) == len(here) == -(-_INLINE_DISTINCT_KEYS // 3_000)
+            for theirs, ours in zip(off_loop, here, strict=True):
+                for a, b in zip(theirs, ours, strict=True):
+                    assert isinstance(a, pa.Array) and isinstance(b, pa.Array) and a.type == b.type and a.equals(b)

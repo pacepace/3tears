@@ -293,8 +293,9 @@ class WriteBuffer:
     the runs stay logarithmic in the keys held and an entry is copied a logarithmic number of times over its life,
     never every key at each change. A key's newest entry is the one in the newest run holding it, found by bisection
     of each run. A drain merges every run into one, newest first. A claim is the entry's state byte: a newer write's
-    entry is pending, which is what releases the claim. Every change replaces the tuple whole under the buffer's lock,
-    with no await between its read and its replacement.
+    entry is pending, which is what releases the claim. Every change replaces the tuple whole under the buffer's lock;
+    every method that changes it holds the lock from its read to its replacement, so a drain may await (its L1 read on
+    a thread, its claim a slice a turn) and no other change lands between.
 
     Measured (2026-11-23, M-series, one coroutine; the dict it replaced in brackets): at 10,000 keys an add costs
     9 us (1.2), an ack 3.5 us (0.5) and a drain 3.5 ms (1.1); at 100,000 keys an add 12 us (0.7), an ack 8 us (0.5), a
@@ -476,6 +477,22 @@ class WriteBuffer:
         :rtype: list[PendingWrite]
         """
         async with self._lock:
+            l1 = self._l1
+            # function-local: the durable rows, every one (none without an L1)
+            rows: list[dict[str, Any]] = []
+            if l1 is not None:
+                # read on a thread: the statement and its rows' objects are the drain's IO, and on the loop a buffer of
+                # 33,786 rows held it 0.1 s of a 0.30-0.46 s turn (the loop-stall guard, brooks-5950x and brooks-nas,
+                # 2026-11-25). Under the buffer's lock, as ack_many's deletes: no add writes a row between
+                rows = await asyncio.to_thread(
+                    lambda: whole_read(
+                        l1.execute_query("SELECT * FROM write_buffer"),
+                        kind="drain",
+                        reason="the process's own write buffer (L1, never L3): every pending write is claimed to flush",
+                        ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
+                        proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
+                    )
+                )
             # newest first: the runs grow toward the oldest, so each merge copies about the entries merged so far and
             # the whole drain about twice the buffer's (oldest first copied the oldest run once a run: 25x, at 100,000)
             runs = self._runs
@@ -490,15 +507,12 @@ class WriteBuffer:
             recovered: list[str] = []
             # function-local: the durable rows this drain claims, decoded once the claim is made (below)
             taken: list[dict[str, Any]] = []
-            if self._l1 is not None:
-                rows = whole_read(
-                    self._l1.execute_query("SELECT * FROM write_buffer"),
-                    kind="drain",
-                    reason="the process's own write buffer (L1, never L3): every pending write is claimed to flush",
-                    ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
-                    proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
-                )
-                for row in rows:
+            if l1 is not None:
+                for index, row in enumerate(rows):
+                    if index and not index % _CLAIMED_PER_TURN:
+                        # a slice of the claim a turn (each a bisection of the run, 4 us), under the lock: nothing of
+                        # the buffer changes between slices, and the loop answers everything else
+                        await asyncio.sleep(0)
                     text = _buffer_text(self._key(row["table_name"], row["entity_id"]))
                     at = run.find(text)
                     if at >= 0 and states[at] in (_CLAIMED, _RECOVERED):
@@ -517,6 +531,9 @@ class WriteBuffer:
                     assert write is not None  # narrow: a pending entry carries its write
                     claimed.append(write)
                     states[at] = _CLAIMED
+            if self._runs is not runs:
+                # the claim's slices let the loop run, under the lock: every change of the runs holds it, so none lands
+                raise RuntimeError("the write buffer's runs changed during a drain, under its lock")
             self._runs = (
                 (_Run(keys=run.keys, offsets=run.offsets, states=bytes(states), firsts=run.firsts, writes=run.writes),)
                 if run.writes
@@ -525,7 +542,7 @@ class WriteBuffer:
             for text in recovered:
                 self._append(text, _RECOVERED, None, self._next_first)
                 self._next_first += 1
-        # the claim is made whole above, in one turn; the claimed rows' text is decoded after it, a slice a turn, so
+        # the claim is made whole above, under the lock; the claimed rows' text is decoded after it, a slice a turn, so
         # the loop answers everything else between slices: the decode touches nothing of the buffer's
         for index, row in enumerate(taken):
             if index and not index % _DRAINED_PER_TURN:
@@ -693,6 +710,13 @@ class WriteBuffer:
     def pending_count(self) -> int:
         """Return the number of pending writes in the buffer."""
         return self._held
+
+
+#: the durable rows one turn of :meth:`WriteBuffer.drain` claims: each a key text and a bisection of the drained run
+#: (4.2 us at 33,786 keys, M-series), so a slice is about 2 ms of the loop. Claimed all in one turn, a drain of 33,786
+#: rows held the loop 0.30-0.46 s with its L1 read (the loop-stall guard, brooks-5950x and brooks-nas, 2026-11-25),
+#: most samples in the bisection (packed_keys.find_sorted)
+_CLAIMED_PER_TURN: Final = 512
 
 
 def _decoded_row(
