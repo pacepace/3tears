@@ -83,6 +83,13 @@ caller has nothing to do.
 guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
 listing reads with a fixed set of readers, never one task a subject.
 
+### core: the cleanup floor of a change log nothing was ever written to
+
+`held_window_floor` (under `log_window_floor`) read a stream with `first_seq=0, last_seq=0` as holding a record and
+asked NATS for sequence 0, which answers 400. The keeper publishes the floor when it starts, so a hub starting on a
+fresh change log (a new environment, or one recreated empty) failed to start. A window now holds a record only from
+`first_seq` 1 up, and such a log has no floor (None), as an empty one always had. No consumer action.
+
 ### agent-acl, core: racing revives of a gone namespace; a statement form for a declared whole read
 
 **Fixed:** ``NamespaceCollection.ensure_namespace`` raised "a unique value it carries ... is already taken by a row
