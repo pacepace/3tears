@@ -66,7 +66,7 @@ from threetears.agent.acl.types import (
 )
 from threetears.agent.acl.types import Namespace as AclNamespace
 from threetears.core import keyed as k
-from threetears.core.collections import DeleteCascade
+from threetears.core.collections import DeleteCascade, DeleteRestrict
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
@@ -1135,9 +1135,10 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
 class RoleCollection(SchemaBackedCollection[RoleEntity]):
     """three-tier collection for ``roles`` rows.
 
-    roles use hard-delete; admin endpoints typically guard against
-    deleting builtins or any role that is referenced by an assignment
-    (the ``role_assignments.role_id`` FK is ``ON DELETE RESTRICT``).
+    a role's delete marks it gone (``ROW_STAMPED``), an ``UPDATE`` the
+    ``role_assignments.role_id`` FK's ``ON DELETE RESTRICT`` never sees, so
+    the guard is declared (:attr:`delete_restricts`) and 3tears refuses the
+    delete of a role any live grant still names.
     CRUD comes from the declarative :class:`TableSchema`;
     evaluator-loader queries (``find_platform_by_name`` /
     ``get_many``) stay on the canonical class.
@@ -1159,6 +1160,10 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     # it (``AclCache``) are evicted row by row.
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
     primary_key_column: str = "role_id"
+    # role_assignments.role_id is ON DELETE RESTRICT (v001): a role a live grant names is never marked gone
+    delete_restricts: ClassVar[tuple[DeleteRestrict, ...]] = (
+        DeleteRestrict("role_assignments", "role_id", "RESTRICT", parent_column="role_id"),
+    )
     schema = TableSchema(
         name="roles",
         write_generation=WRITE_GENERATION,

@@ -32,6 +32,7 @@ from threetears.agent.acl.migrations.v006_access_tables_carry_their_epoch import
 from threetears.agent.acl.query_visibility import caller_visible_customer_clause
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import NO_L2
+from threetears.core.collections.delete_cascade import RestrictedDeleteError
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -88,7 +89,7 @@ def test_each_access_table_is_declared_stamped_with_its_restore_index_and_commen
 
 async def test_v006_stamps_each_existing_table_its_backfill_keyed() -> None:
     assert register(MigrationRunner()).versions[6] is access_tables_carry_their_epoch
-    keys = {
+    keys: dict[str, list[dict[str, Any]]] = {
         "namespaces": [{"row_scope": "customer", "namespace_id": uuid4()}],
         "groups": [{"row_scope": "customer", "group_id": uuid4()}],
         "group_members": [{"group_id": uuid4(), "id": uuid4()}],
@@ -230,6 +231,38 @@ async def test_a_namespace_delete_marks_it_and_its_grants_gone() -> None:
     assert set(marks) == {"namespaces", "role_assignments"}, pool.sent
     for table, params in marks.items():
         assert params[0] is True and len(stamps_in(params, before)) == 1, (table, params)
+
+
+async def test_a_role_live_grants_name_is_refused_its_gone_mark() -> None:
+    """role_assignments.role_id is ON DELETE RESTRICT, and a role's delete is a gone mark (an UPDATE) the database's
+    guard never sees: 3tears counts the role's live grants through idx_role_assignments_role and refuses, naming the
+    grants table and how many."""
+    role_id = uuid4()
+
+    def answer(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        if 'FROM "role_assignments"' in sql and "count(*)" in sql:
+            return [{"relation": 0, "counted": role_id, "held": 3}]
+        return []
+
+    pool = RecordingPool(answer)
+    roles = _collection(RoleCollection, pool)
+    with pytest.raises(RestrictedDeleteError, match="3 live row") as refused:
+        await roles.delete(role_id)
+    assert (refused.value.child_table, refused.value.count) == ("role_assignments", 3)
+    [(count, params)] = [(sql, params) for sql, params in pool.sent if 'FROM "role_assignments"' in sql]
+    # keyed: the grants are counted by the role, live alone, never read whole
+    assert '"role_id" = ANY(' in count and "gone" in count and [role_id] in params, count
+    assert not [sql for sql, _ in pool.sent if sql.startswith("UPDATE")], pool.sent
+
+
+async def test_a_role_no_live_grant_names_is_marked_gone() -> None:
+    role_id = uuid4()
+    pool = RecordingPool()
+    roles = _collection(RoleCollection, pool)
+    before = next_epoch()
+    await roles.delete(role_id)
+    [(sql, params)] = [(sql, params) for sql, params in pool.sent if sql.startswith("UPDATE")]
+    assert sql.startswith('UPDATE "roles"') and params[0] is True and len(stamps_in(params, before)) == 1, sql
 
 
 def test_the_visibility_clause_reads_live_access_rows_alone() -> None:

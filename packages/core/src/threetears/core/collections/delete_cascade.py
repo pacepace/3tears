@@ -23,6 +23,12 @@ each declared action itself, through the child's collection, once the parent is 
 child rows gone (a stamped child) or deletes them by key (any other), a ``SET NULL`` sets the column NULL by key, its
 epoch risen for a stamped child. Each is a stamped write a restore hears, where the database's own action was a write
 no restore could see.
+
+**Nor does it run a ``RESTRICT`` / ``NO ACTION`` guard**: the database refuses a ``DELETE`` of a row its children still
+name, and a gone mark is an ``UPDATE``, so a role with live grants would be marked gone and its grants left granting. A
+collection declares each such foreign key (:attr:`~threetears.core.collections.base.BaseCollection.delete_restricts`,
+:class:`DeleteRestrict`), and its delete of a stamped row first counts the live children each names, through the child
+column's index (:func:`refuse_restricted_delete`), refusing while any is held.
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ from threetears.core.collections.generation import (
     primary_key_of_table,
 )
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.keyed import AnyOf, Fragment, Sort, delete_keyed, keyset_rows, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, Sort, counts_by, delete_keyed, keyset_rows, update_keyed
 from threetears.interfaces.keyed.filters import quote_identifier
 from threetears.interfaces.keyed.rows import KeyBatch, KeyColumns
 from threetears.observe import get_logger
@@ -48,10 +54,13 @@ from threetears.observe import get_logger
 __all__ = [
     "CascadedRows",
     "DeleteCascade",
+    "DeleteRestrict",
+    "RestrictedDeleteError",
     "UnappliedCascadeError",
     "announce_delete_cascade",
     "apply_delete_cascade",
     "read_delete_cascade",
+    "refuse_restricted_delete",
     "refuse_unappliable_cascade",
 ]
 
@@ -72,6 +81,54 @@ class DeleteCascade:
     child_column: str
     action: Literal["CASCADE", "SET NULL"]
     parent_column: str = "id"
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteRestrict:
+    """one foreign key from ``child_table.child_column`` to the declaring collection's ``parent_column`` whose action
+    refuses the parent's delete while a child names it (``ON DELETE RESTRICT`` / ``NO ACTION``).
+
+    :ivar child_table: the table whose rows hold the parent
+    :ivar child_column: its column naming the parent row, the leading column of an index of the child's
+    :ivar action: the declared action, ``"RESTRICT"`` or ``"NO ACTION"`` (both refuse alike here)
+    :ivar parent_column: the declaring table's column the key references
+    """
+
+    child_table: str
+    child_column: str
+    action: Literal["RESTRICT", "NO ACTION"]
+    parent_column: str = "id"
+
+
+class RestrictedDeleteError(RuntimeError):
+    """a stamped parent's delete refused: a ``RESTRICT`` / ``NO ACTION`` foreign key's child rows still name it.
+
+    :ivar table_name: the parent table
+    :ivar child_table: the child table holding live rows
+    :ivar count: how many live child rows name the parent
+    """
+
+    def __init__(self, table_name: str, child_table: str, child_column: str, count: int) -> None:
+        """name the parent, the child table and how many of its live rows hold the parent.
+
+        :param table_name: the parent table
+        :ptype table_name: str
+        :param child_table: the child table
+        :ptype child_table: str
+        :param child_column: its column naming the parent
+        :ptype child_column: str
+        :param count: its live rows naming the parent
+        :ptype count: int
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(
+            f"{table_name}: refusing the delete, {count} live row(s) of {child_table} still name it "
+            f"({child_table}.{child_column}, ON DELETE RESTRICT); remove them first"
+        )
+        self.table_name = table_name
+        self.child_table = child_table
+        self.count = count
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +252,37 @@ async def _parent_values(collection: Any, parent_keys: Sequence[Any], parent_col
         if row is not None and row.get(parent_column) is not None:
             values.append(row[parent_column])
     return values
+
+
+async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any]) -> None:
+    """refuse, before a stamped parent is marked gone, a delete a declared ``RESTRICT`` / ``NO ACTION`` foreign key
+    forbids: the database runs no such guard for a gone mark (an ``UPDATE``), so 3tears runs it. Each declared
+    :class:`DeleteRestrict`'s live children are counted by the parents' values, one keyed ``GROUP BY`` through the
+    child column's index (:func:`~threetears.core.keyed.counts_by`, a stamped child's gone rows left out by its live
+    guard), never a scan.
+
+    :param collection: the parent collection
+    :ptype collection: BaseCollection
+    :param parent_keys: the keys about to be marked gone
+    :ptype parent_keys: Sequence[Any]
+    :return: nothing
+    :rtype: None
+    :raises RestrictedDeleteError: when a child table holds live rows naming a parent
+    """
+    restricts: tuple[DeleteRestrict, ...] = getattr(type(collection), "delete_restricts", ())
+    if not restricts or not parent_keys or collection.l3_pool is None:
+        return
+    for restrict in restricts:
+        values = await _parent_values(collection, parent_keys, restrict.parent_column)
+        if not values:
+            continue
+        # cache-bypass: whether a child still names the parent, read where the guard would have run (L3)
+        counted = await counts_by(
+            collection.l3_pool, restrict.child_table, column=restrict.child_column, values=AnyOf(values, cast=None)
+        )
+        held = sum(counted.values())
+        if held:
+            raise RestrictedDeleteError(collection.table_name, restrict.child_table, restrict.child_column, held)
 
 
 def refuse_unappliable_cascade(collection: Any, cascaded: Sequence[CascadedRows]) -> None:

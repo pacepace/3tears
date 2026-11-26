@@ -57,9 +57,11 @@ from threetears.core.collections.epoch_change import (
 )
 from threetears.core.collections.delete_cascade import (
     DeleteCascade,
+    DeleteRestrict,
     announce_delete_cascade,
     apply_delete_cascade,
     read_delete_cascade,
+    refuse_restricted_delete,
     refuse_unappliable_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
@@ -126,6 +128,7 @@ __all__ = [
     "BaseCollection",
     "CasMutation",
     "DeleteCascade",
+    "DeleteRestrict",
     "EntityT",
     "NoL2",
     "ScanReadTicket",
@@ -700,6 +703,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: ages, so :meth:`delete` reads the rows each one will reach before deleting and invalidates
     #: them through their own collections after (:mod:`~threetears.core.collections.delete_cascade`).
     delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
+
+    #: Each foreign key that points at this table with ``ON DELETE RESTRICT`` or ``NO ACTION``. A stamped table's
+    #: delete marks its row gone (an ``UPDATE``), so the database's guard never runs: :meth:`delete` refuses itself
+    #: while a child table holds live rows naming the row
+    #: (:func:`~threetears.core.collections.delete_cascade.refuse_restricted_delete`).
+    delete_restricts: ClassVar[tuple[DeleteRestrict, ...]] = ()
 
     #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
     #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
@@ -5581,6 +5590,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # takes each declared one itself once the row is marked (refused before, when one cannot be taken)
         gone_mark = self._marks_gone()
         if gone_mark:
+            # nor does the database's RESTRICT / NO ACTION guard: a row its live children name is refused here
+            await refuse_restricted_delete(self, [entity_id])
             refuse_unappliable_cascade(self, cascaded)
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
