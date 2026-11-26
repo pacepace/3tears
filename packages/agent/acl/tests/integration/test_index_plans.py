@@ -1040,6 +1040,7 @@ async def test_revive_gone_grant(conn: asyncpg.Connection) -> None:
             },
             where=[Fragment('"gone"')],
             returning=("assignment_id", "row_scope"),
+            with_gone=True,
         )[0]
         async with _rolled_back(conn):
             plan = await explain_write(conn, sql, *params)

@@ -107,7 +107,9 @@ async def repoint_user_rows(
         # a stamped table's epoch rises with the repoint, as every stamped write's does (the module's docstring)
         values = stamped_values(schema, values, conn=conn)
     by = {user_column: from_user_id} if agent_id is None else {"agent_id": agent_id, user_column: from_user_id}
-    moved = await update_keyed(conn, table, values=values, by=by, returning=pk_columns)
+    # every row the source user owns, a stamped table's gone ones too (with_gone): a merge moves the user's rows
+    # whole, so no gone row is left naming the user it retires. Its flag is left as it is: a gone row stays gone
+    moved = await update_keyed(conn, table, values=values, by=by, returning=pk_columns, with_gone=True)
     return [tuple(row[col] for col in pk_columns) for row in moved.rows]
 
 

@@ -348,10 +348,13 @@ class TestInPlaceWrites:
     async def test_a_keyed_update_or_delete_of_a_versioned_table_is_refused(
         self, db: duckdb.DuckDBPyConnection
     ) -> None:
-        """Flips if an operator's keyed update or delete changes a version in place (measure.py's edits)."""
+        """Flips if an operator's keyed update or delete changes a version in place (measure.py's edits), a write
+        naming gone rows too (with_gone) among them."""
         reader = _L3(db)
         with pytest.raises(AppendOnlyWriteError):
             await update_keyed(reader, _TABLE, values={"v": 9}, by={"state": "CA", "id": 1})
+        with pytest.raises(AppendOnlyWriteError):
+            await update_keyed(reader, _TABLE, values={"v": 9}, by={"state": "CA", "id": 1}, with_gone=True)
         with pytest.raises(AppendOnlyWriteError):
             await delete_keyed(reader, _TABLE, by={"state": "CA", "id": 1})
         assert reader.statements == []

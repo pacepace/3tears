@@ -92,7 +92,9 @@ async def backfill_pages(
                 held.append(row[column])
         for values, keys in groups:
             batch = KeyBatch(key, keys, casts=tuple(casts))
-            written += (await update_keyed(conn, table, values=values, keys=batch)).count
+            # every row the page read, a stamped table's gone ones too (with_gone): the page reads the table as stored,
+            # and a column the migration then requires is required of a gone row as of a live one
+            written += (await update_keyed(conn, table, values=values, keys=batch, with_gone=True)).count
     return written
 
 

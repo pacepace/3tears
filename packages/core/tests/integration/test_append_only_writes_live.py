@@ -5,7 +5,8 @@ kept, at a copy's cost now the change-note row trigger is gone (on YugabyteDB an
 reads and flushes a row at a time: the scratch measurement was 1.58 ms a row against 0.09 for a copy); that a delete
 appends a "gone" marker at a newer epoch and removes nothing, the stored table taking a marker that leaves out its
 required columns while still refusing a live version without them; that a whole run deleted is exactly one run marker, its
-prefix as text; and that a stamped table still upserts, one row a key.
+prefix as text; that a stamped table still upserts, one row a key; and that a keyed update of a stamped table writes
+its live rows alone, a gone row left as it is unless the write names it (a revive, ``with_gone``).
 
 Against the session ``db_container``: Postgres in the ``integration`` suite, YugabyteDB in ``integration_yugabyte``. The
 speed ratio is asserted on YugabyteDB alone (``yugabyte_only``), where the cause it removes lives; both engines log
@@ -31,6 +32,7 @@ from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
+from threetears.core.collections.gone_marks import mark_gone_keyed
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     INT_TYPE,
@@ -38,12 +40,14 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
     collection_for_schema,
+    stamped_values,
 )
 from threetears.core.collections.scope_epochs import ScopeEpochs, scope_epochs_collection
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, ROW_STAMPED, row_versions
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.entities.base import BaseEntity
+from threetears.core.keyed import Fragment, update_keyed
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.core.testing.plans import on_yugabyte
 
@@ -368,3 +372,36 @@ async def test_a_stamped_table_still_upserts_one_row_a_key_carrying_its_last_wri
     [row] = await held.pool.fetch(f"SELECT state, {EPOCH_COLUMN} FROM {_RUNS.name}")  # noqa: S608
     assert row["state"] == "PA"
     assert row[EPOCH_COLUMN] > first
+
+
+async def test_a_keyed_update_of_a_stamped_table_leaves_a_gone_row_and_a_revive_names_it(held: _Held) -> None:
+    """Flips if a keyed update of a stamped table changes (or counts) a row a delete marked gone, or a revive naming
+    with_gone=True cannot make it live again, its epoch risen."""
+    rows = [{"run_id": "r1", "state": "NC"}, {"run_id": "r2", "state": "NC"}]
+    await _in_version(held, lambda conn: held.runs.save_rows(rows, conn=conn))
+    assert (await mark_gone_keyed(held.pool, _RUNS.name, by={"run_id": "r2"})).count == 1
+    table = _RUNS.name
+    gone = await held.pool.fetchrow(f"SELECT state, {EPOCH_COLUMN}, {GONE_COLUMN} FROM {table} WHERE run_id = 'r2'")  # noqa: S608
+    assert gone is not None and gone[GONE_COLUMN]
+
+    written = await update_keyed(held.pool, table, values=stamped_values(_RUNS, {"state": "PA"}), by={"run_id": "r2"})
+    assert written.count == 0
+    after = await held.pool.fetchrow(f"SELECT state, {EPOCH_COLUMN}, {GONE_COLUMN} FROM {table} WHERE run_id = 'r2'")  # noqa: S608
+    assert dict(after or {}) == dict(gone)
+    live = await update_keyed(held.pool, table, values=stamped_values(_RUNS, {"state": "PA"}), by={"run_id": "r1"})
+    assert live.count == 1
+
+    with pytest.raises(ValueError, match="with_gone=True"):
+        await update_keyed(held.pool, table, values=stamped_values(_RUNS, {GONE_COLUMN: False}), by={"run_id": "r2"})
+    revived = await update_keyed(
+        held.pool,
+        table,
+        values=stamped_values(_RUNS, {GONE_COLUMN: False, "state": "PA"}),
+        by={"run_id": "r2"},
+        where=[Fragment(f'"{GONE_COLUMN}"')],
+        with_gone=True,
+    )
+    assert revived.count == 1
+    back = await held.pool.fetchrow(f"SELECT state, {EPOCH_COLUMN}, {GONE_COLUMN} FROM {table} WHERE run_id = 'r2'")  # noqa: S608
+    assert back is not None and back["state"] == "PA" and not back[GONE_COLUMN]
+    assert back[EPOCH_COLUMN] > gone[EPOCH_COLUMN]

@@ -44,6 +44,8 @@ from threetears.core.ddl.row_epoch import (
 from threetears.core.keyed import (
     AnyOf,
     Count,
+    Derived,
+    Fragment,
     Joined,
     KeyBatch,
     Sort,
@@ -76,8 +78,11 @@ from threetears.core.keyed import (
     read_value,
     scan,
     semi,
+    update_from,
+    update_keyed,
     Match,
 )
+from threetears.interfaces.keyed.writes import update_keyed_statements
 from threetears.core.collections.complete_copy import read_l3_rows
 from threetears.core.tenancy import Tenancy
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
@@ -586,3 +591,87 @@ class TestReadLiveRows:
         with pytest.raises(ValueError, match="plain identifier"):
             await read_live_rows(reader, _TABLE, ("state; DROP TABLE x",))
         assert reader.statements == []
+
+
+# -- a write by key writes live rows alone ----------------------------------------------------------------------------
+
+
+class TestKeyedWritesSkipGoneRows:
+    async def test_an_update_by_key_leaves_a_gone_row_as_it_is_and_counts_none(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a keyed update of a stamped L3 table changes a row a delete marked gone, or counts it: a write by
+        its key, and a batch naming every key, write the live rows alone."""
+        reader = _L3(db)
+        written = await update_keyed(reader, _TABLE, values={"rows": 99}, by={"state": "CA", "run_id": "r2"})
+        assert written.count == 0
+        assert _row(db, "CA", "r2") == (20, 100, True)
+        batch = await update_keyed(reader, _TABLE, values={"rows": 7}, keys=_every_key(), returning=("state", "run_id"))
+        assert batch.count == 2
+        assert sorted((row["state"], row["run_id"]) for row in batch.rows) == [("CA", "r1"), ("NV", "r1")]
+        assert _row(db, "CA", "r2") == (20, 100, True)
+        assert _row(db, "CA", "r1") == (7, 100, False)
+        assert all(f'NOT "{GONE_COLUMN}"' in sql for sql in reader.statements), reader.statements
+
+    async def test_a_revive_says_so_and_writes_the_gone_row(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if an update naming with_gone=True (a revive of a gone key) cannot reach the gone row."""
+        reader = _L3(db)
+        written = await update_keyed(
+            reader,
+            _TABLE,
+            values={GONE_COLUMN: False, "rows": 21},
+            by={"state": "CA", "run_id": "r2"},
+            where=[Fragment(f'"{GONE_COLUMN}"')],
+            with_gone=True,
+        )
+        assert written.count == 1
+        assert _row(db, "CA", "r2") == (21, 100, False)
+
+    async def test_a_revive_that_does_not_say_so_is_refused_before_anything_is_sent(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if an update setting a stamped table's gone flag false without with_gone is sent: written to live
+        rows alone it would find no gone row, a revive that silently does nothing."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="with_gone=True"):
+            await update_keyed(
+                reader,
+                _TABLE,
+                values={GONE_COLUMN: False},
+                by={"state": "CA", "run_id": "r2"},
+                where=[Fragment('"gone"')],
+            )
+        assert reader.statements == []
+        assert _row(db, "CA", "r2") == (20, 100, True)
+
+    async def test_an_update_from_a_source_writes_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if an update of a stamped L3 table from a keyed source writes a gone row, or with_gone does not."""
+        reader = _L3(db)
+        source = Derived("SELECT 'CA' AS state, run_id, 5 AS rows FROM (VALUES ('r1'), ('r2')) AS v(run_id)")
+        written = await update_from(reader, _TABLE, key=["state", "run_id"], source=source, columns=["rows"])
+        assert written.count == 1
+        assert (_row(db, "CA", "r1"), _row(db, "CA", "r2")) == ((5, 100, False), (20, 100, True))
+        revived = await update_from(
+            reader, _TABLE, key=["state", "run_id"], source=source, columns=["rows"], with_gone=True
+        )
+        assert revived.count == 2
+        assert _row(db, "CA", "r2") == (5, 100, True)
+
+    def test_the_statements_state_the_live_guard_once(self) -> None:
+        """Flips if a keyed update's statements of a stamped table on L3 carry no live guard, carry it twice beside a
+        caller's own (a gone mark's), or carry it for a write with_gone or one not to L3 (a local copy)."""
+        guard = f'NOT "{GONE_COLUMN}"'
+        for where in ((), (Fragment(guard),)):
+            [(sql, _)] = update_keyed_statements(_TABLE, values={"rows": 1}, by={"state": "CA"}, where=where)
+            assert sql.count(guard) == 1, sql
+        for with_gone, l3 in ((True, True), (False, False)):
+            [(sql, _)] = update_keyed_statements(
+                _TABLE, values={"rows": 1}, by={"state": "CA"}, with_gone=with_gone, l3=l3
+            )
+            assert GONE_COLUMN not in sql, sql
+
+    async def test_a_local_copy_s_update_writes_as_it_holds(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if an update that does not go to L3 (a local copy, filled with live rows alone) is guarded or
+        refused."""
+        written = await update_keyed(ThreadedDuckDB(db), _TABLE, values={"rows": 1}, by={"state": "CA", "run_id": "r2"})
+        assert written.count == 1
