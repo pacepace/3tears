@@ -96,6 +96,9 @@ What must stay possible:
   04's store and period names. Chunk 06 must leave it green, or ledger a name with a reason. That is the fix for
   blocking findings rev-20261126T020832Z-d8caf915 and rev-20261126T021046Z-3fb55497 R-1 (the same red, chunk 04's
   names added), which ride chunk 06's commit; one verify pass after chunk 06 resolves both.
+- Chunk 06 delegated (opus, isolated worktree) instead of built by the main session: the main session's context was
+  spent integrating wave 1, and a fresh builder with the merged APIs in its brief builds it better. The main session
+  still integrates and governs it. Partition otherwise unchanged.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
   every table in that tuple and would fail where it runs before v004 creates them. Money and JSON are TEXT: no float
   before the budget compare, and JSONB would reorder the reservations the sweep reports in order.
