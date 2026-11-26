@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 import threading
 import warnings
@@ -252,6 +253,25 @@ def test_an_inputs_key_moves_with_a_files_name_or_byte_and_with_nothing_else(tmp
     (inputs / "a").write_text("alpha")
     (inputs / "a").rename(inputs / "c")
     assert key("c", "b") != original
+
+
+def test_a_store_is_written_without_drawing_randomness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """a pool that caches results counts an entropy read as an input it cannot replay: writing a store draws none."""
+
+    def drawn(*_: object, **__: object) -> object:
+        raise AssertionError("the store drew randomness")
+
+    monkeypatch.setattr(os, "urandom", drawn)
+    monkeypatch.setattr(tempfile, "mkstemp", drawn)
+    inputs = _inputs(tmp_path, a="alpha")
+    first, second = _Counted(inputs), _Counted(inputs)
+
+    ScanCache(tmp_path / "cache", "code").memoised("s", ["a"], first.declared, first.compute)
+    ScanCache(tmp_path / "cache", "code").memoised("s", ["a"], second.declared, second.compute)
+
+    assert first.calls == ["a"]
+    assert second.calls == [], "the store was not written"
+    assert not list((tmp_path / "cache").glob("*.tmp")), "a temporary file was left behind"
 
 
 def test_a_store_leaves_any_checkout_clean_without_its_gitignore_naming_it(tmp_path: Path) -> None:

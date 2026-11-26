@@ -64,11 +64,11 @@ import ast
 import hashlib
 import importlib.util
 import inspect
+import itertools
 import os
 import pickle
 import re
 import sys
-import tempfile
 import threading
 import warnings
 from collections.abc import Callable, Iterable
@@ -163,6 +163,30 @@ def _install_audit() -> bool:
 _AUDIT: BuildOnce[str, bool] = BuildOnce()
 
 
+#: numbers this process's temporary files, so two writers in one process never pick one name
+_TEMPORARIES = itertools.count()
+
+
+def _exclusive_temporary(directory: Path, prefix: str) -> tuple[int, str]:
+    """create an empty file in *directory* for a write about to be renamed into place, named with no randomness.
+
+    ``tempfile`` draws random bytes to name its files, and a test runner that caches results counts
+    an entropy read as an input it cannot replay, so every gate that wrote a store would never be
+    served from its cache. The process id, the thread and a per-process count give a name no
+    other writer is using; ``O_EXCL`` refuses one a dead writer left behind under a reused pid,
+    and the next number is tried.
+
+    :return: the open descriptor, and the file's path
+    :raises OSError: when the directory cannot be written
+    """
+    while True:
+        path = directory / f"{prefix}{os.getpid()}-{threading.get_ident()}-{next(_TEMPORARIES)}.tmp"
+        try:
+            return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644), str(path)
+        except FileExistsError:
+            continue
+
+
 def _ignore_itself(directory: Path) -> None:
     """give *directory* a ``.gitignore`` that ignores everything in it, so any checkout's git leaves the stores alone.
 
@@ -174,7 +198,7 @@ def _ignore_itself(directory: Path) -> None:
     target = directory / ".gitignore"
     if target.is_file():
         return
-    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".gitignore-", suffix=".tmp")
+    handle, temporary = _exclusive_temporary(directory, ".gitignore-")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as out:
             out.write(_SELF_IGNORE)
@@ -686,7 +710,7 @@ class ScanCache:
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             _ignore_itself(self.directory)
-            handle, temporary = tempfile.mkstemp(dir=self.directory, prefix=f".{name}-", suffix=".tmp")
+            handle, temporary = _exclusive_temporary(self.directory, f".{name}-")
         except OSError as exc:
             self._refuse(f"{name}: {self.directory} cannot be written ({exc.strerror or exc})", defect=False)
             return
