@@ -377,8 +377,9 @@ async def test_a_declared_tables_write_row_names_its_stamp_on_the_wire() -> None
     await collection.write_row({"run_id": "r2"})
     upsert, update = broker.bodies("l3.query")
     for body in (upsert, update):
-        # the row's stamp is the one epoch the statement binds: a BIGINT past every other parameter
-        [stamp] = [value for value in body["params"] if isinstance(value, int)]
+        # the row's stamp is the one epoch the statement binds: a BIGINT past every other parameter (the gone flag the
+        # write also binds is a bool, which Python counts as an int, so it is left out by type)
+        [stamp] = [value for value in body["params"] if isinstance(value, int) and not isinstance(value, bool)]
         assert _stamp(body) == (True, stamp)
 
 
