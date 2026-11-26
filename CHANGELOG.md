@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: importing `Model` loads no action or operation
+
+**Fixed (#1334):** `from threetears.evals.providers import Model` took about 1.4s cold, since the client takes its
+recorded replays from `threetears.evals.testing`, whose root imported the jobs conformance kit and through it the
+action catalogue, `ops` and the report stack. The testing root now serves each name from its defining module on first
+read, as the client's root does, so importing `Model` loads no module of `actions` or `ops` and takes about 0.7s. Every
+public name of `threetears.evals.testing` and its signature is unchanged.
+
+**For hosts:** nothing to change. A host imports from `threetears.evals.testing` as before; the jobs kit's catalogue
+loads when the host first reads a name of the kit. A strict type checker still sees each name's real type.
+
 ### evals: importing `ProviderError` loads none of the engine
 
 **Fixed (#1332):** `from threetears.evals.providers import ProviderError` took over a second cold, since the client's

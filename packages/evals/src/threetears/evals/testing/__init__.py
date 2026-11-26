@@ -34,53 +34,61 @@ test runner. See :mod:`threetears.evals.testing.store_conformance` and
 :mod:`threetears.evals.testing.reader_conformance` for an example under pytest.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
-and only the names in ``__all__``.
+and only the names in ``__all__``. Each name is served by the module ``__getattr__`` from the module defining it, on
+first read, so the completion client, which takes the recorded replays from here, loads no jobs kit and with it no
+action catalogue or operation (``tests/test_import_time.py``).
 """
 
 from __future__ import annotations
 
-from threetears.evals.testing.completion_conformance import (
-    CompletionConformanceFailure,
-    check_completion_conformance,
-)
-from threetears.evals.testing.jobs_conformance import (
-    BuildConformanceHost,
-    CompletionGuard,
-    CompletionOutsideJob,
-    JobAwaitedByItsCall,
-    JobsConformanceCase,
-    JobsConformanceFailure,
-    JobsConformanceHost,
-    jobs_conformance_cases,
-)
-from threetears.evals.testing.negotiation_conformance import (
-    NegotiationConformanceFailure,
-    RouterTransport,
-    check_refusal_negotiation,
-)
-from threetears.evals.testing.readings_conformance import (
-    RESULT_READINGS_CONFORMANCE_CASES,
-    ResultReadingsConformanceCase,
-)
-from threetears.evals.testing.reader_conformance import (
-    READER_CONFORMANCE_CASES,
-    ReaderConformanceCase,
-    ReaderConformanceFailure,
-    ReaderSample,
-)
-from threetears.evals.testing.recorded_completions import (
-    RecordedCompletions,
-    RecordedPrompt,
-    RecordingRefused,
-    ReplayedCompletion,
-)
-from threetears.evals.testing.recorded_turns import RecordedTurns
-from threetears.evals.testing.recorded_web_search import RecordedWebSearch
-from threetears.evals.testing.store_conformance import (
-    STORE_CONFORMANCE_CASES,
-    StoreConformanceCase,
-    StoreConformanceFailure,
-)
+from collections.abc import Mapping
+from importlib import import_module
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from threetears.evals.testing.completion_conformance import (
+        CompletionConformanceFailure,
+        check_completion_conformance,
+    )
+    from threetears.evals.testing.jobs_conformance import (
+        BuildConformanceHost,
+        CompletionGuard,
+        CompletionOutsideJob,
+        JobAwaitedByItsCall,
+        JobsConformanceCase,
+        JobsConformanceFailure,
+        JobsConformanceHost,
+        jobs_conformance_cases,
+    )
+    from threetears.evals.testing.negotiation_conformance import (
+        NegotiationConformanceFailure,
+        RouterTransport,
+        check_refusal_negotiation,
+    )
+    from threetears.evals.testing.readings_conformance import (
+        RESULT_READINGS_CONFORMANCE_CASES,
+        ResultReadingsConformanceCase,
+    )
+    from threetears.evals.testing.reader_conformance import (
+        READER_CONFORMANCE_CASES,
+        ReaderConformanceCase,
+        ReaderConformanceFailure,
+        ReaderSample,
+    )
+    from threetears.evals.testing.recorded_completions import (
+        RecordedCompletions,
+        RecordedPrompt,
+        RecordingRefused,
+        ReplayedCompletion,
+    )
+    from threetears.evals.testing.recorded_turns import RecordedTurns
+    from threetears.evals.testing.recorded_web_search import RecordedWebSearch
+    from threetears.evals.testing.store_conformance import (
+        STORE_CONFORMANCE_CASES,
+        StoreConformanceCase,
+        StoreConformanceFailure,
+    )
 
 __all__ = [
     "BuildConformanceHost",
@@ -112,3 +120,59 @@ __all__ = [
     "StoreConformanceFailure",
     "check_completion_conformance",
 ]
+
+#: Each name of ``__all__``, by the module defining it: served by :func:`__getattr__` on first read, so importing this
+#: root (or one recorded replay from it) loads no more of the kits than the name asked for.
+_LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
+    {
+        "BuildConformanceHost": "threetears.evals.testing.jobs_conformance",
+        "CompletionGuard": "threetears.evals.testing.jobs_conformance",
+        "CompletionOutsideJob": "threetears.evals.testing.jobs_conformance",
+        "JobAwaitedByItsCall": "threetears.evals.testing.jobs_conformance",
+        "JobsConformanceCase": "threetears.evals.testing.jobs_conformance",
+        "JobsConformanceFailure": "threetears.evals.testing.jobs_conformance",
+        "JobsConformanceHost": "threetears.evals.testing.jobs_conformance",
+        "jobs_conformance_cases": "threetears.evals.testing.jobs_conformance",
+        "NegotiationConformanceFailure": "threetears.evals.testing.negotiation_conformance",
+        "RouterTransport": "threetears.evals.testing.negotiation_conformance",
+        "check_refusal_negotiation": "threetears.evals.testing.negotiation_conformance",
+        "READER_CONFORMANCE_CASES": "threetears.evals.testing.reader_conformance",
+        "RESULT_READINGS_CONFORMANCE_CASES": "threetears.evals.testing.readings_conformance",
+        "STORE_CONFORMANCE_CASES": "threetears.evals.testing.store_conformance",
+        "CompletionConformanceFailure": "threetears.evals.testing.completion_conformance",
+        "ReaderConformanceCase": "threetears.evals.testing.reader_conformance",
+        "ReaderConformanceFailure": "threetears.evals.testing.reader_conformance",
+        "ReaderSample": "threetears.evals.testing.reader_conformance",
+        "ResultReadingsConformanceCase": "threetears.evals.testing.readings_conformance",
+        "RecordedCompletions": "threetears.evals.testing.recorded_completions",
+        "RecordedPrompt": "threetears.evals.testing.recorded_completions",
+        "RecordedTurns": "threetears.evals.testing.recorded_turns",
+        "RecordedWebSearch": "threetears.evals.testing.recorded_web_search",
+        "RecordingRefused": "threetears.evals.testing.recorded_completions",
+        "ReplayedCompletion": "threetears.evals.testing.recorded_completions",
+        "StoreConformanceCase": "threetears.evals.testing.store_conformance",
+        "StoreConformanceFailure": "threetears.evals.testing.store_conformance",
+        "check_completion_conformance": "threetears.evals.testing.completion_conformance",
+    }
+)
+
+
+# Under ``not TYPE_CHECKING``: a checker that saw a module ``__getattr__`` would type every name a host imports from
+# here as its return, ``Any``, so a misspelt or removed name would check. It sees the imports above instead.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:  # Any: each name is whatever its defining module holds
+        """Serve each name of ``__all__`` from the module defining it, on first read.
+
+        :param name: The attribute asked for.
+        :return: The exported object.
+        :raises AttributeError: When ``name`` is not one this root exports.
+        """
+        if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
+            return getattr(import_module(defined_in), name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """Every name the module holds, the lazily served ones among them."""
+    return sorted({*globals(), *_LAZY_EXPORTS})
