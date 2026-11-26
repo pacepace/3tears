@@ -1,9 +1,11 @@
 """The ``restates`` scorer over the claim corpus's labelled repeats, on scripted extractor replies.
 
-Nothing is spent: each corpus result is listed by a scripted client, through the real extractor, quote resolution and
-all, and :func:`score_restates` counts what came back. The script tags each labelled repeat one of three ways in turn,
-quoting its original's stretch (a hit), quoting another earlier claim's (a wrong target) or leaving it untagged (a
-miss), and the score must give back exactly the script's counts. A hand-made cell holds every outcome once, the
+Nothing is spent: each corpus result is listed by a scripted client, one claim per labelled claim, through the real
+extractor, quote resolution and repairs and all, and :func:`score_restates` counts what came back. The script tags
+each labelled repeat one of three ways in turn, quoting its original's excerpt (a hit), quoting another earlier
+claim's (a wrong target) or leaving it untagged (a miss), and the score must give back exactly the script's counts. An
+original whose excerpt the corpus labels for several facts cannot be named by any quote, so its repair is answered
+null, and it scores a miss. A hand-made cell holds every outcome once, the
 unlisted repeat and the spurious tag among them.
 """
 
@@ -24,7 +26,7 @@ from packages.evals.tests.claim_corpus_restates import (
 )
 from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
-from threetears.evals.kernel.claims.verbatim import verbatim_span
+from threetears.evals.kernel.claims.verbatim import VERBATIM_FOLD
 
 _MODEL = "scripted/claims"
 
@@ -45,21 +47,33 @@ class _Reply:
     temperature: float | None = None
 
 
+#: What a repair prompt says where the only right answer is null: the claim restated shares its excerpt with another.
+_NULL_IS_THE_ANSWER = "give null, which is the right answer here"
+
+
 # parity-with: threetears.evals.schema.CompletionClient
 @dataclass
 class _FakeListingClient:
-    """Answers the one listing call with its scripted reply; any second call (a repair) fails the test."""
+    """Answers the listing call with its scripted reply, and a repair asked where null is the only right answer with
+    the item given again untagged; any other repair fails the test."""
 
     listing: str
     model_name: str = _MODEL
     calls: list[str] = field(default_factory=list)
+    nulled: int = 0
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         del system, response_format
         self.calls.append(user)
-        if len(self.calls) > 1:
-            raise AssertionError(f"the script quotes so every tag names one claim, and a repair was asked: {user}")
-        return _Reply(content=self.listing)
+        if len(self.calls) == 1:
+            return _Reply(content=self.listing)
+        if _NULL_IS_THE_ANSWER not in user:
+            raise AssertionError(
+                f"the script quotes so every other tag names one claim, and a repair was asked: {user}"
+            )
+        listed = user.split("\n\n# What is wrong")[0].rsplit("\n\n", 1)[1]
+        self.nulled += 1
+        return _Reply(content=json.dumps({**json.loads(listed), "restates": None}))
 
     async def aclose(self) -> None:
         """Nothing to release."""
@@ -71,84 +85,86 @@ class _FakeListingClient:
         await self.aclose()
 
 
-@dataclass(frozen=True)
-class _Stretch:
-    """One distinct labelled stretch of a cell: what the script lists as one claim."""
-
-    segment: int
-    start: int
-    excerpt: str
-    claim: str
+def _folded(text: str) -> str:
+    return VERBATIM_FOLD.fold(text)[0].strip()
 
 
-def _stretches(cell: CorpusCell) -> list[_Stretch]:
-    seen: dict[tuple[int, int], _Stretch] = {}
-    for labelled in cell.labelled:
-        place = (labelled.segment, labelled.start)
-        seen.setdefault(place, _Stretch(labelled.segment, labelled.start, labelled.excerpt, labelled.claim))
-    return [seen[place] for place in sorted(seen)]
+def _overlap(a: LabelledClaim, b: LabelledClaim) -> bool:
+    return a.segment == b.segment and a.start < b.end and b.start < a.end
 
 
-def _holders(quote: str, earlier: list[_Stretch]) -> list[_Stretch]:
-    return [stretch for stretch in earlier if verbatim_span(quote, stretch.excerpt) is not None]
+def _quotable(excerpt: str) -> bool:
+    folded = _folded(excerpt)
+    return len(folded) >= 4 and any(character.isalpha() for character in folded)
 
 
 def _script(cell: CorpusCell, turn: list[int], plan: Counter[str]) -> str:
-    """The listing a scripted extractor gives for ``cell``: each stretch once, each labelled repeat tagged in turn.
+    """The listing a scripted extractor gives for ``cell``: each labelled claim once, each labelled repeat tagged in turn.
 
-    A hit quotes the original's stretch; a wrong target quotes the nearest earlier untagged stretch that is not the
-    original's; a miss gives null. A quote more than one earlier stretch holds would be asked again, so a repeat whose
-    turn's quote is not held by exactly one stretch is left a miss. A stretch carrying several labelled repeats is
-    scripted once, for the first: the others are misses where it is left untagged, and hits only where its tag names
-    their own original's stretch. ``plan`` counts what was scripted.
+    A hit quotes its original's whole excerpt; a wrong target quotes the whole excerpt of the nearest earlier untagged
+    claim apart from the original whose excerpt no other earlier claim has; a miss gives null. A quote that the excerpts
+    of claims of different facts equal is answered null on its repair, the only right answer, so it is a miss, and
+    ``plan["shared"]`` counts those. A stretch carrying several labelled repeats is tagged once, on the first, and the
+    others score as that tag names their own originals. ``plan`` counts what is expected.
     """
-    stretches = _stretches(cell)
-    at = {(stretch.segment, stretch.start): rank for rank, stretch in enumerate(stretches)}
-    tags: dict[int, tuple[str, _Stretch]] = {}
-    scripted: set[int] = set()
-    for repeat in sorted((c for c in cell.labelled if c.repeat_of), key=lambda c: (c.segment, c.start)):
-        original = cell.by_id(repeat.repeat_of or "")
-        rank = at[(repeat.segment, repeat.start)]
-        if rank in scripted:
-            named = tags[rank][1] if rank in tags else None
-            if named is None:
-                plan["miss"] += 1
-            else:
-                plan["hit" if (named.segment, named.start) == (original.segment, original.start) else "wrong"] += 1
+    claims = sorted(cell.labelled, key=lambda claim: (claim.segment, claim.start))
+    firsts: dict[int, int] = {}
+    tagged: dict[tuple[int, int], int | None] = {}
+    tags: dict[int, str] = {}
+    for at, repeat in enumerate(claims):
+        if repeat.repeat_of is None:
             continue
-        scripted.add(rank)
-        earlier = stretches[:rank]
-        outcome = ("hit", "wrong", "miss")[turn[0] % 3]
-        turn[0] += 1
-        target: _Stretch | None = None
-        if outcome == "hit":
-            target = stretches[at[(original.segment, original.start)]]
-        elif outcome == "wrong":
-            others = [
-                stretch
-                for back, stretch in reversed(list(enumerate(earlier)))
-                if back not in tags
-                and (stretch.segment, stretch.start) != (original.segment, original.start)
-                and _holders(stretch.excerpt, earlier) == [stretch]
-            ]
-            target = others[0] if others else None
-        if target is None or len(_holders(target.excerpt, earlier)) != 1:
-            outcome, target = "miss", None
-        if target is not None:
-            tags[rank] = (target.excerpt, target)
-        plan[outcome] += 1
+        original = cell.by_id(repeat.repeat_of)
+        place = (repeat.segment, repeat.start)
+        if place not in tagged:
+            earlier = list(range(at))
+            outcome = ("hit", "wrong", "miss")[turn[0] % 3]
+            turn[0] += 1
+            target: int | None = None
+            if outcome == "hit" and _quotable(original.excerpt):
+                equal = {
+                    firsts.get(other, other)
+                    for other in earlier
+                    if _folded(claims[other].excerpt) == _folded(original.excerpt)
+                }
+                if len(equal) == 1:
+                    target = equal.pop()
+                else:
+                    plan["shared"] += 1
+                tags[at] = original.excerpt
+            elif outcome == "wrong":
+                for other in reversed(earlier):
+                    candidate = claims[other]
+                    same = [o for o in earlier if _folded(claims[o].excerpt) == _folded(candidate.excerpt)]
+                    if (
+                        other not in firsts
+                        and not _overlap(candidate, original)
+                        and same == [other]
+                        and _quotable(candidate.excerpt)
+                    ):
+                        target = other
+                        tags[at] = candidate.excerpt
+                        break
+            tagged[place] = target
+            if target is not None:
+                firsts[at] = target
+        target = tagged[place]
+        if target is None:
+            plan["miss"] += 1
+        else:
+            plan["hit" if _overlap(claims[target], original) else "wrong"] += 1
     items = [
         {
-            "segment": stretch.segment,
-            "claim": stretch.claim,
-            "excerpt": stretch.excerpt,
+            "segment": claim.segment,
+            "claim": claim.claim,
+            "excerpt": claim.excerpt,
             "specific": True,
             "hedged": False,
             "attributed": False,
             "scope": "world",
-            "restates": tags[rank][0] if rank in tags else None,
+            "restates": tags.get(at),
         }
-        for rank, stretch in enumerate(stretches)
+        for at, claim in enumerate(claims)
     ]
     return json.dumps({"claims": items})
 
@@ -158,10 +174,12 @@ async def test_the_score_over_the_corpus_gives_back_the_scripted_hits_misses_and
     turn = [0]
     plan: Counter[str] = Counter()
     scored: list[tuple[CorpusCell, tuple[ExtractedClaim, ...]]] = []
+    nulled = 0
     for cell in cells:
         client = _FakeListingClient(_script(cell, turn, plan))
         claims = await ClaimExtractor(client).extract(cell.segments, ledger=RoleUsageLedger(role="judge"))
         scored.append((cell, claims))
+        nulled += client.nulled
 
     score = score_restates(scored)
 
@@ -169,8 +187,11 @@ async def test_the_score_over_the_corpus_gives_back_the_scripted_hits_misses_and
         hits=plan["hit"], wrong_targets=plan["wrong"], misses=plan["miss"], unlisted=0, spurious=0
     )
     assert min(plan["hit"], plan["wrong"], plan["miss"]) > 0, "the script reaches every outcome"
+    # The hits the script could not name: their originals share an excerpt with a claim of another fact, so their
+    # quotes were asked again and answered null. Counted by this test's own run over the corpus, at this rotation.
+    assert nulled == plan["shared"] == 2, "an original sharing its excerpt with another fact is named only by null"
     labelled = sum(1 for cell in cells for claim in cell.labelled if claim.repeat_of)
-    assert sum(plan.values()) == labelled, "every labelled repeat is scored once"
+    assert sum(plan[outcome] for outcome in ("hit", "wrong", "miss")) == labelled, "every labelled repeat scored once"
 
 
 def _hand_made(tmp_path: Path) -> CorpusCell:

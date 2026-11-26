@@ -30,6 +30,7 @@ from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedC
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.host import ApparatusError
 from threetears.evals.schema import Segment
+from threetears.evals.schema.models import RepairBudget
 
 _MODEL = "scripted/claims"
 
@@ -286,7 +287,7 @@ async def test_a_restates_crossing_scopes_is_asked_again() -> None:
     assert [(claim.scope, claim.restates) for claim in claims] == [("session", None), ("session", 0), ("world", None)]
     repair = client.calls[1]
     assert "position 2" in repair["user"]
-    assert "no world claim listed before it has an excerpt holding those words" in repair["user"]
+    assert "no world claim listed before it has that excerpt" in repair["user"]
 
 
 async def test_a_repair_that_changes_a_targets_scope_sends_its_restatement_to_repair() -> None:
@@ -468,52 +469,181 @@ async def test_a_position_given_for_restates_is_unreadable_and_asked_again_in_fu
     assert "Never a number: the excerpt is what names the claim." in client.calls[0]["system"]
 
 
-async def test_an_ambiguous_quote_is_asked_again_naming_the_excerpts_that_hold_it() -> None:
+#: A line whose two facts are cut so that one claim's excerpt sits inside the other's, said again in a later line.
+_NESTED = (
+    Segment(text="Nineteen eighty-three: Gareth Jones engineering People Are People.", unit=0),
+    Segment(text="Jones again, on People Are People.", unit=1),
+)
+_YEAR = _item(
+    0,
+    "People Are People came out in 1983.",
+    "Nineteen eighty-three: Gareth Jones engineering People Are People",
+)
+_ENGINEER = _item(0, "Gareth Jones engineered People Are People.", "Gareth Jones engineering People Are People")
+_AGAIN = ("Gareth Jones engineered People Are People.", "Jones again, on People Are People")
+
+
+async def test_a_quote_of_a_whole_excerpt_names_it_over_a_longer_excerpt_that_holds_it() -> None:
+    client = _FakeScriptedClient(
+        [_listing(_YEAR, _ENGINEER, _item(1, *_AGAIN, restates="Gareth Jones engineering People Are People"))]
+    )
+
+    claims = await _extractor(client).extract(_NESTED, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[2].restates == 1, "the engineer's whole excerpt names the engineer, not the year it sits inside"
+    assert len(client.calls) == 1
+
+
+async def test_a_quote_adding_a_neighbours_words_never_names_the_neighbour() -> None:
+    """The engineer's excerpt with the year line's words before it is the year's excerpt in part, and the engineer's
+    whole: it could name either, so it is asked again, and the engineer's whole excerpt then names the engineer."""
+    widened = "eighty-three: Gareth Jones engineering People Are People"
+    client = _FakeScriptedClient(
+        [
+            _listing(_YEAR, _ENGINEER, _item(1, *_AGAIN, restates=widened)),
+            _repair(*_AGAIN, restates="Gareth Jones engineering People Are People"),
+        ]
+    )
+
+    claims = await _extractor(client).extract(_NESTED, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[2].restates == 1
+    failure = client.calls[1]["user"]
+    assert f'its restates quotes "{widened}", which could name 2 earlier world claims stating different facts' in (
+        failure
+    )
+    assert "copy the whole excerpt of the one this claim restates, exactly as listed and no more, or give null" in (
+        failure
+    )
+    assert "copy more" not in failure
+
+
+#: Two facts cut from one stretch, each with that stretch as its excerpt, said again later.
+_SHARED = (
+    Segment(text="Hela Orsk's Varn Bridge, 1894.", unit=0),
+    Segment(text="The Varn Bridge once more.", unit=1),
+)
+_SHARED_BUILDER = _item(0, "Hela Orsk built the Varn Bridge.", "Hela Orsk's Varn Bridge, 1894")
+_SHARED_YEAR = _item(0, "The Varn Bridge dates from 1894.", "Hela Orsk's Varn Bridge, 1894")
+_ONCE_MORE = ("The Varn Bridge dates from 1894.", "The Varn Bridge once more")
+
+
+async def test_an_excerpt_two_facts_share_is_asked_again_offering_null_as_the_answer() -> None:
+    client = _FakeScriptedClient(
+        [
+            _listing(_SHARED_BUILDER, _SHARED_YEAR, _item(1, *_ONCE_MORE, restates="Hela Orsk's Varn Bridge, 1894")),
+            _repair(*_ONCE_MORE, restates=None),
+        ]
+    )
+
+    claims = await _extractor(client).extract(_SHARED, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[2].restates is None, "null leaves the restatement to be checked on its own"
+    failure = client.calls[1]["user"]
+    assert "the excerpt of 2 earlier world claims stating different facts, so no quote can name one of them" in failure
+    assert "give null, which is the right answer here" in failure
+    assert (
+        "When that excerpt is also the excerpt of another claim stating a different fact, give null"
+        in (client.calls[0]["system"])
+    )
+
+
+async def test_an_excerpt_a_claim_and_its_restatement_share_names_the_first_of_them() -> None:
+    shared = "Hela Orsk's Varn Bridge, 1894"
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _SHARED_BUILDER,
+                _item(0, "Hela Orsk built the bridge.", shared, restates=shared),
+                _item(1, "Hela Orsk built the Varn Bridge.", "The Varn Bridge once more", restates=shared),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(_SHARED, ledger=RoleUsageLedger(role="judge"))
+
+    assert [claim.restates for claim in claims] == [None, 0, 0], "both holders state one fact: the first of them"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        pytest.param("1", id="a-counted-place-as-a-string"),
+        pytest.param("1894", id="a-year-one-excerpt-holds"),
+        pytest.param("Var", id="a-fragment"),
+        pytest.param(",;", id="punctuation"),
+    ],
+)
+async def test_a_number_or_a_fragment_is_no_quote_even_where_one_excerpt_holds_it(quote: str) -> None:
     client = _FakeScriptedClient(
         [
             _listing(
                 _OPENED,
                 _BUILT_BY,
                 _OLDER,
-                # A letter every earlier excerpt holds names no one of them.
-                _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="e"),
+                _item(3, "The Varn Bridge opened in 1894.", "The Varn Bridge opened in 1894", restates=quote),
             ),
-            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="built by Hela Orsk"),
+            _repair(
+                "The Varn Bridge opened in 1894.",
+                "The Varn Bridge opened in 1894",
+                restates="The Varn Bridge opened in 1894",
+            ),
         ]
     )
 
     claims = await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
 
-    assert claims[3].restates == 1
-    failure = client.calls[1]["user"]
-    assert 'its restates quotes "e", which the excerpts of 3 earlier world claims stating different facts hold' in (
-        failure
+    assert claims[3].restates == 0
+    assert (
+        f"its restates quotes {json.dumps(quote)}, a number or a fragment, which names no claim"
+        in (client.calls[1]["user"])
     )
-    assert '"The Varn Bridge opened in 1894"; "built by Hela Orsk"; "The mill is older"' in failure
-    assert "- excerpt: built by Hela Orsk\n  claim: Hela Orsk built the Varn Bridge.\n  scope: world" in failure
 
 
 @pytest.mark.parametrize(
-    ("quote", "named"),
+    ("cell", "listed", "quote", "named"),
     [
-        pytest.param("e", "which the excerpts of 3 earlier world claims stating different facts hold", id="ambiguous"),
-        pytest.param("built by Ida Venn", "and no world claim listed before it has an excerpt", id="absent"),
+        pytest.param(
+            _SHARED,
+            (_SHARED_BUILDER, _SHARED_YEAR, _item(1, *_ONCE_MORE)),
+            "Hela Orsk's Varn Bridge, 1894",
+            "so no quote can name one of them",
+            id="a-shared-excerpt",
+        ),
+        pytest.param(
+            _NESTED,
+            (_YEAR, _ENGINEER, _item(1, *_AGAIN)),
+            "eighty-three: Gareth Jones engineering People Are People",
+            "which could name 2 earlier world claims stating different facts",
+            id="a-widened-quote",
+        ),
+        pytest.param(
+            _LOOP,
+            (_OPENED, _BUILT_BY, _OLDER, _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again")),
+            "built by Ida Venn",
+            "and no world claim listed before it has that excerpt",
+            id="absent",
+        ),
     ],
 )
-async def test_a_quote_naming_no_single_claim_after_the_repair_rounds_fails_the_grading(quote: str, named: str) -> None:
-    restating = _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote)
+async def test_a_quote_naming_no_single_claim_after_the_repair_rounds_fails_the_grading(
+    cell: tuple[Segment, ...], listed: tuple[dict[str, Any], ...], quote: str, named: str
+) -> None:
+    *earlier, restating = listed
+    again = {key: value for key, value in restating.items() if key != "segment"}
     client = _FakeScriptedClient(
         [
-            _listing(_OPENED, _BUILT_BY, _OLDER, restating),
-            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote),
-            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote),
+            _listing(*earlier, {**restating, "restates": quote}),
+            _repair(again["claim"], again["excerpt"], restates=quote),
+            _repair(again["claim"], again["excerpt"], restates=quote),
         ]
     )
 
     with pytest.raises(
-        ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 rounds: claim 3: its restates"
+        ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 rounds: claim \d+: its restates"
     ) as raised:
-        await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+        await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
 
     assert named in str(raised.value)
     assert raised.value.loss == "repair_budget_spent"
@@ -607,7 +737,6 @@ async def test_a_restates_quoting_a_later_claim_is_asked_again_and_the_correctio
     [
         pytest.param("built in 1893 by Hela Orsk", id="held-by-no-excerpt"),
         pytest.param("built in 1894 by Hela Orsk", id="its-own-excerpt"),
-        pytest.param("  ", id="blank"),
     ],
 )
 async def test_a_restates_naming_no_other_claim_is_asked_again(restates: str) -> None:
@@ -621,7 +750,7 @@ async def test_a_restates_naming_no_other_claim_is_asked_again(restates: str) ->
     (claim,) = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
     assert claim.restates is None
-    assert "and no world claim listed before it has an excerpt holding those words" in client.calls[1]["user"]
+    assert "and no world claim listed before it has that excerpt" in client.calls[1]["user"]
 
 
 async def test_an_item_still_failing_after_two_repair_rounds_raises_naming_it_and_every_call_is_billed() -> None:
@@ -796,6 +925,90 @@ def test_a_client_that_names_no_model_is_refused() -> None:
         ClaimExtractor(client=_FakeUnnamedClient())
 
 
+# parity-with: threetears.evals.schema.completion.BoundCompletionClient
+@dataclass
+class _FakeBytePricedClient:
+    """Prices a call by the bytes it sends, and records every prompt it priced and every one it was sent."""
+
+    replies: list[_Reply]
+    model_name: str = _MODEL
+    priced: list[str] = field(default_factory=list)
+    sent: list[str] = field(default_factory=list)
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        del response_format
+        self.priced.append(user)
+        return _bytes_price(system, user)
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+        del response_format
+        self.sent.append(system + "\x00" + user)
+        return self.replies[len(self.sent) - 1]
+
+    async def aclose(self) -> None:
+        """Nothing to release."""
+
+    async def __aenter__(self) -> _FakeBytePricedClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+def _bytes_price(system: str, user: str) -> float:
+    return (len(system.encode()) + len(user.encode())) * 1e-6
+
+
+def _wide(base: int, length: int) -> str:
+    """``length`` characters of four bytes each in UTF-8, letters a fold leaves alone, from ``base`` on."""
+    return "".join(chr(0x20000 + base + at) for at in range(length))
+
+
+#: The headings a repair prompt is cut into, in order: its segment, the claims before it, the item and its failure.
+_REPAIR_PARTS = ("# Claims listed before it\n\n", "# The claim, at position ", "# What is wrong\n\n")
+
+
+def _parts(user: str) -> list[int]:
+    """The bytes of each part of a repair prompt, between its headings."""
+    sizes: list[int] = []
+    rest = user
+    for heading in _REPAIR_PARTS:
+        part, rest = rest.split(heading, 1)
+        sizes.append(len(part.encode()))
+    return [*sizes, len(rest.encode())]
+
+
+async def test_a_repair_naming_every_claim_before_it_costs_no_more_than_the_price_it_was_admitted_at() -> None:
+    """The worst repair the check can ask: many long claims before it, each shown with its excerpt, and a quote every
+    one of their excerpts holds, which the failure lists in full. Every part of the prompt sent fits the part priced, so
+    halving the allowance for the claims before it, or pricing the failure at the floor, is red here."""
+    shared = _wide(30_000, 5)
+    excerpts = [f"{_wide(at * 40, 40)} {shared}" for at in range(60)]
+    cell = (Segment(text="; ".join(excerpts) + ".", unit=0), Segment(text=f"{shared} again", unit=1))
+    listed = [_item(0, _wide(4_000 + at * 150, 150), excerpt) for at, excerpt in enumerate(excerpts)]
+    restating = _item(1, "It is said again.", f"{shared} again", restates=shared)
+    client = _FakeBytePricedClient(
+        [_listing(*listed, restating), _repair("It is said again.", f"{shared} again", restates=None)]
+    )
+    budget = RepairBudget(rounds=1, max_items_per_cell=1)
+    extractor = ClaimExtractor(client=client, repairs=budget)
+
+    one = extractor.price_ceiling(cell)
+    two = ClaimExtractor(client=client, repairs=RepairBudget(rounds=1, max_items_per_cell=2)).price_ceiling(cell)
+    claims = await extractor.extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert one is not None and two is not None
+    assert claims[-1].restates is None
+    system, user = client.sent[1].split("\x00")
+    assert "which could name 60 earlier world claims stating different facts" in user
+    assert _bytes_price(system, user) <= two - one, "the repair sent costs no more than its share of the ceiling"
+    (priced,) = {prompt for prompt in client.priced if "# What is wrong" in prompt}
+    for sent_bytes, priced_bytes, part in zip(
+        _parts(user), _parts(priced), ("segment", "earlier", "item", "failure"), strict=True
+    ):
+        assert sent_bytes <= priced_bytes, f"the repair's {part} outgrew the part priced"
+
+
 async def test_the_hosts_guidance_reaches_both_prompts() -> None:
     client = _FakeScriptedClient(
         [
@@ -813,7 +1026,7 @@ async def test_the_hosts_guidance_reaches_both_prompts() -> None:
 #: The identity of :func:`_extractor` over a client of :data:`_MODEL`, from the shipped prompts, schemas, fold and
 #: budgets. Produced by ``ClaimExtractor.identity`` itself; it moves with any change to them, and with the fold's
 #: tables or Unicode version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/claims|claims:9916791814e3"
+_PINNED_IDENTITY = "scripted/claims|claims:017fd2c3f122"
 
 #: The identity the same extractor had while ``restates`` named its original by position in the list. Grades listed
 #: under it never pool with grades whose restatements were named by quote.

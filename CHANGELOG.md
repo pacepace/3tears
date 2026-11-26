@@ -11,10 +11,13 @@ packages (bumped in lock-step).
 **Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it
 repeats, and checked only that the position was earlier and of the same scope. Lists run to a hundred claims and the
 model miscounts, so a wrong target passed, and since a restatement is never asked about on its own it took that
-claim's verdict. A restatement now quotes the earlier claim's excerpt, and the extractor resolves the quote among the
-excerpts of the earlier claims of its scope. A quote no earlier excerpt holds, or that excerpts of different facts
-hold, is asked again with the excerpts shown, and fails the cell's criterion as `repair_budget_spent` if it still names
-no single claim. A sentence said word for word in two segments resolves to its first saying.
+claim's verdict. A restatement now quotes the earlier claim's whole excerpt, and the extractor resolves the quote among
+the excerpts of the earlier claims of its scope: an excerpt equal to the quote names its claim ahead of a longer one
+that holds it, and a quote equal to none names a claim only where it could name no other. A number, a fragment, a quote
+no earlier excerpt matches, or one that could name claims of different facts is asked again with the excerpts shown;
+where two facts share the excerpt, the repair offers null, which leaves the claim to be checked on its own. A quote
+still naming no single claim fails the cell's criterion as `repair_budget_spent`. A sentence said word for word in two
+segments resolves to its first saying.
 
 **Changed:** the extractor's prompts and reply schema change, so every claims criterion's fingerprint moves: grades
 made before this never pool with grades made after it, and a repeat of an older grade is refused as another

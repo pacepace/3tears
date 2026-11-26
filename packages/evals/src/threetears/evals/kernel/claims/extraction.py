@@ -19,19 +19,24 @@ examples, which stay in the host's code and enter the identity.
 and the excerpt kept is the segment's text at the offsets found, never the model's string.
 
 **A restatement names its original by quoting it, never by counting.** A claim that states a fact an earlier claim
-already stated gives, as ``restates``, that earlier claim's excerpt, and code resolves it: the quote is looked for by
-:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` in the excerpt of each claim of the same scope listed
-before it (in an earlier segment, or earlier in the list within the same segment), and the claim it names is the first
-claim of that one's chain. The quote is matched against excerpts rather than segments, so a line said word for word in
-two segments resolves to the one said first, and two claims cut from one sentence stay apart. A quote that no earlier
-excerpt holds, or that excerpts of claims stating different facts hold, names no single claim and is a failed check.
-A position in a list of a hundred claims is easily miscounted, and a miscounted one would pass every check and lend
-the restatement another claim's verdict, since a restatement is never asked about on its own.
+already stated gives, as ``restates``, that earlier claim's whole excerpt, and code resolves it among the claims of
+the same scope listed before it (in an earlier segment, or earlier in the list within the same segment); the claim it
+names is the first claim of that one's chain. A quote equal to an earlier excerpt, under the verbatim fold, names that
+claim, ahead of any claim whose longer excerpt merely holds it. A quote equal to none names a claim only where it
+stands, on word boundaries, in exactly one earlier excerpt and holds no other earlier excerpt whole, so a quote of one
+claim's excerpt with a neighbour's words added never silently names the neighbour. The quote is matched against
+excerpts rather than segments, so a line said word for word in two segments resolves to the one said first, and two
+claims cut from one sentence stay apart. A number or a fragment of fewer than :data:`_SHORTEST_QUOTE` characters, a
+quote no earlier excerpt matches, and one that could name claims stating different facts name no single claim, and
+each is a failed check. A position in a list of a hundred claims is easily miscounted, and a miscounted one would pass
+every check and lend the restatement another claim's verdict, since a restatement is never asked about on its own.
 
 **Repair, not refusal.** A reply that will not parse is asked again in full, naming why, twice, then raises. An item
 that fails a check (an excerpt not in its segment, a ``restates`` quote that names no single earlier claim) is asked
-again alone, with its failure named, in up to two repair rounds; one still failing then raises. A quote can always be
-repaired: to more of the excerpt it means, or to null, which leaves the claim to be checked on its own. Under a criterion's
+again alone, with its failure named, in up to two repair rounds; one still failing then raises. A failed quote can
+always be repaired: to the whole excerpt of the claim it means, which names that claim wherever its excerpt is no other
+claim's, or to null, which leaves the claim to be checked on its own and is the right answer where two claims stating
+different facts share one excerpt. Under a criterion's
 :class:`~threetears.evals.schema.models.RepairBudget` the rounds are its own and every item asked again counts against
 its ``max_items_per_cell``, which the extraction holds as its own step's, apart from the verify steps'. A failing item is never dropped or
 downgraded, since dropping the claims a model found hardest to quote would bias every reading counted over them. A
@@ -87,6 +92,10 @@ _REPAIR_ROUNDS: Final = 2
 #: The role every extraction call is billed under: it reads the candidate's output, as a judge does.
 _ROLE: Final = "judge"
 
+#: The fewest characters, folded, a ``restates`` quote holds: fewer is a number or a fragment of a word, which an
+#: excerpt can hold by chance (a counted place written as a string, a digit of a year), never a claim's excerpt.
+_SHORTEST_QUOTE: Final = 4
+
 #: Something other than whitespace: what a claim's text and an excerpt must hold.
 _NOT_BLANK: Final = r"\S"
 
@@ -118,8 +127,9 @@ _RULES: Final = (
     "still a claim.\n"
     '- scope: "session" when the claim is about this output or session itself; "world" otherwise.\n'
     "- restates: when the claim states a fact an earlier claim of the same scope in the list already stated, that "
-    "earlier claim's excerpt, copied exactly as you gave it, and enough of it that no other earlier claim's excerpt "
-    "holds the same words; otherwise null. Never a number: the excerpt is what names the claim."
+    "earlier claim's whole excerpt, copied exactly as you gave it, no more and no less; otherwise null. Never a number: "
+    "the excerpt is what names the claim. When that excerpt is also the excerpt of another claim stating a different "
+    "fact, give null: the claim is then checked on its own."
 )
 
 _GUIDANCE_HEADING: Final = "\n\n# Notes on what counts as a claim here\n\n"
@@ -397,9 +407,11 @@ class ClaimExtractor:
         """The most extracting ``segments`` can cost on this extractor's client, before any call is made.
 
         Every attempt of the listing call, its retries priced with a failure named at the echo allowance
-        (:func:`echo_chars`), and the most items the repair budget lets it ask again, each priced at its largest
-        segment, the allowance for the claims listed before it (twice over: their propositions, and the excerpts and
-        scopes shown beside them), the item and its failure.
+        (:func:`echo_chars`), and the most items the repair budget lets it ask again, each priced at its parts: its
+        largest segment; the claims listed before it, at one allowance for their propositions and labels, as a list of
+        claims is priced, and one more for the excerpts shown beside them; the item, at the allowance of its largest
+        segment; and its failure, at one allowance for the excerpts a quote that could name several claims lists, and
+        one more for the quote itself and the fixed text of every check.
 
         :param segments: The cell's segments.
         :return: The ceiling in dollars, or None when the client cannot price a call, or no repair budget bounds the
@@ -422,17 +434,20 @@ class ClaimExtractor:
             attempts=_ATTEMPTS,
         )
         longest = max(cell, key=lambda segment: len(segment.text.encode("utf-8")))
+        texts = [segment.text for segment in cell]
         repair = call_ceiling(
             self.client,
             system=self._repair_system_prompt,
             user=_REPAIR_TEMPLATE.format(
                 segment=len(cell),
                 text=longest.text,
-                earlier=filler(2 * echo_chars(*(segment.text for segment in cell))),
+                # The propositions with their labels, and the excerpts beside them: two allowances of the cell's text.
+                earlier=filler(echo_chars(*texts) + echo_chars(*texts)),
                 # The widest place a claim can be printed at: a bound on its digits, never a count of claims.
                 position=_WIDEST_PLACE,
                 listed=filler(echo_chars(longest.text)),
-                failure=echo,
+                # The excerpts an ambiguous quote lists, and the quote with every check's fixed text.
+                failure=filler(echo_chars(*texts) + echo_chars(longest.text)),
             ),
             response_format=self.repair_response_format,
         )
@@ -655,51 +670,81 @@ def _quoted(words: str) -> str:
     return json.dumps(words, ensure_ascii=False)
 
 
+def _on_word_boundaries(quote: str, excerpt: str) -> bool:
+    """Whether ``quote`` stands verbatim in ``excerpt`` (its first occurrence), starting and ending on word boundaries."""
+    span = verbatim_span(quote, excerpt)
+    if span is None:
+        return False
+    start, end = span
+    return (start == 0 or not excerpt[start - 1].isalnum()) and (end == len(excerpt) or not excerpt[end].isalnum())
+
+
 def _restated(listed: Sequence[_ListedClaim], cell: tuple[Segment, ...]) -> list[tuple[int | None, str | None]]:
     """For each item, the first claim of the chain its ``restates`` quote names, by place in ``listed``, and what is
     wrong with the quote: ``(None, None)`` for an item that restates nothing.
 
-    The quote names the earlier claims of the item's scope whose excerpt holds it (:func:`verbatim_span`), and each
-    of those stands for the first claim of its own chain, so a quote held by an original and by its restatement names
-    one claim. Held by none, or by claims standing for more than one first claim, it names no single claim. Items are
-    resolved in the order they appear, so every claim a quote can name was resolved before it. A claim whose own quote
-    failed stands for itself until it is repaired.
+    Only claims of the item's scope listed before it can be named, and each stands for the first claim of its own chain,
+    so claims of one chain are one name. A quote equal, folded, to some of their excerpts names those; equal to none, it
+    names those whose excerpt holds it on word boundaries together with those whose whole excerpt it holds. It names a
+    claim when all it names stand for one first claim. A quote of fewer than :data:`_SHORTEST_QUOTE` characters or with
+    no letter names nothing. Items are resolved in the order they appear, so every claim a quote can name was resolved
+    before it. A claim whose own quote failed stands for itself until it is repaired.
     """
     order = _order(listed)
     kept = _kept_excerpts(listed, cell)
-    folded = [VERBATIM_FOLD.fold(excerpt)[0] for excerpt in kept]
+    folded = [VERBATIM_FOLD.fold(excerpt)[0].strip() for excerpt in kept]
     resolved: dict[int, tuple[int | None, str | None]] = {}
     for rank, position in enumerate(order):
         item = listed[position]
         if item.restates is None:
             resolved[position] = (None, None)
             continue
+        quote = _quoted(item.restates)
         sought = VERBATIM_FOLD.fold(item.restates)[0].strip()
-        holders = [
-            other
-            for other in order[:rank]
-            if listed[other].scope == item.scope
-            and sought
-            # The folded containment is a cheap first pass; the verbatim check is the rule.
-            and sought in folded[other]
-            and verbatim_span(item.restates, kept[other]) is not None
-        ]
-        # Each holder stands for the first claim of its chain, itself where it restates nothing.
-        firsts = sorted({first if (first := resolved[other][0]) is not None else other for other in holders})
+        if len(sought) < _SHORTEST_QUOTE or not any(character.isalpha() for character in sought):
+            resolved[position] = (
+                None,
+                f"its restates quotes {quote}, a number or a fragment, which names no claim; restates copies the whole "
+                f"excerpt of the earlier {item.scope} claim this one restates, exactly as listed, or is null",
+            )
+            continue
+        earlier = [other for other in order[:rank] if listed[other].scope == item.scope]
+        named = [other for other in earlier if folded[other] == sought]
+        whole = bool(named)
+        if not whole:
+            named = [
+                other
+                for other in earlier
+                if folded[other]
+                # The folded containment is a cheap first pass; the verbatim check on word boundaries is the rule.
+                and (
+                    (sought in folded[other] and _on_word_boundaries(item.restates, kept[other]))
+                    or folded[other] in sought
+                )
+            ]
+        # Each claim named stands for the first claim of its chain, itself where it restates nothing.
+        firsts = sorted({first if (first := resolved[other][0]) is not None else other for other in named})
         if not firsts:
             resolved[position] = (
                 None,
-                f"its restates quotes {_quoted(item.restates)}, and no {item.scope} claim listed before it has an "
-                f"excerpt holding those words; restates copies the excerpt of the earlier {item.scope} claim this one "
-                "restates, or is null",
+                f"its restates quotes {quote}, and no {item.scope} claim listed before it has that excerpt; restates "
+                f"copies the whole excerpt of the earlier {item.scope} claim this one restates, exactly as listed, or "
+                "is null",
             )
-        elif len(firsts) > 1:
-            excerpts = "; ".join(dict.fromkeys(_quoted(kept[other]) for other in holders))
+        elif len(firsts) > 1 and whole:
             resolved[position] = (
                 None,
-                f"its restates quotes {_quoted(item.restates)}, which the excerpts of {len(firsts)} earlier "
-                f"{item.scope} claims stating different facts hold ({excerpts}); copy more of the excerpt of the one "
-                "this claim restates, so that no other holds the words, or give null where they share one excerpt",
+                f"its restates quotes {quote}, the excerpt of {len(firsts)} earlier {item.scope} claims stating "
+                "different facts, so no quote can name one of them: give null, which is the right answer here and "
+                "leaves this claim to be checked on its own",
+            )
+        elif len(firsts) > 1:
+            excerpts = "; ".join(dict.fromkeys(_quoted(kept[other]) for other in named))
+            resolved[position] = (
+                None,
+                f"its restates quotes {quote}, which could name {len(firsts)} earlier {item.scope} claims stating "
+                f"different facts ({excerpts}); copy the whole excerpt of the one this claim restates, exactly as "
+                "listed and no more, or give null",
             )
         else:
             resolved[position] = (firsts[0], None)
