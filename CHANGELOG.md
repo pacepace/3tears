@@ -21,14 +21,7 @@ left to the model as within any sentence. Lower-case and longer abbreviations ("
 "Sept. 1931"), and a short capitalised one before a lower-case word ("Acme Inc. was"), still end a sentence. `!`, `?`,
 line breaks and the semicolon rule are unchanged.
 
-**Fixed:** a key fact of two sentences could not be cited for its second, whose words need not name the entity ("It
-followed in 1932."): the subject, named only in the line's `A key fact about <entity>:` heading, stood in another
-sentence than the value, so the citation was asked again and, repeated, lost the criterion. A key fact is about its one
-entity by construction, so a subject inside that heading now binds to a value anywhere in the fact's line. Which of
-the fact's sentences states the claim's value is the model's to read, as within one sentence. A subject named inside
-the fact, and every passage, keep the one-sentence rule.
-
-**Changed:** both rules enter the claim verifier's identity and the web step's, so every claims criterion's fingerprint
+**Changed:** the rule enters the claim verifier's identity and the web step's, so every claims criterion's fingerprint
 moves, and grades made before and after this never pool.
 
 **For hosts:** nothing to change; a host re-judging stored cells with a claims criterion gets a new fingerprint.

@@ -45,12 +45,12 @@ measures what remains. What is stored is the evidence's own slice, never the mod
 the rule as a passage is, since its support is what reads ``supported`` first: a reply citing it with no quote, with no
 value, or with a value the fact does not state (the claim's own, where the fact gives another) is asked again. What
 the check cannot catch is a value the fact does state, cited as support for a claim that states another: binding the
-stance to the value stays the model's, as for a passage, and the stored value span shows which words it read. One
-difference: a key fact is about the one entity its heading names (``A key fact about <entity>:``) by construction,
-where a passage may move from one subject to the next. So a subject inside that heading binds to a value in any
-sentence of the fact, and a fact of two sentences can be cited for its second, whose own words may never name the
-entity ("It followed in 1932."). Which of the fact's sentences states the claim's value is then the model's to read,
-as within one sentence. A subject named inside the fact itself takes the one-sentence rule, as in a passage.
+stance to the value stays the model's, as for a passage, and the stored value span shows which words it read. The
+known limit: a key fact of several sentences is cited for the sentence that names its subject. Its line's heading (``A
+key fact about <entity>:``) takes the one-sentence rule as any text does, so a subject quoted from the heading binds
+only to a value before the fact's first sentence end; a later sentence that never names the entity ("It followed in
+1932.") cannot be cited alone. Binding the heading's entity across sentences would let "Ann Lee was born in Leeds. Her
+brother moved to York." support "Ann Lee moved to York", and a false ``supported`` costs more than a repair.
 
 **Precedence among case documents.** A case document may override others (``EvidenceDocument.overrides``: house
 rules over a rulebook, an erratum over its text, a policy update over the old policy), following the chain. The truth
@@ -238,11 +238,8 @@ _USER_TEMPLATE: Final = "# Evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
 _FACT_TEMPLATE: Final = "{ref}. {fact}"
 
-#: What a key fact's line says the fact is about, before the fact itself.
-_FACT_HEADING: Final = "A key fact about {entity}:"
-
 #: A key fact as a call is shown it after its ref: the text a key citation quotes.
-_FACT_LINE: Final = _FACT_HEADING + " {claim}"
+_FACT_LINE: Final = "A key fact about {entity}: {claim}"
 
 _PASSAGE_TEMPLATE: Final = "{ref}. From {title}, characters {start} to {end}:\n{text}"
 
@@ -300,12 +297,6 @@ _SENTENCE_RULE: Final = (
     "initials or a dotted acronym (single letters, each but the last followed by '.'), whatever follows, nor after a "
     "token of 2 to 3 letters, the first upper case and the rest lower case, followed by spaces and an upper-case "
     "letter or a digit"
-)
-
-#: Where a key fact's line takes no sentence-break check, in words: part of the identity.
-_HEADING_RULE: Final = (
-    "headings-v1: a subject inside a key fact's 'A key fact about <entity>:' heading binds to a value anywhere in "
-    "that fact's line, across its sentences; a passage has no heading"
 )
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
@@ -714,18 +705,16 @@ class _Shown:
     def passage(self, ref: str) -> _Passage | None:
         return next((passage for shown, passage in self.passages if shown == ref), None)
 
-    def quotable(self, ref: str) -> tuple[str, QuotedKind, int]:
-        """The text a citation of ``ref`` quotes, what it is, and how many of its first characters say what all of it
-        is about: a key fact's line as shown after its ref, with its heading's length, or a passage's text, with
-        none."""
+    def quotable(self, ref: str) -> tuple[str, QuotedKind]:
+        """The text a citation of ``ref`` quotes, and what it is: a key fact's line as shown after its ref, or a
+        passage's text."""
         fact = next(((entity, fact) for shown, entity, fact in self.facts if shown == ref), None)
         if fact is not None:
-            entity, stated = fact
-            return _fact_line(entity, stated), "key fact", len(_FACT_HEADING.format(entity=entity))
+            return _fact_line(*fact), "key fact"
         passage = self.passage(ref)
         if passage is None:
             raise KeyError(ref)
-        return passage.document.text[passage.start : passage.end], "passage", 0
+        return passage.document.text[passage.start : passage.end], "passage"
 
     def numbered(self) -> str:
         """The facts and passages as a verify prompt numbers them, one block each: evidence, not a tool's result."""
@@ -1530,16 +1519,14 @@ def _fact_line(entity: str, fact: ReferenceFact) -> str:
     return _FACT_LINE.format(entity=entity, claim=fact.claim)
 
 
-def _quoted_citation(
-    ref: str, cited: _Cited, shown: str, kind: QuotedKind, about: int
-) -> tuple[ClaimCitation | None, str | None]:
+def _quoted_citation(ref: str, cited: _Cited, shown: str, kind: QuotedKind) -> tuple[ClaimCitation | None, str | None]:
     """A citation checked: its quote a stretch of the text shown under ``ref`` (a passage's, or a key fact's line),
-    its subject and value inside that quote and in one sentence or row of it, or its subject in a key fact's heading.
+    its subject and value inside that quote and in one sentence or row of it.
 
     :return: The stored citation, or the failure named.
     """
     checked, fault = check_quote(
-        ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown, kind=kind, about=about
+        ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown, kind=kind
     )
     if checked is None:
         return None, fault
@@ -1573,7 +1560,6 @@ def check_quote(
     value: str | None,
     shown: str,
     kind: QuotedKind = "passage",
-    about: int = 0,
 ) -> tuple[CheckedQuote | None, str | None]:
     """Check one quote of a text a call was shown: one unbroken stretch of it, at most
     :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, with its subject and value inside it and no
@@ -1588,8 +1574,6 @@ def check_quote(
         of its document, or a key fact's line.
     :param kind: What ``shown`` is, as a failure names it: ``passage`` (a web window is named one too) or
         ``key fact``.
-    :param about: How many of ``shown``'s first characters say what all of it is about: a key fact's heading
-        (``A key fact about <entity>:``), or 0. A subject inside them binds to a value anywhere in ``shown``.
     :return: The checked quote, or the failure named, as a repair tells it.
     """
     if quote is None or not quote.strip():
@@ -1608,10 +1592,6 @@ def check_quote(
         if found is None:
             return None, _FAULTS["span_outside"].format(ref=ref, what=what)
         spans[what] = TextSpan(start=found[0], end=found[1])
-    if span[0] + spans["subject"].end <= about:
-        # A key fact is about its one entity by construction, so the entity its heading names is the subject of
-        # every sentence of the fact.
-        return CheckedQuote(quote=held, subject=spans["subject"], value=spans["value"]), None
     first, second = sorted((spans["subject"], spans["value"]), key=lambda found: found.start)
     # The quote is the shown text's own, not a model's: where its sentences break is structure, read by position.
     if _breaks_between(held, first.end, second.start):
@@ -1651,11 +1631,9 @@ def _ends_no_sentence(text: str, at: int) -> bool:
 
 
 def _sentence_break_definition() -> list[Any]:
-    """The sentence-break rule as an identity reads it: its revision and a key fact heading's, in words, and the
-    patterns and length it uses."""
+    """The sentence-break rule as an identity reads it: its revision in words, and the patterns and length it uses."""
     return [
         _SENTENCE_RULE,
-        _HEADING_RULE,
         _SENTENCE_END.pattern,
         _TOKEN_BEFORE.pattern,
         _INITIALS.pattern,
