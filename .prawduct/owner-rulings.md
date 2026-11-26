@@ -66,3 +66,15 @@ session marker, and the suite had run on that exact tree.
 cf1fb6585 plus the search extract fix, #1306) now, before a release carries #1306, the owner said: "Yes agreed". That
 moves search, interfaces, observe and models from PyPI 0.77.0 to that one git commit and replaces `media-contracts`
 with `interfaces`. In the same answer the owner agreed to push the 2026-11-24 rulings onto #1305's branch.
+
+**2026-11-26.** On the model key pool's open questions (`docs/model-key-pool-requirements.md` §6), the owner chose:
+- Q1, where the durable spend and state store lives: "Core primitive (Recommended)", a budget ledger in
+  `threetears.core.coordination`.
+- Q2, whether the tracker's `cost_usd` also prices cache reads and writes: "Yes, same release (Recommended)", with a
+  release note.
+- Q4, whether a call waits for the earliest retry-after when every key is only rate-limited: "Per-pool cap, default 0
+  (Recommended)".
+- Q3 ("spread" policy) was not asked; v1 follows the doc's recommendation and ships no "spread".
+On how to build it without governance loaded: "1305 has the prawduct onboarding. Should we switch to that branch,
+reload plugins, and build on top of that?" The key pool branch `feat/model-key-pool` stacks on #1305's branch. Landed in
+the requirements doc §6.
