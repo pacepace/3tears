@@ -5692,28 +5692,48 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: None
         :raises ValueError: when the table is stamped and its store cannot mark a key gone
         """
+        if self.schema.stamps_epoch and not self.schema.versioned:
+            await self.mark_gone_in_store(entity_id)
+            return
         self._refuse_unfiled("delete_from_store")
         store = self._durable_store()
         if store is None:
             return
-        pk_values = self.normalize_pk(entity_id)
-        if self.schema.stamps_epoch and not self.schema.versioned:
-            if not isinstance(store, GoneMarkingStore):
-                raise ValueError(
-                    f"{type(self).__name__}.delete_from_store: {self.table_name} is stamped, and its store cannot "
-                    f"mark a key gone"
-                )
-            await store.mark_gone(
-                self.schema.name,
-                [tuple(pk_values)],
-                epoch=CallerTransaction.stamp_for(None, self.table_name),
-                scope=None,
-                max_rows=1,
-                conn=None,
-            )
-            return
-        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        pk = dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True))
         await store.delete(self.schema.name, pk)
+
+    async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
+        """mark one stamped row gone in place: the store's ``mark_gone``, one keyed ``UPDATE``, its stamp drawn from
+        ``conn``'s transaction when it joins one, else from the process clock as its own statement
+        (``CallerTransaction.stamp_for``).
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the connection of the caller's transaction, or None for one statement on the pool
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table is not stamped, or its store cannot mark a key gone
+        """
+        self._refuse_unfiled("delete_from_store")
+        if not self.schema.stamps_epoch or self.schema.versioned:
+            raise ValueError(f"{type(self).__name__}.mark_gone_in_store: {self.table_name} is not ROW_STAMPED")
+        store = self._durable_store()
+        if store is None:
+            return
+        if not isinstance(store, GoneMarkingStore):
+            raise ValueError(
+                f"{type(self).__name__}.delete_from_store: {self.table_name} is stamped, and its store cannot "
+                f"mark a key gone"
+            )
+        await store.mark_gone(
+            self.schema.name,
+            [tuple(self.normalize_pk(entity_id))],
+            epoch=CallerTransaction.stamp_for(conn, self.table_name),
+            scope=None,
+            max_rows=1,
+            conn=conn,
+        )
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize row dict to JSON bytes for L2 storage.

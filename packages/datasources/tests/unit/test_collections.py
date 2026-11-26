@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -977,6 +979,14 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
             return [{"id": table_id} for table_id in bound]
 
         pool.fetch = AsyncMock(side_effect=_fetch)
+
+        @asynccontextmanager
+        async def _itself(**_options: Any) -> AsyncIterator[Any]:
+            yield pool
+
+        # a stamped parent's delete takes its cascade and its gone mark on one connection, in one transaction
+        pool.acquire = MagicMock(side_effect=_itself)
+        pool.transaction = MagicMock(side_effect=_itself)
         templates.l3_pool = pool
 
         await templates.delete(template_id)

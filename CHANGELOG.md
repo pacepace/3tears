@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: quiet-time cleanup runs on every database and never trips a foreign key
+
+**Added:** ``LoadGate.from_change_log(on_record, quiet_after=QUIET_AFTER_SECONDS)``: a load gate for a database with no
+scope epochs (the hub's), fed by the change log's own records as this process hears them. A record heard stirs it at
+once (cleanup stops before its next batch, no L3 read), and quiet is ONE timer, cancelled and armed again on each
+record (30 s by default, ``quiet_cleanup.QUIET_AFTER_SECONDS``): when it fires cleanup resumes from where it stopped.
+Nothing polls L3. ``LoadGate(epochs)`` (reports) is the same gate fed by ``ScopeEpochs``, unchanged.
+``LoadGate.names_scopes`` says whether a quiet look names scopes; ``QuietCleanup`` refuses a versioned table with a gate
+that names none (``ValueError``).
+
+**Changed (breaking):** ``LoadGate.look()`` answers the scopes to clean (a ``frozenset``, empty from the change log) or None while
+loading, where it answered the ``EpochSnapshot``.
+
+**Fixed:** a stamped parent's delete marked the parent gone, then its declared cascades, so each child carried a newer
+epoch than its parent: cleanup could reach the parent below the floor while a child was above it, and under a
+``NO ACTION`` foreign key the parent's ``DELETE`` failed and ``clear_stamped_gone`` raised. ``BaseCollection.delete``
+now takes the cascades first, deepest first (``apply_delete_cascade(..., conn=)``), then marks the parent
+(``BaseCollection.mark_gone_in_store(entity_id, conn=)``, new; the datasources' stamped collections use it), all in one
+``CallerTransaction``, whose ``s_min`` (new property) the delete's advances name. Every child's epoch is at most its
+parent's. And cleanup is FK-correct whatever it meets: when the database refuses a page's ``DELETE`` for a foreign key,
+its rows go a key at a time, each still referenced is left, counted (``threetears_quiet_cleanup_referenced_total`` by
+table; ``StampedSweep.referenced``) and never raised, and the pass is not recorded finished, so a later one removes it.
+
+**Fixed:** a table's reset markers (``TABLE_RESET_SCOPE``, empty prefix) were never removed: cleanup read run markers
+by real scope values alone. Cleanup now removes each one below the floor by its key, after the table's scopes, its
+progress under ``(table_name, TABLE_RESET_SCOPE)`` so a round whose floor has not moved reads none
+(``threetears_quiet_cleanup_removed_total{kind="reset_marker"}``).
+
 ### core: a restore from the tables is as exact as the ring: every invalidation column, every reset
 
 The change-note ring's notes carried a row's key and every declared invalidation column, and a ``TRUNCATE`` left a

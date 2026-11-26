@@ -339,6 +339,28 @@ async def test_a_gone_run_goes_row_by_row_and_then_its_marker(world: _World) -> 
     assert world.markers() == set()
 
 
+async def test_a_reset_marker_below_the_floor_is_removed_and_one_above_it_kept(world: _World) -> None:
+    """Flips if a table's reset marker (scope chr(30), empty prefix) below F is never removed (cleanup read real scope
+    values alone), one at or above F (a restore may still read it) is removed, a run marker is taken for one, or a round
+    whose floor has not moved reads the markers again."""
+    reset = f"INSERT INTO {RUN_MARKERS_TABLE} VALUES (?, chr(30), '', ?)"
+    world.conn.execute(reset, ["cl_results", _at(10)])
+    world.conn.execute(reset, ["cl_results", _at(150)])
+    world.conn.execute(reset, ["cl_projections", _at(20)])
+    # a run marker above the floor: not a reset's, and not yet past F
+    world.conn.execute(f"INSERT INTO {RUN_MARKERS_TABLE} VALUES ('cl_projections', 'NC', 'NC\x1f7', ?)", [_at(130)])
+    swept = await world.cleanup(_at(100)).clean()
+    assert swept.finished and swept.removed == 2
+    held = {
+        tuple(row) for row in world.conn.execute(f"SELECT table_name, scope, epoch FROM {RUN_MARKERS_TABLE}").fetchall()
+    }
+    assert held == {("cl_results", "\x1e", _at(150)), ("cl_projections", "NC", _at(130))}
+    world.spy.statements.clear()
+    again = await world.cleanup(_at(100)).clean()
+    assert again.finished and again.removed == 0
+    assert all(CLEANUP_PROGRESS_TABLE in query for query in world.spy.statements), world.spy.statements
+
+
 # -- only while nothing loads -----------------------------------------------------------------------------------------
 
 

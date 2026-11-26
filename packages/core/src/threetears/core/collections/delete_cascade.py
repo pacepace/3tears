@@ -19,10 +19,10 @@ two itself, around its statement.
 **A stamped parent's delete runs no foreign-key action** (append-only L3, decision 2): its row is marked gone in place
 (``ROW_STAMPED``), never deleted, so the database's ``ON DELETE CASCADE`` / ``SET NULL`` never fires, and the rows
 it would have reached stay as they were (a deleted group's grants still granting). :func:`apply_delete_cascade` takes
-each declared action itself, through the child's collection, once the parent is marked gone: a ``CASCADE`` marks the
-child rows gone (a stamped child) or deletes them by key (any other), a ``SET NULL`` sets the column NULL by key, its
-epoch risen for a stamped child. Each is a stamped write a restore hears, where the database's own action was a write
-no restore could see.
+each declared action itself, through the child's collection, before the parent is marked gone and in one transaction
+with it (so every child's epoch is at most its parent's): a ``CASCADE`` marks the child rows gone (a stamped child) or
+deletes them by key (any other), a ``SET NULL`` sets the column NULL by key, its epoch risen for a stamped child. Each
+is a stamped write a restore hears, where the database's own action was a write no restore could see.
 
 **Nor does it run a ``RESTRICT`` / ``NO ACTION`` guard**: the database refuses a ``DELETE`` of a row its children still
 name, and a gone mark is an ``UPDATE``, so a role with live grants would be marked gone and its grants left granting. A
@@ -311,25 +311,33 @@ def refuse_unappliable_cascade(collection: Any, cascaded: Sequence[CascadedRows]
             )
 
 
-async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows]) -> None:
-    """take each foreign-key action a stamped parent's gone mark left undone, through the child's collection, in the
-    order :func:`read_delete_cascade` read them (a child's own cascades after it): a ``CASCADE`` marks a stamped
-    child's rows gone (the gone flag set, the epoch risen, a row already gone left as it is) or deletes any other
-    child's by key; a ``SET NULL`` sets the column NULL by key, its epoch risen for a stamped child. Keyed ``UPDATE``
-    / ``DELETE`` statements of a batch of keys each, never a whole-table write. Call
-    :func:`refuse_unappliable_cascade` first; :func:`announce_delete_cascade` after, as for a real delete.
+async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows], *, conn: Any = None) -> None:
+    """take each foreign-key action a stamped parent's gone mark leaves undone, through the child's collection, before
+    the parent is marked, deepest first (the reverse of :func:`read_delete_cascade`'s order, which reads a child's own
+    cascades after it): a ``CASCADE`` marks a stamped child's rows gone (the gone flag set, the epoch risen, a row
+    already gone left as it is) or deletes any other child's by key; a ``SET NULL`` sets the column NULL by key, its
+    epoch risen for a stamped child. Keyed ``UPDATE`` / ``DELETE`` statements of a batch of keys each, never a
+    whole-table write. Call :func:`refuse_unappliable_cascade` first; :func:`announce_delete_cascade` after, as for a
+    real delete.
 
-    :param collection: the parent collection, its row marked gone
+    WHY deepest first, on the parent's transaction: each statement's stamp comes from the transaction's rising clock,
+    so every row's epoch is at most the epoch of the row it references, and quiet-time cleanup's floor reaches a child
+    no later than its parent (``BaseCollection._mark_gone_after_cascades``).
+
+    :param collection: the parent collection, about to be marked gone
     :ptype collection: BaseCollection
     :param cascaded: what :func:`read_delete_cascade` read before the gone mark
     :ptype cascaded: Sequence[CascadedRows]
+    :param conn: the connection of the parent's delete transaction (its stamps drawn from it), or None for the
+        parent's L3, a statement each
+    :ptype conn: Any
     :return: nothing
     :rtype: None
     :raises UnappliedCascadeError: when an action cannot be taken
     """
     refuse_unappliable_cascade(collection, cascaded)
     registry = collection.registry
-    for rows in cascaded:
+    for rows in reversed(cascaded):
         if not rows.keys:
             continue
         child = registry.get_collection(rows.table_name)
@@ -343,14 +351,16 @@ async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows]
         )
         stamped = bool(getattr(schema, "stamps_epoch", False))
         # the parent's L3, as the cascade's read of the children went (read_delete_cascade): one database
-        pool = collection.required_l3_pool
+        pool = collection.required_l3_pool if conn is None else conn
         if rows.action == "SET NULL":
-            await update_keyed(pool, schema.name, values=child.stamped_values({rows.column: None}), keys=batch)
+            await update_keyed(
+                pool, schema.name, values=child.stamped_values({rows.column: None}, conn=conn), keys=batch
+            )
         elif stamped:
             await update_keyed(
                 pool,
                 schema.name,
-                values=child.stamped_values({GONE_COLUMN: True}),
+                values=child.stamped_values({GONE_COLUMN: True}, conn=conn),
                 keys=batch,
                 where=[Fragment(f"NOT {quote_identifier(GONE_COLUMN)}")],
             )

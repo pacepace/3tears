@@ -112,6 +112,35 @@ class RecordingPool:
         rows = self._read(sql, params)
         return next(iter(rows[0].values())) if rows else None
 
+    def acquire(self) -> _Held:
+        """the pool as its own connection, as a stamped parent's delete acquires one for its transaction.
+
+        :return: the connection's ``async with``
+        :rtype: _Held
+        """
+        return _Held(self)
+
+    def transaction(self, **_options: Any) -> _Held:
+        """a transaction that keeps no statement of its own (its writes are kept as any other).
+
+        :return: the transaction's ``async with``
+        :rtype: _Held
+        """
+        return _Held(self)
+
+
+class _Held:
+    """an ``async with`` answering the pool it was made from: :class:`RecordingPool`'s connection and transaction."""
+
+    def __init__(self, pool: RecordingPool) -> None:
+        self._pool = pool
+
+    async def __aenter__(self) -> RecordingPool:
+        return self._pool
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
 
 def stamps_in(params: Sequence[Any], before: int) -> list[int]:
     """the epochs among a statement's parameters drawn after ``before`` (a stamp is the one int past it).

@@ -47,6 +47,7 @@ from threetears.core.collections.schema_backed import (
     schema_field_types,
     stamped_values,
 )
+from threetears.core.keyed import Fragment, update_keyed
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     GONE_COLUMN,
@@ -343,6 +344,33 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         :raises AppendOnlyWriteError: when the table is versioned
         """
         return stamped_values(self.schema, values, conn=conn)
+
+    async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
+        """mark one stamped row gone in place: one keyed ``UPDATE`` setting its gone flag, its epoch risen past a fresh
+        stamp (:meth:`stamped_values`, drawn from ``conn``'s transaction when it joins one), a row already gone left as
+        it is. Nothing without an L3 pool.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the connection of the caller's transaction, or None for one statement on the pool
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table is not stamped (``ROW_STAMPED``)
+        """
+        if not self._rises_epoch():
+            raise ValueError(f"{type(self).__name__}.mark_gone_in_store: {self.table_name} is not ROW_STAMPED")
+        pool = self.l3_pool if conn is None else conn
+        if pool is None:
+            return
+        key = dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True))
+        await update_keyed(
+            pool,
+            self.schema.name,
+            values=self.stamped_values({GONE_COLUMN: True}, conn=conn),
+            by=key,
+            where=[Fragment(f'NOT "{GONE_COLUMN}"')],
+        )
 
     def _rises_epoch(self) -> bool:
         """whether this is a stamped table (``ROW_STAMPED``: one row a key, updated in place), whose write sets its epoch

@@ -63,7 +63,7 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraint,
 )
 from threetears.core.ddl.row_epoch import ROW_STAMPED
-from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_rows, read_row, update_keyed
+from threetears.core.keyed import Sort, delete_keyed, keyset_rows, read_row
 from threetears.core.security.secret_refs import validate_ref
 from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 from threetears.datasources.entities import (
@@ -709,22 +709,14 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete a data source table from L3: its row
         marked gone in place, never deleted (``ROW_STAMPED``): the gone flag set and the epoch risen past a fresh stamp
-        (``stamped_values``), so a restore of a lost change log hears the delete.
+        (``mark_gone_in_store``), so a restore of a lost change log hears the delete.
 
         :param entity_id: data source table UUID
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is None:
-            return
-        await update_keyed(
-            self.l3_pool,
-            "datasource_tables",
-            values=self.stamped_values({"gone": True}),
-            by={"id": entity_id},
-            where=[Fragment('NOT "gone"')],
-        )
+        await self.mark_gone_in_store(entity_id)
 
     async def get_by_natural_key(
         self,
@@ -1260,22 +1252,14 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete a template row from L3: its row
         marked gone in place, never deleted (``ROW_STAMPED``): the gone flag set and the epoch risen past a fresh stamp
-        (``stamped_values``), so a restore of a lost change log hears the delete.
+        (``mark_gone_in_store``), so a restore of a lost change log hears the delete.
 
         :param entity_id: template UUID
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is None:
-            return
-        await update_keyed(
-            self.l3_pool,
-            "table_templates",
-            values=self.stamped_values({"gone": True}),
-            by={"id": entity_id},
-            where=[Fragment('NOT "gone"')],
-        )
+        await self.mark_gone_in_store(entity_id)
 
 
 #: ``datasource_customers`` as the hub declares it (hub v001): which customers a ``restricted`` shared datasource

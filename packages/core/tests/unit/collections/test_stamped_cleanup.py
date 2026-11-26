@@ -14,6 +14,7 @@ is a plain column here. The seeded rows, F = 100:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
@@ -31,7 +32,7 @@ from threetears.core.collections.quiet_cleanup import STAMPED_SCOPE, LoadGate, Q
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
 from threetears.core.collections.stamped_cleanup import clear_stamped_gone
-from threetears.core.ddl.row_epoch import ROW_STAMPED, AppendOnlyWriteError
+from threetears.core.ddl.row_epoch import ROW_STAMPED, AppendOnlyWriteError, row_versions
 from threetears.core.keyed import Fragment, ThreadedDuckDB, delete_keyed
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -193,3 +194,136 @@ async def test_cleanups_own_keyed_delete_is_taken_inside_cleanup_deleting(db: du
     assert written.count == 1
     with pytest.raises(AppendOnlyWriteError):
         await delete_keyed(_L3(db), _TABLE, by={"state": "CA", "run_id": "r2"})
+
+
+class _HeardLog:
+    """the change log's records as this process hears them (the hub's follower of the epoch log): each record handed
+    to every listener subscribed, on the loop."""
+
+    def __init__(self) -> None:
+        self._listeners: list[Callable[..., None]] = []
+
+    def on_record(self, listener: Callable[..., None]) -> Callable[[], None]:
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
+
+    def hear(self, record: Any) -> None:
+        for listener in list(self._listeners):
+            listener(record)
+
+
+class _Settled(_Marked):
+    """:class:`_Marked` saying when cleanup recorded its progress: the end of a pass that cleared the table."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        super().__init__(conn)
+        self.recorded = asyncio.Event()
+
+    async def execute(self, query: str, *params: Any) -> str:
+        answered = await super().execute(query, *params)
+        if CLEANUP_PROGRESS_TABLE in query and query.lstrip().startswith("INSERT"):
+            self.recorded.set()
+        return answered
+
+
+class _Timer:
+    """one timer the gate armed: fired by the test, never by the clock."""
+
+    def __init__(self, callback: Callable[..., None], args: tuple[Any, ...]) -> None:
+        self._callback, self._args = callback, args
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        assert not self.cancelled
+        self._callback(*self._args)
+
+
+class _Timers:
+    """the loop's ``call_later``: the gate's quiet timer kept for the test to fire, every other timer the loop's own
+    (``asyncio.sleep``, ``wait_for``)."""
+
+    def __init__(self, real: Callable[..., Any]) -> None:
+        self.armed: list[_Timer] = []
+        self._real = real
+
+    def call_later(self, delay: float, callback: Callable[..., None], *args: Any, context: Any = None) -> Any:
+        if getattr(callback, "__name__", "") != "_fell_quiet":
+            return self._real(delay, callback, *args, context=context)
+        timer = _Timer(callback, args)
+        self.armed.append(timer)
+        return timer
+
+    def live(self) -> list[_Timer]:
+        return [timer for timer in self.armed if not timer.cancelled]
+
+
+async def test_a_change_log_gate_pauses_on_a_heard_record_and_resumes_when_quiet_with_no_l3_poll(
+    db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a database with no scope epochs (the hub) cannot gate cleanup, if a record heard does not pause it, if
+    it does not resume once the log falls quiet, if quiet is anything but one timer re-armed on each record, or if
+    anything reads L3 to learn whether a load is on or the log is quiet (a periodic poll): every statement is cleanup's
+    own work, and none is sent while it waits."""
+    db.execute(
+        f"CREATE TABLE {CLEANUP_PROGRESS_TABLE} (table_name VARCHAR, scope VARCHAR, cleaned_to BIGINT, "
+        "PRIMARY KEY (table_name, scope))"
+    )
+    loop = asyncio.get_running_loop()
+    timers = _Timers(loop.call_later)
+    # the quiet timer is fired by the test, not by the wall clock: what the test asserts waits on nothing timed
+    monkeypatch.setattr(loop, "call_later", timers.call_later)
+    pool = _Settled(db)
+    heard = _HeardLog()
+    gate = LoadGate.from_change_log(heard.on_record, quiet_after=30.0)
+
+    async def window() -> int | None:
+        return 100
+
+    cleanup = QuietCleanup(pool, (_RUNS,), gate, window, run_markers=None)
+    # a load writes: its record pauses cleanup at once, with no read
+    heard.hear({"table": _TABLE})
+    assert gate.stirred
+    assert (await cleanup.clean()).paused
+    assert pool.statements == []
+    runner = asyncio.create_task(cleanup.run())
+    try:
+        # the load goes on: each record cancels the timer and arms one again, and cleanup sends nothing
+        for _ in range(4):
+            await asyncio.sleep(0)
+            heard.hear({"table": _TABLE})
+        await asyncio.sleep(0)
+        assert len(timers.armed) == 5 and len(timers.live()) == 1
+        assert pool.statements == [] and len(_held(db)) == 5
+        # the log falls quiet: the one timer fires and cleanup resumes, clearing the table
+        timers.live()[0].fire()
+        await asyncio.wait_for(pool.recorded.wait(), timeout=5)
+        assert _held(db) == [("CA", "r3"), ("NV", "r1")]
+        # quiet and done: nothing more is sent and no timer armed while it waits (no poll of L3)
+        sent, armed = len(pool.statements), len(timers.armed)
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+        assert len(pool.statements) == sent, pool.statements[sent:]
+        assert len(timers.armed) == armed
+    finally:
+        runner.cancel()
+        gate.close()
+
+
+def test_a_change_log_gate_refuses_versioned_tables() -> None:
+    """Flips if a gate that names no scopes is handed a versioned table, which it would never clean."""
+    versioned = TableSchema(
+        name="sc_versions",
+        primary_key=("state", "run_id"),
+        columns=[Column("state", STRING_TYPE), Column("run_id", STRING_TYPE)],
+        row_epoch=row_versions("state"),
+        l1_eviction=TEST_L1_TABLE,
+    )
+
+    async def window() -> int | None:
+        return None
+
+    with pytest.raises(ValueError, match="names no scopes"):
+        QuietCleanup(object(), (versioned,), LoadGate.from_change_log(_HeardLog().on_record), window)
