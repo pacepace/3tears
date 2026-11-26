@@ -9,7 +9,7 @@ live rows, and a re-create makes a new row with a new id beside the gone one.
 **What is refused** (:class:`LiveUniqueRefusedError`), each a reason the index must stay as it is:
 
 - **a foreign key's target**: PostgreSQL (and YugabyteDB) refuse a foreign key into a partial index, so an index a
-  key references (``namespaces.name``, ``owner_namespace``'s target) stays whole;
+  key references (the hub's ``namespaces.name`` was one until its owner was stored by id) stays whole;
 - **the primary key**: a key whose natural key IS the primary key keeps reviving its gone row in place (a grant keyed
   by its group and scope); a new row could never stand beside it;
 - **an index that is not unique**, and **a table with no** ``gone`` **column** (not stamped).

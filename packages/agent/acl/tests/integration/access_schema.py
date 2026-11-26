@@ -28,7 +28,7 @@ __all__ = [
     "access_schema",
     "empty_tables",
     "loosen_parents",
-    "name_owner_key",
+    "owner_id_key",
     "set_search_path",
 ]
 
@@ -129,20 +129,20 @@ async def empty_tables(conn: Any, *tables: str) -> None:
         await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - a test's own table
 
 
-async def name_owner_key(conn: Any) -> None:
-    """the hub's ``owner_namespace`` foreign key onto a unique namespace name, added to the acl package's
-    ``namespaces`` (whose names are not unique and carry no such key: acl v001): the shape the hub runs, where a
-    namespace's owner is a row named by its name.
+async def owner_id_key(conn: Any) -> None:
+    """the hub's shape, added to the acl package's ``namespaces`` (whose names are not unique and whose owner carries
+    no key: acl v001, v011): a name unique among live rows, and the ``owner_namespace_id`` foreign key onto
+    ``namespace_id``, where a namespace's owner is a row named by its id (hub v199).
 
     :param conn: a connection or pool on the schema
     :ptype conn: Any
     :return: nothing
     :rtype: None
     """
-    await conn.execute("CREATE UNIQUE INDEX uq_namespaces_name ON namespaces (name)")
+    await conn.execute("CREATE UNIQUE INDEX uq_namespaces_name ON namespaces (name) WHERE NOT gone")
     await conn.execute(
-        "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey"
-        " FOREIGN KEY (owner_namespace) REFERENCES namespaces (name)"
+        "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_id_fkey"
+        " FOREIGN KEY (owner_namespace_id) REFERENCES namespaces (namespace_id)"
     )
 
 

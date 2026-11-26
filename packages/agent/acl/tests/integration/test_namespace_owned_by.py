@@ -1,7 +1,8 @@
 """the rows a namespace owns, against a real database.
 
-A namespace's ``owner_namespace`` names another row by NAME, through a foreign
-key onto the unique name index. Deleting an owner while anything still names it
+A namespace's ``owner_namespace_id`` names another row by ID, through a foreign
+key onto ``namespace_id`` (hub v199; its ``owner_namespace`` beside it is the
+owner's name, the evaluator's key). Deleting an owner while anything still names it
 is refused by that key -- so tearing a namespace down means finding everything it
 owns and removing that first. ``NamespaceCollection.list_owned_by`` is the finding
 half. Measured here rather than against a double, because both the partition
@@ -24,7 +25,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import next_epoch
 
-from .access_schema import access_pool, access_schema, empty_tables, name_owner_key
+from .access_schema import access_pool, access_schema, empty_tables, owner_id_key
 
 # one schema the acl migrations built, for the module's tests (each starts from empty tables)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
@@ -38,7 +39,7 @@ async def _module_schema(db_container: str) -> AsyncIterator[str]:
     async with access_schema(db_container, "nsowned") as schema:
         pool = await access_pool(db_container, schema, max_size=1)
         try:
-            await name_owner_key(pool)
+            await owner_id_key(pool)
         finally:
             await pool.close()
         yield schema
@@ -71,6 +72,7 @@ async def _insert(
     owner_namespace: str | None,
     customer_id: uuid.UUID | None,
     schema_name: str | None = None,
+    owner_namespace_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """write one namespace row the way the hub's emitters leave it."""
     namespace_id = uuid.uuid4()
@@ -78,8 +80,8 @@ async def _insert(
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_namespace,"
-            " customer_id, schema_name, date_created, date_updated, epoch)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)",
+            " customer_id, schema_name, date_created, date_updated, epoch, owner_namespace_id)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)",
             "platform" if customer_id is None else "customer",
             namespace_id,
             name,
@@ -89,6 +91,7 @@ async def _insert(
             schema_name,
             now,
             next_epoch(),
+            owner_namespace_id,
         )
     return namespace_id
 
@@ -105,13 +108,18 @@ async def _agent_with_children(pool: asyncpg.Pool, agent_id: uuid.UUID, customer
         # an agent's namespace names itself as its owner: set after the insert, as
         # the foreign key refuses an owner that does not exist yet.
         await conn.execute(
-            "UPDATE namespaces SET owner_namespace = name, epoch = $2 WHERE name = $1", agent_ns, next_epoch()
+            "UPDATE namespaces SET owner_namespace = name, owner_namespace_id = namespace_id, epoch = $2"
+            " WHERE name = $1",
+            agent_ns,
+            next_epoch(),
         )
+    owner = ids["agent"]
     ids["channel"] = await _insert(
         pool,
         name=f"channels.web.{agent_id.hex}",
         namespace_type="channel",
         owner_namespace=agent_ns,
+        owner_namespace_id=owner,
         customer_id=customer_id,
     )
     ids["memory"] = await _insert(
@@ -119,10 +127,16 @@ async def _agent_with_children(pool: asyncpg.Pool, agent_id: uuid.UUID, customer
         name=f"memories.{agent_id}.{customer_id}",
         namespace_type="memory",
         owner_namespace=agent_ns,
+        owner_namespace_id=owner,
         customer_id=customer_id,
     )
     ids["tool"] = await _insert(
-        pool, name=f"tools.{agent_id.hex}.probe.1-0", namespace_type="tool", owner_namespace=agent_ns, customer_id=None
+        pool,
+        name=f"tools.{agent_id.hex}.probe.1-0",
+        namespace_type="tool",
+        owner_namespace=agent_ns,
+        owner_namespace_id=owner,
+        customer_id=None,
     )
     return ids
 
@@ -135,7 +149,7 @@ class TestListOwnedBy:
         agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
         ids = await _agent_with_children(pg_pool, agent_id, customer_id)
 
-        owned = await _collection(pg_pool).list_owned_by(f"agents.{agent_id}")
+        owned = await _collection(pg_pool).list_owned_by(ids["agent"])
 
         assert {entity.id for entity in owned} == {ids["channel"], ids["memory"], ids["tool"]}
 
@@ -146,31 +160,35 @@ class TestListOwnedBy:
         await _agent_with_children(pg_pool, first, customer_id)
         second_ids = await _agent_with_children(pg_pool, second, customer_id)
 
-        owned = await _collection(pg_pool).list_owned_by(f"agents.{second}")
+        owned = await _collection(pg_pool).list_owned_by(second_ids["agent"])
 
         assert {entity.id for entity in owned} == {second_ids["channel"], second_ids["memory"], second_ids["tool"]}
 
-    async def test_an_empty_owner_owns_nothing(self, pg_pool: asyncpg.Pool) -> None:
-        """an empty name owns nothing, even where a row really is owned by the empty name.
+    async def test_a_row_naming_the_owner_by_name_alone_is_not_its_child(self, pg_pool: asyncpg.Pool) -> None:
+        """the owner is stored by id: a row carrying the owner's name and no id is not read as owned by it.
 
-        The table is seeded with exactly that row, so the query WOULD return it: this
-        fails if the empty-name guard is removed, where a table holding only NULL owners
-        could not tell.
+        Seeded with exactly that row beside a real child, so a read by the owner's name WOULD return it.
         """
-        customer_id = uuid.uuid4()
-        await _insert(pg_pool, name="", namespace_type="agent", owner_namespace=None, customer_id=customer_id)
+        agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
+        ids = await _agent_with_children(pg_pool, agent_id, customer_id)
         await _insert(
-            pg_pool, name="channels.web.orphan", namespace_type="channel", owner_namespace="", customer_id=customer_id
+            pg_pool,
+            name=f"channels.web.{agent_id.hex}.unkeyed",
+            namespace_type="channel",
+            owner_namespace=f"agents.{agent_id}",
+            customer_id=customer_id,
         )
 
-        assert await _collection(pg_pool).list_owned_by("") == []
+        owned = await _collection(pg_pool).list_owned_by(ids["agent"])
+
+        assert {entity.id for entity in owned} == {ids["channel"], ids["memory"], ids["tool"]}
 
     async def test_an_owner_with_no_children_owns_nothing(self, pg_pool: asyncpg.Pool) -> None:
         """a leaf answers an empty list rather than raising."""
         agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
-        await _agent_with_children(pg_pool, agent_id, customer_id)
+        ids = await _agent_with_children(pg_pool, agent_id, customer_id)
 
-        assert await _collection(pg_pool).list_owned_by(f"channels.web.{agent_id.hex}") == []
+        assert await _collection(pg_pool).list_owned_by(ids["channel"]) == []
 
 
 class TestWhyTheListExists:
@@ -192,11 +210,11 @@ class TestWhyTheListExists:
     async def test_the_owner_deletes_once_its_children_are_gone(self, pg_pool: asyncpg.Pool) -> None:
         """leaves first, then the owner: its own self-reference does not block it."""
         agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
-        await _agent_with_children(pg_pool, agent_id, customer_id)
+        ids = await _agent_with_children(pg_pool, agent_id, customer_id)
         collection = _collection(pg_pool)
 
         async with pg_pool.acquire() as conn:
-            for child in await collection.list_owned_by(f"agents.{agent_id}"):
+            for child in await collection.list_owned_by(ids["agent"]):
                 await conn.execute("DELETE FROM namespaces WHERE namespace_id = $1", child.id)
             await conn.execute("DELETE FROM namespaces WHERE name = $1", f"agents.{agent_id}")
             remaining = await conn.fetchval("SELECT count(*) FROM namespaces")
