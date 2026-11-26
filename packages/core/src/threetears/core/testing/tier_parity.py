@@ -17,7 +17,9 @@ Two halves, both for any host to run over its own collections:
 - :func:`live_tier_parity_findings` needs a Postgres connection holding the collections' tables,
   set up as the host's pool sets one up (:func:`~threetears.core.collections.init_connection`): the
   migrated table's columns, types, precision and scale, nullability, defaults and primary key
-  against the schema, and the row written to a scratch copy of the table and read back.
+  against the table as 3tears stores it -- the declared columns, and the ones it renders in L3
+  alone (a stamped table's generated ``epoch_bucket``, a moveable column's two move columns) --
+  and the row written to a scratch copy of the table, its generated columns kept, and read back.
 
 Each returns its findings, one line each; an empty list is a pass.
 """
@@ -27,6 +29,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Context, Decimal
 from typing import Any
@@ -55,6 +58,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import BUCKET_COLUMN, RESTORE_BUCKETS
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
@@ -360,10 +364,90 @@ def _has_default(expression: str | None) -> bool:
     return expression is not None and expression.strip().upper().split("::")[0] != "NULL"
 
 
+@dataclass(frozen=True)
+class _Rendered:
+    """a column 3tears renders in a table's L3 DDL from its declaration, which no declared column names.
+
+    :ivar data_types: what ``information_schema.columns.data_type`` may answer for it
+    :ivar nullable: whether it is nullable
+    :ivar generated: whether the database derives it (``GENERATED ALWAYS AS (...) STORED``)
+    """
+
+    data_types: frozenset[str]
+    nullable: bool
+    generated: bool
+
+
+def _rendered_columns(schema: TableSchema) -> dict[str, _Rendered]:
+    """the columns the table has in L3 alone, as :meth:`~threetears.core.collections.schema_backed.TableSchema.
+    create_statements` renders them: a stamped table's restore bucket (``epoch_bucket``, a ``smallint NOT NULL``
+    generated from its key), and each moveable column's former value and its move's epoch (both nullable).
+
+    :param schema: the table as declared
+    :ptype schema: TableSchema
+    :return: each one by name
+    :rtype: dict[str, _Rendered]
+    """
+    rendered: dict[str, _Rendered] = {}
+    if schema.row_epoch is not None and not schema.row_epoch.versions:
+        rendered[BUCKET_COLUMN] = _Rendered(frozenset({"smallint"}), nullable=False, generated=True)
+    declared = {column.name: column for column in schema.columns}
+    for column, moved_from, moved_epoch in schema.moved_from_columns:
+        kinds = _L3_DATA_TYPES.get(declared[column].column_type, frozenset())
+        rendered[moved_from] = _Rendered(kinds, nullable=True, generated=False)
+        rendered[moved_epoch] = _Rendered(frozenset({"bigint"}), nullable=True, generated=False)
+    return rendered
+
+
+def _rendered_findings(
+    name: str, rendered: Mapping[str, _Rendered], by_name: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """every difference between the columns 3tears renders in L3 alone and the migrated table's.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param rendered: the columns 3tears renders (:func:`_rendered_columns`)
+    :ptype rendered: Mapping[str, _Rendered]
+    :param by_name: ``information_schema.columns`` rows of the migrated table, by column
+    :ptype by_name: Mapping[str, Mapping[str, Any]]
+    :return: the findings
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    for column, shape in rendered.items():
+        row = by_name.get(column)
+        if row is None:
+            findings.append(
+                f"{name}.{column}: L3: 3tears renders the column from the declaration, the migrated table does not have it"
+            )
+            continue
+        data_type = str(row["data_type"])
+        if data_type not in shape.data_types:
+            findings.append(
+                f"{name}.{column}: L3: migrated as {data_type}, rendered as {'/'.join(sorted(shape.data_types))}"
+            )
+        if (row["is_nullable"] == "YES") != shape.nullable:
+            findings.append(
+                f"{name}.{column}: L3: migrated {'NULL' if row['is_nullable'] == 'YES' else 'NOT NULL'}, "
+                f"rendered {'NULL' if shape.nullable else 'NOT NULL'}"
+            )
+        if (row["is_generated"] == "ALWAYS") != shape.generated:
+            findings.append(
+                f"{name}.{column}: L3: migrated {'generated' if row['is_generated'] == 'ALWAYS' else 'as a plain column'}, "
+                f"rendered {'GENERATED ALWAYS AS (...) STORED' if shape.generated else 'as a plain column'}"
+            )
+    return findings
+
+
 def _l3_column_findings(
     name: str, schema: TableSchema, live: Sequence[Mapping[str, Any]], pk: tuple[str, ...], not_owned: frozenset[str]
 ) -> list[str]:
-    """every difference between the schema and the migrated table's columns and key.
+    """every difference between the table as 3tears stores it and the migrated table's columns and key.
+
+    As stored: each declared column, a versioned table's columns a gone marker leaves out nullable
+    (:attr:`~threetears.core.collections.schema_backed.TableSchema.live_only_columns`), the key the
+    :attr:`~threetears.core.collections.schema_backed.TableSchema.stored_key`, and the columns 3tears renders in L3
+    alone (:func:`_rendered_columns`), which the table must have and no declaration names.
 
     :param name: the collection's name
     :ptype name: str
@@ -381,10 +465,12 @@ def _l3_column_findings(
     findings: list[str] = []
     by_name = {str(row["column_name"]): row for row in live}
     declared = {column.name: column for column in schema.columns}
+    rendered = _rendered_columns(schema)
     findings.extend(
         f"{name}.{missing}: L3: the migrated table has the column, the TableSchema does not"
-        for missing in sorted(set(by_name) - set(declared) - not_owned)
+        for missing in sorted(set(by_name) - set(declared) - set(rendered) - not_owned)
     )
+    findings.extend(_rendered_findings(name, rendered, by_name))
     findings.extend(
         f"{name}.{column}: L3: listed as not owned, but the migrated table has no such column"
         if column not in by_name
@@ -410,7 +496,8 @@ def _l3_column_findings(
                 f"{name}.{column.name}: L3: migrated as NUMERIC({row['numeric_precision']}, {row['numeric_scale']}), "
                 f"declared NUMERIC({column.precision}, {column.scale})"
             )
-        nullable = column.nullable and column.name not in schema.pk_columns
+        # a versioned table's gone marker leaves its live-only columns out: nullable in L3, a CHECK requires them
+        nullable = (column.nullable and column.name not in schema.stored_key) or column.name in schema.live_only_columns
         if (row["is_nullable"] == "YES") != nullable:
             findings.append(
                 f"{name}.{column.name}: L3: migrated {'NULL' if row['is_nullable'] == 'YES' else 'NOT NULL'}, "
@@ -421,8 +508,8 @@ def _l3_column_findings(
                 f"{name}.{column.name}: L3: migrated default {row['column_default']!r}, "
                 f"declared server_default {column.server_default!r}"
             )
-    if pk != schema.pk_columns:
-        findings.append(f"{name}: L3: migrated primary key {pk!r}, declared {schema.pk_columns!r}")
+    if pk != schema.stored_key:
+        findings.append(f"{name}: L3: migrated primary key {pk!r}, stored by {schema.stored_key!r}")
     return findings
 
 
@@ -463,16 +550,20 @@ def _fitted(value: Any, max_length: int | None) -> Any:
     return value[:max_length] if isinstance(value, str) and max_length is not None else value
 
 
-async def _l3_row_findings(
-    name: str, conn: Any, schema: TableSchema, max_lengths: Mapping[str, int | None]
-) -> list[str]:
+async def _l3_row_findings(name: str, conn: Any, schema: TableSchema, live: Sequence[Mapping[str, Any]]) -> list[str]:
     """write each sample value to a scratch copy of the migrated table and compare what it reads back.
 
-    The copy (``LIKE ... INCLUDING DEFAULTS``) has the table's columns, types and defaults and none
-    of its foreign keys or checks; its ``NOT NULL`` constraints are dropped, so each column's value
-    is written and read on a row of its own, each in its own savepoint, and a value the table refuses
-    is that column's finding without stopping the rest. A string is cut to its column's
-    ``varchar(n)``. The copy is a temporary table, dropped after.
+    The copy (``LIKE ... INCLUDING DEFAULTS INCLUDING GENERATED``) has the table's columns, types, defaults and
+    generated columns -- a stamped table's ``epoch_bucket`` derived from its key as the table derives it -- and none of
+    its keys, foreign keys or checks; its ``NOT NULL`` constraints are dropped, so each column's value is written and
+    read on a row of its own, each in its own savepoint, and a value the table refuses is that column's finding
+    without stopping the rest. A string is cut to its column's ``varchar(n)``. A stamped table then writes its key
+    alone and reads back the bucket the copy derived from it, which must be one of the restore's buckets. The copy is
+    a temporary table, dropped after.
+
+    WHY ``INCLUDING GENERATED``: without it ``LIKE`` copies a generated column as a plain one, still ``NOT NULL``
+    and with nothing to fill it, so every write to the copy of a stamped table was refused on ``epoch_bucket``.
+    Postgres (12+) and YugabyteDB (2.25+) both take it.
 
     :param name: the collection's name
     :ptype name: str
@@ -480,22 +571,29 @@ async def _l3_row_findings(
     :ptype conn: Any
     :param schema: the table
     :ptype schema: TableSchema
-    :param max_lengths: each column's ``character_maximum_length``
-    :ptype max_lengths: Mapping[str, int | None]
+    :param live: ``information_schema.columns`` rows of the migrated table
+    :ptype live: Sequence[Mapping[str, Any]]
     :return: the findings
     :rtype: list[str]
     """
     findings: list[str] = []
     scratch = quote_identifier(f"tier_parity_{uuid.uuid7().hex}")
+    max_lengths = {str(column["column_name"]): column["character_maximum_length"] for column in live}
     row = {
         column.name: _fitted(_sample(column), max_lengths.get(column.name))
         for column in schema.columns
         if column.column_type not in (TSVECTOR_TYPE, VECTOR_TYPE, ENUM_TYPE) and column.name in max_lengths
     }
-    await conn.execute(f"CREATE TEMP TABLE {scratch} (LIKE {_qualified(schema.name)} INCLUDING DEFAULTS)")
+    await conn.execute(
+        f"CREATE TEMP TABLE {scratch} (LIKE {_qualified(schema.name)} INCLUDING DEFAULTS INCLUDING GENERATED)"
+    )
     try:
-        for column in row:
-            await conn.execute(f"ALTER TABLE {scratch} ALTER COLUMN {quote_identifier(column)} DROP NOT NULL")
+        # every NOT NULL the copy took, the generated bucket's too: a row of one column leaves the key out, and the
+        # bucket hashed from no key is NULL
+        for held in live:
+            if held["is_nullable"] == "NO":
+                quoted = quote_identifier(str(held["column_name"]))
+                await conn.execute(f"ALTER TABLE {scratch} ALTER COLUMN {quoted} DROP NOT NULL")
         for column, value in row.items():
             quoted = quote_identifier(column)
             try:
@@ -508,9 +606,43 @@ async def _l3_row_findings(
                 findings.append(f"{name}.{column}: L3: the table refused {value!r}: {type(exc).__name__}: {exc}")
             else:
                 findings.extend(_row_findings(name, "L3", {column: value}, {column: got}))
+        # a missing bucket is already the column check's finding: here, whether the one the table has derives
+        stamped = BUCKET_COLUMN in _rendered_columns(schema) and BUCKET_COLUMN in max_lengths
+        if stamped and all(key in row for key in schema.pk_columns):
+            findings.extend(await _bucket_findings(name, conn, scratch, {key: row[key] for key in schema.pk_columns}))
     finally:
         await conn.execute(f"DROP TABLE IF EXISTS {scratch}")
     return findings
+
+
+async def _bucket_findings(name: str, conn: Any, scratch: str, key: Mapping[str, Any]) -> list[str]:
+    """write a stamped table's key alone to its scratch copy and hold the bucket the copy derives to the restore's.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param conn: the Postgres connection
+    :ptype conn: Any
+    :param scratch: the scratch copy, quoted
+    :ptype scratch: str
+    :param key: the sample value of each key column
+    :ptype key: Mapping[str, Any]
+    :return: the findings
+    :rtype: list[str]
+    """
+    columns = ", ".join(quote_identifier(column) for column in key)
+    params = ", ".join(f"${index}" for index in range(1, len(key) + 1))
+    bucket = quote_identifier(BUCKET_COLUMN)
+    try:
+        async with conn.transaction():
+            got = await conn.fetchval(
+                f"INSERT INTO {scratch} ({columns}) VALUES ({params}) RETURNING {bucket}",  # noqa: S608
+                *key.values(),
+            )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+        return [f"{name}.{BUCKET_COLUMN}: L3: the key {dict(key)!r} was refused: {type(exc).__name__}: {exc}"]
+    if not isinstance(got, int) or isinstance(got, bool) or not 0 <= got < RESTORE_BUCKETS:
+        return [f"{name}.{BUCKET_COLUMN}: L3: derived {got!r} from the key, not a bucket 0 to {RESTORE_BUCKETS - 1}"]
+    return []
 
 
 async def live_tier_parity_findings(
@@ -522,9 +654,11 @@ async def live_tier_parity_findings(
     """every difference between a collection's schema and its migrated Postgres table, and what L3 hands back.
 
     For each class that declares a ``TableSchema``: the table of that name on ``conn``'s search
-    path is read from ``information_schema`` and held to the schema -- every column, its type, its
-    ``NUMERIC`` precision and scale, its nullability, whether it has a default -- and to its primary
-    key; then the sample row is written to a scratch copy of the table and read back, so asyncpg's
+    path is read from ``information_schema`` and held to the table as 3tears stores it -- every
+    declared column, its type, its ``NUMERIC`` precision and scale, its nullability, whether it has a
+    default; the columns 3tears renders in L3 alone (a stamped table's generated ``epoch_bucket``, a
+    moveable column's two move columns), which must be there; and the stored primary key -- then the
+    sample row is written to a scratch copy of the table and read back, so asyncpg's
     answer for each column is held to the value written. ``conn`` is set up as the host's pool sets
     a connection up (:func:`~threetears.core.collections.init_connection`), so JSON is bound and
     read as the collections do. A class with no schema is skipped. Run :func:`tier_parity_findings`
@@ -537,7 +671,8 @@ async def live_tier_parity_findings(
     :ptype collections: Iterable[type[BaseCollection[Any]]]
     :param not_owned: per class, the migrated columns it deliberately neither reads nor writes --
         columns another writer owns, which the collection's generated reads never select, so no
-        tier of it holds them. Each must exist in the table and be absent from the schema.
+        tier of it holds them. Each must exist in the table and be absent from the schema. The
+        columns 3tears renders in L3 alone need not be listed.
     :ptype not_owned: Mapping[type[BaseCollection[Any]], Iterable[str]] | None
     :return: one line per difference, naming the collection, the column and the tier; empty when
         the migrated tables are the schemas and L3 hands back what was written
@@ -554,7 +689,7 @@ async def live_tier_parity_findings(
             dict(row)
             for row in await conn.fetch(
                 "SELECT column_name, data_type, numeric_precision, numeric_scale, is_nullable, column_default, "
-                "character_maximum_length FROM information_schema.columns "
+                "character_maximum_length, is_generated FROM information_schema.columns "
                 "WHERE table_schema = COALESCE($2, current_schema()) AND table_name = $1",
                 table,
                 table_schema,
@@ -575,9 +710,8 @@ async def live_tier_parity_findings(
         pk = tuple(str(r["column_name"]) for r in pk_rows)
         others = frozenset((not_owned or {}).get(cls, ()))
         findings.extend(_l3_column_findings(name, schema, live, pk, others))
-        max_lengths = {str(row["column_name"]): row["character_maximum_length"] for row in live}
         try:
-            findings.extend(await _l3_row_findings(name, conn, schema, max_lengths))
+            findings.extend(await _l3_row_findings(name, conn, schema, live))
         except asyncpg.PostgresError as exc:
             findings.append(f"{name}: L3: the scratch copy of {schema.name!r} failed: {type(exc).__name__}: {exc}")
     return findings
