@@ -12,7 +12,7 @@ budgeting, states and errors as ten. Requirements and the reasoning behind them:
 
 1. **Processes that share a pool must share one store.** The default store is in-memory, so each process budgets
    alone, and together they can spend several times a key's budget. Pass every process the same
-   [`BudgetLedger`](#choosing-a-store).
+   [`BudgetLedger`](#choosing-a-store), and call the model through its [async methods](#sync-or-async).
 2. **The in-memory store forgets on restart.** A restarted script starts every key at zero spend for the period.
 3. **A new secret under an old label starts that label at zero spend for the period.** The label's whole budget is
    available again. See [Replacing a key](#replacing-a-key).
@@ -22,6 +22,7 @@ budgeting, states and errors as ten. Requirements and the reasoning behind them:
 - [Building a pool](#building-a-pool)
 - [How spend is counted](#how-spend-is-counted)
 - [Choosing a store](#choosing-a-store)
+- [Sync or async](#sync-or-async)
 - [Reading `status()`](#reading-status)
 - [Key states](#key-states)
 - [Resetting and replacing a key](#resetting-and-replacing-a-key)
@@ -32,13 +33,25 @@ budgeting, states and errors as ten. Requirements and the reasoning behind them:
 ## Building a pool
 
 Build the pool from the consumer's own secrets, then pass it to `create_chat_model` in place of `api_key`. 3tears
-never reads a consumer's configuration.
+never reads a consumer's configuration, and ships no model prices, so register the model's input and output prices
+first: from the consumer's model registry, or with an override as below.
 
 ```python
 from decimal import Decimal
 
-from threetears.models import KeyPool, KeySpec, Secret, create_chat_model
+from threetears.models import (
+    CapabilityOverride,
+    KeyPool,
+    KeySpec,
+    Secret,
+    create_chat_model,
+    register_capability_override,
+)
 
+register_capability_override(  # USD per token, at the consumer's own prices
+    model_id,
+    CapabilityOverride(cost_per_input_token=Decimal("0.000003"), cost_per_output_token=Decimal("0.000015")),
+)
 pool = KeyPool(
     "anthropic",
     "chat",
@@ -50,9 +63,23 @@ pool = KeyPool(
 model = create_chat_model(model_id, key_pool=pool)
 ```
 
-The pool's provider must be the one `model_id` resolves to: `anthropic`, `openai` or `openrouter`. Building a pool
-with no keys, a repeated label, a repeated secret or a Claude subscription token (`sk-ant-oat…`) raises `ValueError`.
-Every process that builds a pool with the same provider and name on one store shares its spend, state and active key.
+The pool's provider (`anthropic`, `openai` or `openrouter`) must be the one `create_chat_model` resolves for the
+model: its `provider=`, or the capabilities registry's. Building a pool with no keys, a repeated label, a repeated
+secret or a Claude subscription token (`sk-ant-oat…`) raises `ValueError`. Every process that builds a pool with the
+same provider and name on one store shares its spend, state and active key.
+
+`create_chat_model` refuses, before building anything:
+
+- `ValueError` for both or neither of `api_key` and `key_pool`, a pool of another provider, or `key_pool` with
+  `breaker`, `breaker_registry` or `unretried_key_errors`. Each key's breakers come from the pool's
+  `breaker_registry`, which the pool reads key health from, and every key's model runs with `unretried_key_errors`
+  so the pool sees a key's refusal the first time;
+- `UnpricedModelError` for a model with no input or output price registered, or not registered at all: the pool
+  can't budget its calls.
+
+The pooled model is one model per key, built up front. `bind_tools`, `with_structured_output`, `with_retry` and
+every other re-binding apply to each key's model, so a call runs the same binding whichever key serves it. Each
+usage record carries the serving key's label as `credential_label`, which reaches spans as `llm.credential_label`.
 
 Each `KeySpec` carries:
 
@@ -83,7 +110,13 @@ The pool's own settings, all keyword arguments to `KeyPool`:
 | `max_rate_limit_wait` | `0` | how long a call may wait for the earliest rate-limit hold to end when every key it could still try is only rate-limited. `0` raises at once; a one-key pool usually wants a few seconds here |
 | `rate_limit_floor` | 30 s | how long a 429 holds a key when the provider gives no `retry-after` |
 | `rate_limit_window`, `rate_limit_cap` | 10 min, 15 min | a key rate-limited again within the window of its last hold ending is held twice as long, up to the cap |
-| `reservation_margin` | 10 min | how long past a call's deadline its reservation is kept before it counts as orphaned |
+| `reservation_margin` | 10 min | how long past a call's deadline its reservation is kept before it counts as orphaned. A pooled model's call has no deadline, so this runs from when the call started |
+| `refresh_interval` | 5 s | how stale this process's copy of the pool's record may get before a call reads the store again |
+| `sweep_interval` | 1 min | how often, at most, the pool settles orphaned reservations |
+| `observer` | `None` | receives the pool's events, such as a [`KeyPoolMetrics`](#metrics). The pool counts them in `pool.counters` either way |
+| `breaker_registry` | a new one per pool | where each key's circuit breakers live; the pool reads key health from it |
+| `classifier`, `selection` | the provider's classifier, `StickySelection` | the seams that read a failed call and choose the active key |
+| `clock`, `sleep` | UTC wall clock, `asyncio.sleep` | the pool's time source and wait |
 
 A period with anchor day 1 is a calendar month, named like `2026-11`. Any other anchor names the period by the date it
 starts, like `2026-11-15`. Spend is kept per period, so a new period starts at zero with no job to run. A rollover
@@ -97,21 +130,22 @@ The pool reserves before each call, and settles after it:
    the call's `max_tokens` (or the model's `max_output_tokens`) at the output price, plus any per-request price. The
    reservation succeeds only if `spent + reserved + estimate` fits in the budget. Concurrent calls can't pass the
    budget together, in one process or many.
-2. **Settle.** After a successful call, the reservation is replaced by the call's actual cost, with cache reads and
-   writes at their own prices. When the provider reports no usage, the estimate stays as spend.
-3. **On failure**, a call the provider can't have billed (a 4xx refusal before any answer, or a connection that never
-   reached it) is released. One it may have billed, such as a 5xx or a stream that failed partway, is settled at the
-   full estimate.
+2. **Settle.** After a successful call, the reservation is replaced by the cost of the usage the provider reported,
+   priced by `cost_of_usage`, the function the usage tracker prices with. Cache reads and writes are at their own
+   prices. When the provider reports no usage, the estimate stays as spend.
+3. **On failure**, a call the provider can't have billed (a 4xx refusal before any answer, a connection that never
+   reached it, or the key's breaker refusing it) is released. One it may have billed, such as a 5xx, a stream that
+   failed partway, or a cancelled call, is settled at the full estimate. A failure after the provider reported usage,
+   such as a structured answer that fails to parse, settles at the reported cost.
 4. **Orphans.** A reservation whose process crashed is settled at its full estimate once it expires (the call's
    deadline plus `reservation_margin`), and counted as orphaned.
 
 Because reservations are estimates, a key can end a period slightly over its budget. The provider still enforces its
 own credit limit, and the pool turns that refusal into the `exhausted` state.
 
-The pool refuses a call it can't budget, before any network call:
-
-- `UnpricedModelError`: the model has no input or output price registered;
-- `NoOutputLimitError`: the call sets no `max_tokens` and the model declares no `max_output_tokens`.
+A call that sets no `max_tokens` (on `create_chat_model`, `bind` or the call) for a model that declares no
+`max_output_tokens` raises `NoOutputLimitError` before any network call: the pool can't bound its cost. An unpriced
+model is refused earlier, by `create_chat_model`.
 
 A caller with its own transport, such as a batch client, reserves with `await pool.reserve(amount)` and closes the
 lease it gets back itself.
@@ -144,7 +178,17 @@ To run it:
    a different ledger.
 
 If the store fails, the call fails closed with `KeyPoolStoreError`, with the cause chained. It is logged at ERROR and
-counted, and the pool never falls back to unbudgeted calls.
+counted, and the pool never falls back to unbudgeted calls. The one exception is a settle that fails after the
+provider answered: the caller still gets the answer, and the open reservation settles at its full amount when it
+expires.
+
+## Sync or async
+
+With `BudgetLedger`, call the model through `ainvoke`, `astream` and `abatch`. The ledger's NATS and database clients
+belong to the event loop that opened them, and only the async paths run the pool on the caller's loop.
+
+The sync paths (`invoke`, `stream`, `batch`) run the pool on a private event loop in a daemon thread, whether or not
+the calling thread has a loop of its own. That suits `InMemoryKeyPoolStore`, which guards itself with a thread lock.
 
 ## Reading `status()`
 
@@ -155,7 +199,7 @@ secret and no fingerprint.
 |---|---|
 | `pool`, `provider` | the pool's name and provider |
 | `period` | the current billing period's id |
-| `active` | the active key's label; `None` before the pool's first call |
+| `active` | the active key's label. The pool's first use in a process, `status()` included, registers its keys and chooses one, so a first `status()` already shows it; `None` only when the store holds no active key |
 | `keys` | one `KeyStatus` per key, in preference order |
 
 Each `KeyStatus`:
@@ -228,15 +272,23 @@ is nothing to try, it raises before any network call. It is a `ModelProviderErro
 for it, and `friendly_api_error()` shows a user "No anthropic key can take this request right now. Please retry
 later or contact an administrator."
 
-Its message names every key and its state, and the earliest time any key could serve again:
+Its message names the provider, every key and its state, and the earliest time any key could serve again:
 
 ```
-no key in pool 'chat' can serve model '<model>' (primary: exhausted; overflow: rate_limited until 2026-11-26T12:00:30+00:00); the earliest a key could serve again: 2026-11-26T12:00:30+00:00
+anthropic call failed (no_key_available): no key in pool 'chat' can serve model '<model>' (primary: exhausted; overflow: rate_limited until 2026-11-26T12:00:30+00:00); the earliest a key could serve again: 2026-11-26T12:00:30+00:00
 ```
 
 A key's state there is one of `exhausted`, `revoked`, `forbidden`, `rate_limited until T`, `tripped until T`,
-`no room: R of B` (remaining of budget), or `tried`: this call already tried the key, and each key is tried at most
-once per call. The earliest time is `unknown` when no key is known to come back, such as every key revoked.
+`no room: R of B` (remaining of budget), or `tried`: this call already tried the key. The earliest time is `unknown`
+when no key is known to come back, such as every key revoked.
+
+For an `exhausted` key the earliest time is the pool's next period boundary, when the pool clears the state. It is
+not a promise from the provider: a used-up prepaid credit stays used up until someone adds credit.
+
+Each key is tried at most once per call, with one exception: a key that refused the call for a rate limit gets one
+more attempt, after its hold, if the hold ends within the pool's `max_rate_limit_wait`. That wait is 0 by default, so
+by default the call raises at once. A one-key pool usually sets a few seconds, the wait the provider's SDK made before
+the pool turned its retries off. Once a stream has handed the caller a chunk, nothing is retried.
 
 The same facts are on the error as attributes: `pool`, `model_id`, `keys` (each a `KeyStatus`) and `earliest`.
 
@@ -249,10 +301,12 @@ labels and reason as structured fields too.
 |---|---|---|
 | WARNING | `key pool 'chat' moved its active key from 'primary' to 'overflow': exhausted` | a move off a key that won't serve again this period without an operator: `exhausted`, `revoked`, `forbidden` |
 | INFO | the same line, ending `rate_limited`, `tripped` or `low_room` | a move off a key that will come back on its own |
-| INFO | the same line, ending `pull_back`, `period_rollover` or `not_configured` | a move back to a preferred key, the period's restart on the most-preferred key, or a move off a stored active key this process doesn't configure |
+| INFO | the same line, ending `pull_back`, `period_rollover`, `not_configured` or `operator_reset` | a move back to a preferred key, the period's restart on the most-preferred key, a move off a stored active key this process doesn't configure, or a move to a key an operator reset |
+| WARNING | a line naming the key and its new state | a key becomes unusable (`exhausted`, `revoked`, `forbidden`) with no key to move to, so no move line is logged |
 | ERROR | `key pool 'chat': no key in pool 'chat' can serve … (3 more not logged in the last 60 s)` | a `NoKeyAvailableError`; at most one line per pool per minute, counting the ones it skipped |
 | ERROR | `key pool 'chat': the store's reserve failed (KvError); the call fails closed` | a store failure, with the cause attached |
 | WARNING | `key pool 'chat': settled 2 orphaned reservation(s) on key 'primary' at their full amount` | the sweep found reservations a crashed call never closed |
+| WARNING | `key pool 'chat': the call on key 'primary' was served but its settlement failed; …` | logged by `threetears.models.pooled`: the answer was returned, and the reservation settles at its full amount when it expires |
 | WARNING | `key pool 'chat': key 'primary' was last configured with a budget of 500 USD; this process configures 400` | processes disagree about a budget |
 | INFO | `key pool 'chat': key 'primary' holds a new secret; it starts from fresh state and zero spend this period` | a label's secret changed |
 | INFO | `key pool 'chat': an operator reset key 'primary'` | `pool.reset()` ran |
@@ -262,10 +316,43 @@ nothing.
 
 ## Metrics
 
-The pool's Prometheus metrics need the `prometheus` extra (`3tears-models[prometheus]`). Every label is a pool name
-or a key label from configuration, so the number of series is bounded by configuration.
+The pool's Prometheus metrics need the `prometheus` extra (`3tears-models[prometheus]`). Every label is a pool name, a
+key label from configuration, or a value this package defines, so the number of series is bounded by configuration.
 
-<!-- metrics: filled at integration -->
+Build one `KeyPoolMetrics` per Prometheus registry and pass it to every pool it should count. Counters move as the
+pool's events happen. Gauges move only when you refresh them, from a health check or a periodic task:
 
-Without the extra, `pool.counters` holds the same counts in memory: moves by from, to and reason; refusals for room
-and orphans by key; store failures by operation; and `NoKeyAvailableError` raises.
+```python
+from threetears.models.key_pool import KeyPoolMetrics, KeyPoolStatus
+
+metrics = KeyPoolMetrics()  # prometheus_client's default registry; registry= for another
+pool = KeyPool("anthropic", "chat", keys, ledger, observer=metrics)
+
+async def health() -> KeyPoolStatus:
+    return await metrics.refresh(pool)  # reads pool.status() and writes it into the gauges
+```
+
+`refresh` returns the same snapshot `status()` does, and starts the pool's counters at zero so a rate over them is
+defined before their first event. If the store fails, it raises `KeyPoolStoreError` and the gauges keep the last
+snapshot. Without the extra, building `KeyPoolMetrics` raises `ImportError`.
+
+| Metric | Labels | Value |
+|---|---|---|
+| `threetears_key_pool_spent_usd` | `pool`, `key` | `spent` from `status()` |
+| `threetears_key_pool_reserved_usd` | `pool`, `key` | `reserved` |
+| `threetears_key_pool_remaining_usd` | `pool`, `key` | `remaining` |
+| `threetears_key_pool_budget_usd` | `pool`, `key` | `budget`, as this process configures it |
+| `threetears_key_pool_key_state` | `pool`, `key`, `state` | 1 for the key's [state](#key-states), 0 for each other |
+| `threetears_key_pool_key_active` | `pool`, `key` | 1 for the active key, else 0 |
+| `threetears_key_pool_moves_total` | `pool`, `from`, `to`, `reason` | moves of the active key, by the reasons in [Log lines](#log-lines) |
+| `threetears_key_pool_failovers_total` | `pool`, `reason` | failovers inside one call: the call ran again on another key after its key failed |
+| `threetears_key_pool_room_refusals_total` | `pool`, `key` | reservations the key refused for room, so the call went to another key |
+| `threetears_key_pool_orphaned_reservations_total` | `pool`, `key` | reservations the sweep settled at their full amount |
+| `threetears_key_pool_no_key_available_total` | `pool` | `NoKeyAvailableError` raises |
+| `threetears_key_pool_store_failures_total` | `pool`, `operation` | store calls that failed, by store method |
+
+The gauges are the first six rows; the rest are counters. A move changes the active key for every call, and a
+failover is one call trying its next key, so the two counts needn't match.
+
+Without the extra, `pool.counters` holds the same counts in memory: moves by from, to and reason; failovers by
+reason; refusals for room and orphans by key; store failures by operation; and `NoKeyAvailableError` raises.

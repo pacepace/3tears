@@ -29,7 +29,15 @@ is a normal pool. Requirements: `docs/model-key-pool-requirements.md`; operator 
   `CircuitBreakerRegistry.peek()` read a breaker without side effects. The provider factories take
   `unretried_key_errors=`, so a 401, 402, 403 or 429 reaches the caller without the SDK first retrying it on the
   same key.
-- `create_chat_model(model_id, key_pool=pool)` builds the pooled model. <!-- chunk 07: filled at integration -->
+- `create_chat_model(model_id, key_pool=pool)` builds the pooled model, a `PooledChatModel`: one model per key, with
+  every re-binding (`bind_tools`, `with_structured_output`, `with_retry` and the rest) applied to each. A call
+  reserves its estimate on the active key, fails over to the next key when the provider refuses that key, and
+  settles the cost the provider reported; with no reported usage the estimate stays as spend. Each key is tried once
+  per call, except that a rate-limited key may serve once more within the pool's `max_rate_limit_wait` (0 by
+  default). Usage records carry the serving key's label as `credential_label` (`llm.credential_label` on spans).
+- `KeyPoolMetrics` in `threetears.models.key_pool`, behind the `prometheus` extra, exports each key's spend,
+  reservations, room, budget, state and active flag, and counts moves, failovers, refusals for room, orphaned
+  reservations, `NoKeyAvailableError` raises and store failures.
 
 ## Consumer note
 Install changes in `3tears-models`:
@@ -46,6 +54,13 @@ than it reads it can rise, where a cache-write price above the input rate is reg
 the counter will step at the upgrade; the new values are the correct ones. `UsageAccumulator` totals change the same
 way.
 
-The key pool itself is opt-in: no existing `create_chat_model(api_key=...)` call changes behaviour. A consumer adopting
-`BudgetLedger` applies the coordination migrations through v004 (or declares `LEDGER_TABLE_SCHEMAS` where its pod
-can't run DDL).
+The key pool itself is opt-in: no existing `create_chat_model(api_key=...)` call changes behaviour. `api_key` is now
+optional, and exactly one of `api_key` and `key_pool` is required. A consumer adopting the pool:
+
+- With `BudgetLedger`, calls the model through `ainvoke`, `astream` and `abatch`. The sync paths run the pool on a
+  private event loop, which the ledger's loop-bound NATS and database clients don't support. Sync calls suit
+  `InMemoryKeyPoolStore`.
+- Applies the coordination migrations through v004 for `BudgetLedger` (or declares `LEDGER_TABLE_SCHEMAS` where its
+  pod can't run DDL).
+- For metrics, builds one `KeyPoolMetrics` per Prometheus registry, passes it as `KeyPool(observer=metrics)`, and
+  calls `await metrics.refresh(pool)` from its health check or a periodic task, since the gauges move only then.
