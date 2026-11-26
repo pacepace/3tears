@@ -699,6 +699,23 @@ class CallerTransaction:
                 f"{table} declares a row epoch, so every write carries its write's epoch, and this transaction took no "
                 f"write's turn: call ScopeEpochs.touch(version, ...) on it before writing the table"
             )
+        return self.in_place_epoch()
+
+    def in_place_epoch(self) -> int:
+        """a fresh epoch for one write statement on this transaction, with or without a write's turn: the process
+        clock's next stamp, counted in the transaction's lowest and highest stamps (its ``s_min``, its age refusal, its
+        ``before_commit`` steps). What a stamped table's write (``ROW_STAMPED``: one row a key, updated in place) takes
+        when its transaction took no turn (``SchemaBackedCollection._epoch_stamp``).
+
+        WHY a stamped table needs no write's turn (:meth:`row_epoch` needs one): its row's epoch rises on every write
+        (``GREATEST(epoch + 1, <new>)``, ``rising_epoch_assignment``), so it never goes back whichever process's clock
+        stamped it, and a restore reads every row stamped since X. The turn orders a versioned table's versions against
+        the previous writer's, which a stamped table does not keep. The hub's own tables have no seqlock writer to
+        take a turn from.
+
+        :return: the epoch
+        :rtype: int
+        """
         epoch = next_epoch()
         # the clock only rises in this process, so the first stamp is the lowest and the last the highest
         if self._s_min is None:
