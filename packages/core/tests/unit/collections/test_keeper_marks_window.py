@@ -28,7 +28,9 @@ class _Marks:
     """the keeper's marks table, answering the anchor's keyed read and the sweep's paged delete."""
 
     def __init__(self, marks: list[tuple[str, int, datetime]]) -> None:
-        self.rows = [{"id": str(uuid4()), "log_incarnation": inc, "seq": seq, "at": at} for inc, seq, at in marks]
+        self.rows: list[dict[str, Any]] = [
+            {"id": str(uuid4()), "log_incarnation": inc, "seq": seq, "at": at} for inc, seq, at in marks
+        ]
         self.sent: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:

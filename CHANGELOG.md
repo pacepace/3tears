@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: versioned tables carry no per-row trigger; marks kept for the log's window; the cutover's ring step
+
+Append-only L3 chunk 7, the parts not held for a decision (`design-append-only-l3.md`, decisions 3 and 4).
+
+**Changed:** a versioned (page-written) table is given no change-note trigger: `noted_tables()` leaves it out
+(`generation.is_versioned_class`), and the migration run's note step and the keeper's trigger install skip any table
+the catalog says is versioned (its `(scope, epoch)` index's restore declaration). The scrub judges a versioned table's
+records by their `s_min` alone, never as a missing note. `lost_writes.tables_switched_by_trigger` also answers the
+tables carrying an epoch (`epoch BIGINT NOT NULL`), so the broker advances a versioned table with no trigger.
+
+**Added (refusal):** a per-row trigger on any versioned table is refused, with how to fix
+(`threetears.core.ddl.epoch_catalog.PerRowTriggerError`): at the end of every migration run (its schema) and at the
+keeper's install (every schema). The static half is the enforcement rule `threetears.enforcement.row_triggers`
+(`tests/enforcement/test_no_row_trigger_on_versioned_tables.py`); a consumer runs it over its own tree.
+
+**Fixed:** a ring switch no longer drops the keeper's marks. On a slow day the switch dropped the mark the window's
+oldest record needed, before a restore read the tables from it. `ChangeNoteKeeper.keep_window_marks`, after each mark,
+drops only marks older than the newest mark before the log's oldest record. Never by age. Counted in
+`threetears_change_log_marks_dropped_total`.
+
+**Added:** `threetears.core.data.migrations.ring_cutover.drop_ring`, the outage-window cutover's step. It drops every
+ring trigger, note function and ring table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps
+the marks table. It is not wired until the ring retires.
+
 ### core: the copy's apply worker keeps column tokens, and reads an unsplit part by scope
 
 **Fixed:** `shared_copy` wrote every part unstamped, so `shared_arrow.file_tokens` gave none and a product's memo
