@@ -48,6 +48,7 @@ pytest.importorskip("pyarrow")
 
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy, close_published_copies  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -64,6 +65,13 @@ _SCHEMA = TableSchema(name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_
 #: the gone run, and a run of the same state and one of another state that stay
 _GONE = {"state": "PA", "run_id": 7}
 _KEPT_ROWS = 500
+
+
+@pytest.fixture(autouse=True)
+async def _published_copies_closed() -> AsyncIterator[None]:
+    """every copy a test published (``testing.published_copy``) closed after it: its query workers and its store."""
+    yield
+    await close_published_copies()
 
 
 class _Row(BaseEntity):
@@ -276,14 +284,16 @@ async def test_a_copy_follower_drops_the_prefix_from_its_epoch_and_reads_no_tabl
     async def settled() -> int:
         return version[0]
 
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)],
-        backend,
+        published,
         db.pool,
         settled=settled,
         generation=log.current,
         changes=log,
+        queries=published.queries,
     )
     follower.register()
     await follower.warm()

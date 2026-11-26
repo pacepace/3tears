@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: no engine slots: every read of the copy is a query worker's
+
+**Removed** (step 3T-8 of `design-copy-worker-backend.md`, decision 4): the serving process's DuckDB reads of the shared
+copy on its own threads, the "engine slots": `shared_arrow.SharedArrowReader`, `SharedRead`, `ReadSlot`, `held_slot`,
+`riding`, `_Admission` and `SharedArrowStore.reader()`. The in-process DuckDB is no longer a copy follower's backend:
+`copy_reads.CursorReads` and `CopyFollower.reading()` (a cursor and its stamp) are gone, and `FollowerBackend` has no
+read (`read_snapshot`, `staged_mark`). Read the copy through `CopyQueries` (`lookup`, `run_job`, `current`); pin one
+state with its stamp through `CopyFollower.current()`. `volume_fulls.fingerprint_ipc` went with `CursorReads`.
+
+**Changed:** `CopyFollower(queries=)` is required. `CopyCheckpoints(backend=)` takes a `CheckpointCopy` (its stages and
+each table's schema digest), no longer a `DuckDBBackend`, so a pod's own backend needs no cast.
+
+**Enforced:** `tests/enforcement/test_no_cursor_read_of_the_copy.py`: no serving module imports a cursor read of the
+copy, nor the in-process DuckDB into the copy's own modules.
+
+**Testing:** `threetears.core.testing.published_copy.PublishedCopy` drives a follower over a DuckDB L1 that publishes each
+applied state as shared Arrow, with its query pool.
+
 ### core: the copy's keyed lookups, and a dead query worker costs its own query alone
 
 **Added:** `CopyQueries.lookup(table, keys, key)`, step 3T-6 of `design-copy-worker-backend.md`: a table's rows by key

@@ -34,13 +34,13 @@ pa_ipc = pytest.importorskip("pyarrow.ipc")
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
-from threetears.core.collections.copy_reads import CursorReads  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
+from threetears.core.collections.copy_reads import QueriedReads  # noqa: E402
 from threetears.core.collections.delta_files import read_volume_file, write_volume_file  # noqa: E402
 from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
-from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullAbsent,
     FullPart,
@@ -222,9 +222,10 @@ async def test_a_start_loads_every_part_and_reports_each_parts_version(tmp_path:
     assert part.num_rows == 3
 
 
-def _reads(backend: DuckDBBackend) -> CursorReads:
-    """the in-process copy's own reads, as a follower over it makes them: a state's keys read on its snapshot."""
-    return CursorReads(backend, ProcessWorkers(workers=1, name="test volume fulls"))
+def _reads(backend: DuckDBBackend) -> QueriedReads:
+    """the copy's reads as a follower makes them: the state the copy holds now published as shared Arrow, and a
+    state's keys read in a query worker over it."""
+    return QueriedReads(PublishedCopy(backend).queries)
 
 
 async def test_staging_some_states_replaces_only_their_rows_and_reports_only_their_versions(tmp_path: Path) -> None:
@@ -407,16 +408,18 @@ async def test_no_manifest_waits_saying_so_and_never_reads_l3_then_loads_the_ful
     async def generation(table: str) -> str:
         return "inc:5"
 
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [_FOLLOWED],
-        backend,
+        published,
         l3,
         settled=lambda: asyncio.sleep(0, result=0),
         generation=generation,
         changes=None,
         stamp_table="scope_epochs",
         fulls=VolumeFulls(tmp_path, [_FOLLOWED], poll_seconds=0.01),
+        queries=published.queries,
     )
     start = asyncio.create_task(follower.start())
     for _ in range(100):
@@ -472,16 +475,18 @@ async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_
     the full the writer's rebuild from L3 publishes (decision 14): the writer reads L3 once, the copy never."""
     copy_l3, backend, registry = _L3(), _backend(), CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [_FOLLOWED],
-        backend,
+        published,
         copy_l3,
         settled=lambda: asyncio.sleep(0, result=0),
         generation=_Generations().current,
         changes=None,
         stamp_table="scope_epochs",
         fulls=VolumeFulls(tmp_path, [_FOLLOWED], poll_seconds=0.01),
+        queries=published.queries,
     )
     start = asyncio.create_task(follower.start())
     for _ in range(100):
@@ -574,16 +579,18 @@ async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the
     # the hub adds `source` in place; a copy of the new table list starts before the writer restarts
     copy_l3, backend, registry = _L3(), _backend_added(), CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [_FOLLOWED_ADDED],
-        backend,
+        published,
         copy_l3,
         settled=lambda: asyncio.sleep(0, result=0),
         generation=_Generations().current,
         changes=None,
         stamp_table="scope_epochs",
         fulls=VolumeFulls(tmp_path, [_FOLLOWED_ADDED], poll_seconds=0.01),
+        queries=published.queries,
     )
     looks = _other_columns()
     start = asyncio.create_task(follower.start())

@@ -54,6 +54,7 @@ from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
 from threetears.core.exceptions import GenerationUnavailableError  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaFileUnreadableError,
@@ -342,10 +343,11 @@ def _world() -> _World:
         registry.follow_generation(name)
     registry.set_noted_keys_reader(notes)
     bus, recovery = _Bus(), _Recovery()
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         _tables(),
-        backend,
+        published,
         copy_l3,
         settled=lock.settled,
         generation=log.current,
@@ -353,6 +355,7 @@ def _world() -> _World:
         page_size=50,
         stamp_table="scope_epochs",
         recreate=DeltaRecreateRequester(bus, _KEY_OF),
+        queries=published.queries,
     )
     follower.register()
     recreator = DeltaRecreator(_tables(), writer_l3, log, recovery=recovery, page_size=50)
@@ -942,10 +945,11 @@ async def test_a_copy_starting_on_a_volume_with_no_full_asks_the_writer_for_it_a
     for name in (_RESULTS, _TALLIES):
         registry.follow_generation(name)
     bus = _Bus()
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         _tables(),
-        backend,
+        published,
         copy_l3,
         settled=lock.settled,
         generation=log.current,
@@ -954,6 +958,7 @@ async def test_a_copy_starting_on_a_volume_with_no_full_asks_the_writer_for_it_a
         stamp_table="scope_epochs",
         recreate=DeltaRecreateRequester(bus, _KEY_OF),
         fulls=volume_fulls.VolumeFulls(_volume, _tables(), poll_seconds=0.01),
+        queries=published.queries,
     )
     fulls = _Fulls(db, _volume)
     recreator = DeltaRecreator(_tables(), _L3(db), log, fulls=fulls)

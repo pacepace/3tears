@@ -16,39 +16,34 @@ connection or a cursor in the serving process:
   :meth:`~threetears.core.collections.copy_queries.CopyQueries.run_job` over that version in a query worker, its
   answer shared Arrow (a checkpoint's parts come back encoded, one row a part), never pickled rows.
 
-**The in-process copy's own reads** (:class:`CursorReads`): a follower whose copy is the in-process DuckDB
-(``cache.duckdb.DuckDBBackend``) holds its rows in the serving process already, and reads them on a cursor of its
-snapshot, on a thread, running the same jobs there; a drift check's fingerprint runs in the follower's worker processes,
-as before. It goes with that backend as a follower's backend (chunk 3T-8): it is not a path a shared copy takes.
+**No cursor read** (chunk 3T-8). The in-process copy's reads on a snapshot cursor went with the in-process DuckDB as a
+follower's backend: every follower's copy is published as shared Arrow and read here, in query workers.
+``tests/enforcement/test_no_cursor_read_of_the_copy.py`` keeps any serving module from importing one back.
 
-**One state.** A :class:`PinnedCopy` reads one applied state for as long as it is open: a lease on the version over a
-shared copy (no publish retires it meanwhile), a snapshot cursor over the in-process one.
+**One state.** A :class:`PinnedCopy` reads one applied state for as long as it is open: a lease on the version (no
+publish retires it meanwhile).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, ExitStack
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import pyarrow as pa
-import pyarrow.ipc as pa_ipc
 
 from threetears.core.arrow_keys import stored_instants
-from threetears.core.cache.duckdb_binds import KEYS, run_joined
+from threetears.core.cache.duckdb_binds import KEYS
 from threetears.core.collections.copy_queries import CopyQueries, CopyVersion
-from threetears.core.collections.volume_fulls import fingerprint_ipc, rows_fingerprint
+from threetears.core.collections.volume_fulls import rows_fingerprint
 from threetears.core.sql_fragments import quote_identifier
-from threetears.observe import contain, get_logger
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable
-    from threetears.core.process_workers import ProcessWorkers
 
 __all__ = [
     "CopyReads",
-    "CursorReads",
     "PinnedCopy",
     "QueriedReads",
     "keyed_job",
@@ -120,18 +115,6 @@ class CopyReads(Protocol):
         tables: Mapping[str, Any] | None = None,
     ) -> Any:
         """``job(connection, args)`` over the state applied now: its answer as a ``pyarrow.Table``."""
-        ...
-
-
-class CursorCopy(Protocol):
-    """an in-process copy as :class:`CursorReads` reads it (``FollowerBackend``'s reads)."""
-
-    def read_snapshot(self) -> AbstractContextManager[Any]:
-        """a cursor over one applied state of the copy, for as long as the block runs."""
-        ...
-
-    def staged_mark(self, cursor: Any) -> int | None:
-        """the mark of the change the state ``cursor`` reads was applied with; None before any."""
         ...
 
 
@@ -249,13 +232,6 @@ def _fingerprinted(connection: Any, args: Sequence[Any]) -> pa.Table:
     return pa.table({_FINGERPRINT: pa.array([rows_fingerprint(rows, kinds)], pa.string())})
 
 
-def _ipc_bytes(rows: pa.Table) -> bytes:
-    sink = pa.BufferOutputStream()
-    with pa_ipc.new_stream(sink, rows.schema) as writer:
-        writer.write_table(rows)
-    return bytes(sink.getvalue().to_pybytes())
-
-
 def _spelled(table: FollowedTable, columns: Sequence[str], keys: Any) -> pa.Table:
     """``keys``' ``columns``, an instant key column's values in the copy's one stored spelling
     (``arrow_keys.stored_instants``, as the copy keeps its rows'), so a key in any ISO spelling finds its row by
@@ -371,146 +347,3 @@ class QueriedReads:
         tables: Mapping[str, Any] | None = None,
     ) -> Any:
         return await _answered(self._queries, job, args, tables, None)
-
-
-def _close_contained(stack: ExitStack) -> None:
-    """close a cursor's read. Blocking (IO): run it on a thread.
-
-    :param stack: the stack holding the read open
-    :ptype stack: ExitStack
-    :return: nothing
-    :rtype: None
-    """
-    try:
-        stack.close()
-    except Exception as exc:  # noqa: BLE001 - the read's state is let go either way; the copy is unaffected
-        contain(exc, log=log, what="a copy read's cursor could not be closed")
-
-
-def _close_landed(opening: asyncio.Future[tuple[ExitStack, Any, int | None]]) -> None:
-    """close, on a thread, the read a cancelled caller was opening, once its open lands: never left open.
-
-    :param opening: the open, done
-    :ptype opening: asyncio.Future[tuple[ExitStack, Any, int | None]]
-    :return: nothing
-    :rtype: None
-    """
-    if opening.cancelled() or opening.exception() is not None:
-        return  # nothing opened: a failed open closes what it opened itself
-    asyncio.get_running_loop().run_in_executor(None, _close_contained, opening.result()[0])
-
-
-def _on_cursor(
-    cursor: Any, job: Callable[[Any, Sequence[Any]], Any], args: Sequence[Any], tables: Mapping[str, Any] | None
-) -> pa.Table:
-    """a job on a cursor, its tables registered while it runs. Blocking: run it on a thread."""
-    named = tuple(() if tables is None else tables.items())
-    for name, table in named:
-        cursor.register(name, table)
-    try:
-        return _table_of(job(cursor, args))
-    finally:
-        for name, _ in named:
-            cursor.unregister(name)
-
-
-class _CursorPinned:
-    """one applied state of the in-process copy: its snapshot cursor, held open until :meth:`close`."""
-
-    def __init__(self, stack: ExitStack, cursor: Any, mark: int | None, workers: ProcessWorkers) -> None:
-        self._stack = stack
-        self._cursor = cursor
-        self._mark = mark
-        self._workers = workers
-
-    @property
-    def mark(self) -> int | None:
-        return self._mark
-
-    async def run_job(
-        self,
-        job: Callable[[Any, Sequence[Any]], Any],
-        args: Sequence[Any] = (),
-        *,
-        tables: Mapping[str, Any] | None = None,
-    ) -> Any:
-        return await asyncio.to_thread(_on_cursor, self._cursor, job, args, tables)
-
-    async def fingerprint(
-        self,
-        job: Callable[[Any, Sequence[Any]], Any],
-        args: Sequence[Any],
-        kinds: tuple[tuple[str, str], ...],
-        *,
-        tables: Mapping[str, Any] | None = None,
-    ) -> str:
-        rows = await self.run_job(job, args, tables=tables)
-        found: str = await self._workers.run(fingerprint_ipc, await asyncio.to_thread(_ipc_bytes, rows), kinds)
-        return found
-
-    async def close(self) -> None:
-        await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(_close_contained, self._stack)))
-
-
-class CursorReads:
-    """the in-process copy's own reads, on a cursor of its snapshot on a thread (module docstring); a drift check's
-    fingerprint in ``workers``.
-
-    :param backend: the copy
-    :ptype backend: CursorCopy
-    :param workers: the worker processes a fingerprint is taken in
-    :ptype workers: ProcessWorkers
-    """
-
-    def __init__(self, backend: CursorCopy, workers: ProcessWorkers) -> None:
-        self._backend = backend
-        self._workers = workers
-
-    def _open(self) -> tuple[ExitStack, Any, int | None]:
-        """open a snapshot and read its change's mark. Blocking (IO)."""
-        stack = ExitStack()
-        try:
-            cursor = stack.enter_context(self._backend.read_snapshot())
-            return stack, cursor, self._backend.staged_mark(cursor)
-        except BaseException:
-            stack.close()
-            raise
-
-    async def current(self) -> PinnedCopy:
-        # shielded: a cancel while it opens lets the open finish and closes what it opened as it lands
-        opening = asyncio.ensure_future(asyncio.to_thread(self._open))
-        try:
-            stack, cursor, mark = await asyncio.shield(opening)
-        except asyncio.CancelledError:
-            opening.add_done_callback(_close_landed)
-            raise
-        return _CursorPinned(stack, cursor, mark, self._workers)
-
-    def _rows_of_keys(self, table: FollowedTable, columns: Sequence[str], keys: Any, out: Sequence[str]) -> Any:
-        with self._backend.read_snapshot() as cursor:
-            # the keys one Arrow table the statement semi-joins (run_joined): bound as Python lists, DuckDB 1.5 looks
-            # for pandas once a value, 49 s of the 50 s staging 50,000 keys took (2026-11-23); 40 ms so
-            return run_joined(
-                cursor,
-                _keyed_statement(table, columns, out),
-                [keys.column(column) for column in columns],
-                lambda result: result.fetch_arrow_table(),
-            )
-
-    async def rows_of_keys(self, table: FollowedTable, columns: Sequence[str], keys: Any, out: Sequence[str]) -> Any:
-        return await asyncio.to_thread(self._rows_of_keys, table, columns, keys, out)
-
-    def _run(
-        self, job: Callable[[Any, Sequence[Any]], Any], args: Sequence[Any], tables: Mapping[str, Any] | None
-    ) -> pa.Table:
-        with self._backend.read_snapshot() as cursor:
-            return _on_cursor(cursor, job, args, tables)
-
-    async def run_job(
-        self,
-        job: Callable[[Any, Sequence[Any]], Any],
-        args: Sequence[Any] = (),
-        *,
-        tables: Mapping[str, Any] | None = None,
-    ) -> Any:
-        return await asyncio.to_thread(self._run, job, args, tables)

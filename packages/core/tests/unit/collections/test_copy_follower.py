@@ -23,14 +23,11 @@ from __future__ import annotations
 import bisect
 import asyncio
 import json
-import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace, TracebackType
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any
 
@@ -51,8 +48,10 @@ from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoi
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+from threetears.core.collections.copy_queries import CopyQueries, CopyVersion  # noqa: E402
 from threetears.core.collections.copy_key_work import INLINE_KEYS  # noqa: E402
 from packages.core.tests.copy_workers_support import COPY_WORKERS as _WORKERS  # noqa: E402
+from packages.core.tests.unit.collections import copy_query_jobs  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     FAILING_AFTER,
@@ -64,6 +63,7 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     PartialStamp,
     require_generation_by_trigger,
 )
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
@@ -74,7 +74,6 @@ from threetears.core.collections.delta_files import TableDelta, write_delta_file
 from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.testing.keyed_statements import as_lists  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
-from threetears.core.shared_arrow import SharedArrowStore  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -263,10 +262,11 @@ def _world(
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -274,6 +274,7 @@ def _world(
         page_size=page_size,
         retry_waits=retry_waits,
         drift_workers=_WORKERS if workers is None else workers,
+        queries=published.queries,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -418,19 +419,25 @@ async def test_a_pass_that_fails_part_way_leaves_the_copy_and_the_next_applies_t
     assert _copy(backend) == l3.held()
 
 
-async def test_a_readers_stamp_is_the_change_its_snapshot_holds(world: Any) -> None:
+async def _votes_of_geo_1(state: Any) -> list[Any]:
+    """geo 1's votes in a pinned state of the copy, read in a query worker."""
+    rows = await state.run_job(copy_query_jobs.sql, (f"SELECT votes FROM {_TABLE} WHERE geo_id = 1",))
+    return list(rows.column("votes").to_pylist())
+
+
+async def test_a_readers_stamp_is_the_change_its_pinned_state_holds(world: Any) -> None:
     l3, log, lock, backend, follower = world
     await _warmed(world, 10)
-    with follower.reading() as (cursor, stamp):
+    async with follower.current() as (state, stamp, _marks):
         l3.put([("VA", 1, 5)])
         log.commit([("VA", 1)])
         lock.version += 1
         assert await follower.catch_up()
-        # the old snapshot still reads the old rows under the old stamp
-        assert cursor.execute(f"SELECT votes FROM {_TABLE} WHERE geo_id = 1").fetchone() == (1,)
+        # the old pin still reads the old rows under the old stamp
+        assert await _votes_of_geo_1(state) == [1]
         assert stamp == lock.version - 1
-    with follower.reading() as (cursor, stamp):
-        assert cursor.execute(f"SELECT votes FROM {_TABLE} WHERE geo_id = 1").fetchone() == (5,)
+    async with follower.current() as (state, stamp, _marks):
+        assert await _votes_of_geo_1(state) == [5]
         assert stamp == lock.version
 
 
@@ -558,10 +565,11 @@ def _replica(
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     registry.set_noted_keys_reader(notes)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         tables,
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -570,6 +578,7 @@ def _replica(
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     return backend, follower, checkpoints
 
@@ -800,16 +809,18 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         columns=_COLUMNS,
         l3_kinds=(("state", STRING_TYPE), ("geo_id", BIGINT_TYPE), ("votes", BIGINT_TYPE), ("ver", BIGINT_TYPE)),
     )
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [table],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
         changes=log,
         page_size=50,
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     follower.register()
     l3.put(_rows("VA", 40))
@@ -1268,10 +1279,11 @@ def _scoped_world(
     backend.initialize(_metadata())
     registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1279,6 +1291,7 @@ def _scoped_world(
         page_size=page_size,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS if workers is None else workers,
+        queries=published.queries,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1438,10 +1451,11 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1449,6 +1463,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
         page_size=50,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     follower.register()
     bus = FakeNatsClient()
@@ -1492,16 +1507,18 @@ def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFol
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     log = _Log()
+    published = PublishedCopy(backend)
     return CopyFollower(
         registry,
         tables,
-        backend,
+        published,
         _L3(),
         settled=settled,
         generation=log.current,
         changes=log,
         **stamp,
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
 
 
@@ -1519,15 +1536,17 @@ def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construct
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     log = _Log()
+    published = PublishedCopy(backend)
     derived = CopyFollower(
         registry,
         scoped,
-        backend,
+        published,
         _L3(),
         settled=epochs.settled,
         generation=log.current,
         changes=log,
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     derived.register()
     assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
@@ -1796,10 +1815,11 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=("geo_id", "state"), columns=_COLUMNS, scope=("state", "state:"))],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1807,6 +1827,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         page_size=50,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1918,10 +1939,11 @@ def _derived_replica(
     )
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)  # the derived table is never followed: its owner derives it
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         followed,
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1930,6 +1952,7 @@ def _derived_replica(
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     return backend, follower
 
@@ -1992,10 +2015,11 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=("geo_id",), columns=_COLUMNS, scope=("state", "state:"))],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -2003,6 +2027,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
         page_size=50,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     follower.register()
     l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
@@ -2247,16 +2272,18 @@ async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, order=("state", "geo_id"))],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
         changes=log,
         page_size=50,
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     follower.register()
     await _warmed((l3, log, lock, backend, follower), 120)
@@ -2364,7 +2391,7 @@ async def test_repeated_deaths_reach_the_failing_state_serving_the_last_change_a
         assert status.phase is (FollowerPhase.FAILING if failed >= FAILING_AFTER else FollowerPhase.WAITING)
         # stale is fine: every reader still reads the last change applied, labelled with its stamp
         assert _copy(backend) == before
-        with follower.reading() as (_cursor, read_stamp):
+        async with follower.current() as (_state, read_stamp, _marks):
             assert read_stamp == stamp
     assert _behind_since() > 0
     l3.put([("VA", 5, 9)])
@@ -2445,7 +2472,7 @@ async def test_a_pass_that_only_relabels_the_copy_asks_the_backend_for_no_apply(
     assert await follower.catch_up()
     assert len(applies) == 1
     assert _copy(backend) == l3.held()
-    with follower.reading() as (_cursor, stamp):
+    async with follower.current() as (_state, stamp, _marks):
         assert stamp == lock.version
 
 
@@ -2463,12 +2490,12 @@ async def test_a_relabel_beside_a_write_that_holds_nothing_asks_for_no_apply_eit
     lock.held = frozenset()
     assert await follower.catch_up()
     assert isinstance(follower.stamp, PartialStamp)
-    with follower.reading() as (_cursor, stamp):
+    async with follower.current() as (_state, stamp, _marks):
         assert stamp == follower.stamp
     lock.held = None
     assert await follower.catch_up()
     assert not isinstance(follower.stamp, PartialStamp)
-    with follower.reading() as (_cursor, stamp):
+    async with follower.current() as (_state, stamp, _marks):
         assert stamp == follower.stamp
     assert applies == []
     assert _copy(backend) == before
@@ -2498,7 +2525,7 @@ async def test_a_relabel_never_hides_a_failed_apply_the_next_pass_tries_the_appl
     assert await follower.catch_up()
     assert len(applies) == 1
     assert _copy(backend) == l3.held()
-    with follower.reading() as (_cursor, stamp):
+    async with follower.current() as (_state, stamp, _marks):
         assert stamp == lock.version
     assert follower.status().relabelled == 0
 
@@ -2691,10 +2718,11 @@ async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_i
     )
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         tables,
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -2702,6 +2730,7 @@ async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_i
         page_size=INLINE_KEYS * 4,
         checkpoints=checkpoints,
         drift_workers=_WORKERS,
+        queries=published.queries,
     )
     assert not await follower.start()
     assert await follower.catch_up()
@@ -2831,185 +2860,32 @@ async def test_a_large_stage_is_cut_and_a_moved_scope_left_out_of_it_in_the_work
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
 
 
-async def test_a_checkpoint_opens_and_closes_its_read_of_the_copy_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Flips if a checkpoint opens its read of the copy on the event loop: a copy published as shared Arrow maps every
-    file of its version as the read opens (reports' ``SharedArrowBackend.read_snapshot``, ``MappedTables.__init__``),
-    which held one turn 0.27 s under the loop-stall guard (reports' tests/pod/test_retention.py, 2026-11-25). The read
-    is opened and closed on a thread, and the checkpoint is still written."""
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a")
-    loop_thread = threading.get_ident()
-    on_loop: list[str] = []
-    snapshot = backend.read_snapshot
-
-    @contextmanager
-    def watched() -> Iterator[Any]:
-        if threading.get_ident() == loop_thread:
-            on_loop.append("opened")
-        with snapshot() as cursor:
-            yield cursor
-        if threading.get_ident() == loop_thread:
-            on_loop.append("closed")
-
-    monkeypatch.setattr(backend, "read_snapshot", watched)
-    assert not await writer.start()
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    assert pointers.entries, "no checkpoint was written"
-    assert on_loop == [], f"a read of the copy was opened or closed on the event loop: {on_loop}"
-
-
-class _NewThreadEach(ThreadPoolExecutor):
-    """a default executor running each call on a thread of its own: every read of the copy a checkpoint opens on one
-    thread is closed on another, as a pool of many threads may do at any time."""
-
-    def submit[T](self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> Future[T]:
-        future: Future[T] = Future()
-
-        def run() -> None:
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                future.set_result(fn(*args, **kwargs))
-            except BaseException as exc:  # noqa: BLE001 - handed to the future's waiter, which raises it
-                future.set_exception(exc)
-
-        threading.Thread(target=run, daemon=True).start()
-        return future
-
-
-def _slotted_reads(backend: DuckDBBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, slots: int = 1) -> Any:
-    """each read of the copy holds a shared Arrow read's engine slot, as a copy published as shared Arrow does
-    (reports' ``SharedArrowBackend.read_snapshot``): the reader the slots are counted on, ``slots`` of them, a read
-    waiting at most 1 s for one."""
-    store = SharedArrowStore(tmp_path / "shm", max_bytes=8 << 20)
-    store.publish("v1", {"t": pa.table({"a": [1]})})
-    reader = store.reader(config={"threads": 1}, admit_wait=1.0, cores=slots)
-    snapshot = backend.read_snapshot
-
-    @contextmanager
-    def slotted() -> Iterator[Any]:
-        with reader.read(), snapshot() as cursor:
-            yield cursor
-
-    monkeypatch.setattr(backend, "read_snapshot", slotted)
-    return reader
-
-
-def _slots_held(reader: Any) -> tuple[int, int]:
-    return reader.status()["in_flight"], reader.status()["queued"]
-
-
-async def test_checkpoints_whose_reads_close_on_other_threads_hold_no_slot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Flips if a checkpoint's read of the copy, opened on one thread and closed on another, keeps its engine slot:
-    reports' replay 9 (2026-11-25) leaked three, every slot of the pod, and every read there then timed out at 30 s.
-    Ten checkpoints, each read closed on another thread than it opened on: no slot held after any, each written."""
-    asyncio.get_running_loop().set_default_executor(_NewThreadEach())
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
-    reader = _slotted_reads(backend, tmp_path, monkeypatch)
-    assert not await writer.start()
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    assert _pointer_seq(pointers) == 1
-    assert _slots_held(reader) == (0, 0)
-    for round_ in range(2, 12):
-        l3.put([("VA", round_, round_)])
-        log.commit([("VA", round_)])
-        lock.version += 1
-        assert await writer.catch_up()
-        await writer.checkpointed()
-        assert _slots_held(reader) == (0, 0), f"checkpoint {round_} left a slot held"
-        assert _pointer_seq(pointers) == round_, f"checkpoint {round_} was not written"
-    writer.stop()
-    reader.close()
-
-
-async def test_a_checkpoint_cancelled_while_its_read_opens_leaves_no_slot_held(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Flips if a checkpoint cancelled while its read of the copy opens on a thread (the follower stopped) leaves
-    the read open: the thread opens it after the cancel, and nothing closed it, its engine slot held for good."""
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
-    reader = _slotted_reads(backend, tmp_path, monkeypatch)
-    assert not await writer.start()
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    loop_thread = threading.get_ident()
-    opening, release = threading.Event(), threading.Event()
-    slotted = backend.read_snapshot
-    #: every read opened, kept: a read nothing closes stays open (never let go by its generator's collection, which a
-    #: reference anywhere, or a cycle until the collector runs, holds off)
-    kept: list[Any] = []
-
-    class HeldOpen:
-        def __init__(self) -> None:
-            self.read = slotted()
-            kept.append(self)
-
-        def __enter__(self) -> Any:
-            cursor = self.read.__enter__()
-            if threading.get_ident() != loop_thread:
-                opening.set()
-                assert release.wait(timeout=10), "the test never let the open land"
-            return cursor
-
-        def __exit__(
-            self, kind: type[BaseException] | None, exc: BaseException | None, trace: TracebackType | None
-        ) -> None:
-            self.read.__exit__(kind, exc, trace)
-
-    monkeypatch.setattr(backend, "read_snapshot", HeldOpen)
-    l3.put([("VA", 7, 70)])
-    log.commit([("VA", 7)])
-    lock.version += 1
-    assert await writer.catch_up()
-    assert await asyncio.to_thread(opening.wait, 5), "the checkpoint never opened its read"
-    writer.stop()
-    await writer.checkpointed()
-    release.set()
-    deadline = time.monotonic() + 5
-    while _slots_held(reader) != (0, 0) and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
-    assert _slots_held(reader) == (0, 0), "the read the cancelled checkpoint opened still holds its slot"
-    reader.close()
-
-
 async def test_a_checkpoint_pinned_behind_the_last_change_pins_again_off_the_loop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Flips if a checkpoint whose pinned state missed the last change (an apply landed while it pinned) is written
-    from it, claiming a change it does not hold, or pins again on the event loop: there it would wait for an engine
-    slot (with one slot, the stale pin holding it, every time), the loop held up to the reader's ``admit_wait`` (30 s
-    in a pod). The stale pin is let go and the state pinned again, each on a thread: the loop is never late, the
-    checkpoint is written from the fresh state, and no slot is left held."""
+    from it, claiming a change it does not hold, or holds the event loop while it pins again. The stale pin is let go
+    and the state pinned again (a lease and its mark file, read on a thread): the loop is never late, and the checkpoint
+    is written from the fresh state."""
     l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
     l3.put(_rows("VA", 200))
     log.commit([("VA", i) for i in range(200)])
-    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
-    reader = _slotted_reads(backend, tmp_path, monkeypatch, slots=1)
+    _backend_of, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
     assert not await writer.start()
     assert await writer.catch_up()
     await writer.checkpointed()
-    loop_thread = threading.get_ident()
-    marked = backend.staged_mark
-    pins: list[bool] = []
+    pinned = CopyQueries.current
+    pins: list[int | None] = []
 
-    def behind(cursor: Any) -> int | None:
-        # the first pin holds a change before the last applied: the checkpoint pins again
-        pins.append(threading.get_ident() == loop_thread)
-        return None if len(pins) == 1 else marked(cursor)
+    async def behind(self: CopyQueries) -> CopyVersion:
+        # the first pin holds a change before the last applied (its mark read none): the checkpoint pins again
+        version = await pinned(self)
+        pins.append(version.mark)
+        if len(pins) == 1:
+            version.mark = None
+        return version
 
-    monkeypatch.setattr(backend, "staged_mark", behind)
+    monkeypatch.setattr(CopyQueries, "current", behind)
     late = 0.0
 
     async def tick() -> None:
@@ -3031,7 +2907,4 @@ async def test_a_checkpoint_pinned_behind_the_last_change_pins_again_off_the_loo
     assert late < 0.5, f"the event loop was {late:.2f} s late: a pin waited for a slot on it"
     assert _pointer_seq(pointers) == 2, "the checkpoint was not written"
     assert len(pins) == 2, f"the checkpoint pinned {len(pins)} times, not once again after the stale pin"
-    assert pins == [False, False], "a pin was taken on the event loop"
-    assert _slots_held(reader) == (0, 0)
     writer.stop()
-    reader.close()

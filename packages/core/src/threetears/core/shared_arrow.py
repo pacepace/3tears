@@ -44,8 +44,8 @@ whatever the directory held that no live process holds (a container restarted in
 ``emptyDir``), part files no version it kept names among it, and a version written before manifests (a directory
 holding its files itself) is read, kept while held and removed as any other. There is no timer and no TTL.
 
-**A publish does what it changes.** The sweep a publish leaves -- readers told, superseded versions retired, their
-files removed -- runs after it returns, on the store's own thread: one at a time, a publish meanwhile asking for one
+**A publish does what it changes.** The sweep a publish leaves -- superseded versions retired, their files removed --
+runs after it returns, on the store's own thread: one at a time, a publish meanwhile asking for one
 more, never a pile (:meth:`SharedArrowStore.settle` waits for it). A publish that finds no room sweeps first itself.
 
 **Bounded.** A store is given the bytes it may hold, every version, result and hand-off together (``max_bytes``, set
@@ -75,7 +75,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import contextvars
 import enum
 import fcntl
 import functools
@@ -119,9 +118,8 @@ from threetears.core.eviction import (
 )
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.processes import exit_with_parent, name_process, start_worker_server
-from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import FrozenWeakKeys, FrozenWeakSet, contain, get_logger, remove_tree
-from threetears.observe.metrics import counter, gauge
+from threetears.observe.metrics import counter
 
 
 # pyarrow alone carries the store, its slots and hand-offs, and the pool: a process that never opens DuckDB (the hub,
@@ -143,7 +141,7 @@ try:
     release_default_threads()
 
     # DuckDB scans a registered Arrow table through pyarrow.dataset's Scanner, importing the module (and what it
-    # imports) at the first scan in the process, 25-70 ms inside a serving thread's read; imported here, at boot
+    # imports) at the first scan in the process, 25-70 ms inside a worker's first query; imported here, at boot
     import pyarrow.dataset  # noqa: F401
 
     _DUCKDB_EXTRA: ImportError | None = None
@@ -161,43 +159,29 @@ __all__ = [
     "MappedVersion",
     "Parts",
     "PiecedSlot",
-    "ReadSlot",
     "SegmentSlot",
     "SharedArrowFullError",
     "SharedArrowPool",
-    "SharedArrowReader",
     "SharedArrowStore",
     "SharedLease",
-    "SharedRead",
     "SharedVersion",
     "VersionFile",
     "column_print",
     "epochs_version",
     "serving_fallback_counted",
     "file_tokens",
-    "held_slot",
     "merge_parts",
     "merged_rows",
     "plain_name",
     "private_bytes",
     "query_batches",
     "read_version",
-    "riding",
     "stamped",
     "stamping",
     "version_files",
 ]
 
 log = get_logger(__name__)
-
-#: the longest a shared Arrow read waits for an engine slot before it fails, naming the reads ahead of it: a wait that
-#: long is a starved reader, not a busy one
-_ADMIT_WAIT_SECONDS: Final = 30.0
-
-#: the DuckDB threads a shared Arrow reader's connection runs a query on when its caller names none. Always set, never
-#: DuckDB's own default (every core): the reader's slots are counted from it, so what runs is what was counted, and no
-#: caller silently runs all-core engines or, counted as all-core, silently runs one read at a time
-_READER_THREADS: Final = 2
 
 #: the store's four parts: published versions (each a manifest), the files they name, workers' results, and the tables
 #: handed to one job each
@@ -328,8 +312,7 @@ def _require_arrow() -> None:
 
 def _require_duckdb() -> None:
     """raise, naming the extra, when duckdb or pyarrow could not be imported: the calls that open DuckDB over the
-    mapped tables (:meth:`MappedTables.connect`, :meth:`SharedArrowStore.reader`,
-    :meth:`SharedArrowStore.publish_query`) need both.
+    mapped tables (:meth:`MappedTables.connect`, :meth:`SharedArrowStore.publish_query`) need both.
 
     :return: nothing
     :rtype: None
@@ -2702,9 +2685,6 @@ class SharedArrowStore:
         #: the version staging directory being written now, and the version being published, which a sweep leaves alone
         self._staging: str | None = None
         self._pending: str | None = None
-        #: the serving process's readers of this store (:meth:`reader`), told after each publish; held weakly, replaced
-        #: whole under ``_state``
-        self._readers: FrozenWeakSet[SharedArrowReader] = FrozenWeakSet()
         #: slots reserved and not yet claimed or discarded, with the bytes each may take; a slot in pieces
         #: (:meth:`reserve_pieces`) is here a piece at a time, each written piece at the bytes it holds
         self._slots: Mapping[str, int] = EMPTY
@@ -3049,53 +3029,6 @@ class SharedArrowStore:
             # after it. The current version is stamped as it stops being current, never per lease (one utime each)
             _stamp_used(held.path)
         return SharedLease(held, descriptor, on_release)
-
-    def reader(
-        self,
-        *,
-        schema: str | None = None,
-        config: Mapping[str, Any] | None = None,
-        prepare: Callable[[Any], Any] | None = None,
-        admit_wait: float = _ADMIT_WAIT_SECONDS,
-        cores: int | None = None,
-    ) -> SharedArrowReader:
-        """a reader of the current version for this process (the serving process reading what its workers read), told
-        after every publish so it lets a superseded version go as soon as its last read ends.
-
-        :param schema: the schema each read's views are made in; None for the connection's default
-        :ptype schema: str | None
-        :param config: DuckDB settings for the reader's connection (``threads``, ``memory_limit``); ``threads`` unset
-            is 2, never DuckDB's every core
-        :ptype config: Mapping[str, Any] | None
-        :param prepare: called once with each version's connection as it is mapped (to make views over its tables,
-            say); what it returns is each read's ``prepared``
-        :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
-        :param admit_wait: the longest a read waits for an engine slot (:class:`SharedArrowReader`)
-        :ptype admit_wait: float
-        :param cores: the cores its reads may share (:class:`SharedArrowReader`); None for the process's usable cores
-        :ptype cores: int | None
-        :return: the reader; close it when done
-        :rtype: SharedArrowReader
-        :raises ImportError: when duckdb is not installed
-        """
-        _require_duckdb()
-        made = SharedArrowReader(
-            self, schema=schema, config=config, prepare=prepare, admit_wait=admit_wait, cores=cores
-        )
-        with self._state:
-            self._readers = self._readers.with_item(made)
-        return made
-
-    def _tell_readers(self) -> None:
-        """tell every reader a version was published, so each lets go of a superseded one nobody reads.
-
-        :return: nothing
-        :rtype: None
-        """
-        with self._state:
-            readers = list(self._readers)
-        for each in readers:
-            each.refresh()
 
     def reserve(self, max_bytes: int) -> SegmentSlot:
         """reserve a slot for one worker's result, counted at ``max_bytes`` until it is claimed or discarded.
@@ -3582,7 +3515,6 @@ class SharedArrowStore:
                     return
                 self._settle_due = False
             try:
-                self._tell_readers()
                 self.sweep()
             except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
                 contain(exc, log=log, what="a shared Arrow sweep after a publish failed; the next sweep retries it")
@@ -4144,7 +4076,6 @@ class SharedArrowStore:
         def reclaim(fits: Callable[[], bool]) -> None:
             # what a publish left to the store's thread may not have gone yet: swept now, then counted again; then
             # what is only cached, least recently used first, until the write fits or nothing cached is left
-            self._tell_readers()
             self.sweep()
             counted()
             while not fits() and self._evict_one():
@@ -4237,558 +4168,11 @@ class SharedArrowStore:
         return kept
 
 
-@dataclass(frozen=True)
-class SharedRead:
-    """one read of a version through a :class:`SharedArrowReader`, valid for its block.
-
-    :ivar version: the version read
-    :ivar tables: table name -> the mapped table
-    :ivar cursor: a DuckDB cursor with every table as a view over its mapped Arrow, no row copied; once the read ends
-        it is handed to a later read of the version (one read at a time), so leave nothing on it and change no setting:
-        a cursor holding a temporary view or table it was not made with, or whose read raised, is closed instead
-    :ivar prepared: what the reader's ``prepare`` returned for this version's connection; None without one
-    """
-
-    version: str
-    tables: Mapping[str, Any]
-    cursor: Any
-    prepared: Any = None
-
-
-class _HeldVersion:
-    """a version a reader holds: its lease, its mapping, a DuckDB connection with a view per table, and its reads."""
-
-    def __init__(
-        self,
-        lease: SharedLease,
-        schema: str | None,
-        config: Mapping[str, Any] | None,
-        prepare: Callable[[Any], Any] | None,
-        reuse: Mapping[Any, Any] | None = None,
-    ) -> None:
-        self.lease = lease
-        self.name = lease.version.name
-        try:
-            self.mapped = MappedTables(self.name, lease.version.path, lock=False, reuse=reuse)
-            try:
-                self.connection = self.mapped.connect(schema=schema, config=config)
-                try:
-                    self.prepared = None if prepare is None else prepare(self.connection)
-                except BaseException:
-                    self.connection.close()
-                    raise
-            except BaseException:
-                self.mapped.close()
-                raise
-        except BaseException:
-            lease.release()
-            raise
-        self.reads = 0
-        self.superseded = False
-        #: cursors finished reads handed back, each with its count of temporary objects when it was made: the next read
-        #: borrows one instead of registering every table again on a new cursor; closed as the version is let go
-        #: replaced whole, under the reader's lock
-        self.free: tuple[tuple[Any, int], ...] = ()
-
-    def borrow(self) -> tuple[Any, int]:
-        """a cursor of the connection with this version's tables registered on it (a registration is the cursor's
-        own, and the views made by :meth:`MappedTables.connect` name them): one a finished read handed back, else a new
-        one. Called under the reader's lock; the cursor is the borrower's alone until it is handed back.
-
-        :return: the cursor, and its count of temporary objects as made (:func:`_temporary_objects`)
-        :rtype: tuple[duckdb.DuckDBPyConnection, int]
-        """
-        if self.free:
-            borrowed, self.free = self.free[-1], self.free[:-1]
-            return borrowed
-        cursor = self.connection.cursor()
-        try:
-            for name, table in self.mapped.tables.items():
-                cursor.register(f"{_REGISTERED_PREFIX}{name}", table)
-            cursor.execute(_PREPARE_TEMPORARY_OBJECTS)
-            made = _temporary_objects(cursor)
-        except BaseException:
-            cursor.close()
-            raise
-        return cursor, made
-
-    def close(self) -> None:
-        """close the free cursors and the connection, unmap the files and release the lease (whose release retires the
-        version when it is not current and nobody else holds it).
-
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            free, self.free = self.free, ()
-            for cursor, _ in free:
-                cursor.close()
-            self.connection.close()
-            self.mapped.close()
-        finally:
-            self.lease.release()
-
-
-#: the statement counting a cursor's temporary views and tables (a read's leftovers, which would shadow a mapped table
-#: for the next read), prepared once on each cursor as it is made and executed after every read. Every read pays it,
-#: so it is one prepared statement, not two plain ones: on DuckDB 1.5.6 (2026-11-14, 20 registered tables) the
-#: two plain counts took 175-188 us a read, one plain UNION ALL 129-131 us, the prepared UNION ALL 66-76 us (a bare
-#: round trip is 53 us), beside a 350-420 us point query. With the two plain counts the check was ~90% of a serving
-#: read's cost past its query (the real-size read test at 1.43x on an idle laptop, 2.0-2.5x on loaded pool hosts
-#: against its 2x budget). A read that deallocates or replaces it makes the check fail, and its cursor is closed
-_TEMPORARY_OBJECTS_STATEMENT: Final = "threetears_shared_arrow_temporary_objects"
-_PREPARE_TEMPORARY_OBJECTS: Final = (
-    f"PREPARE {_TEMPORARY_OBJECTS_STATEMENT} AS SELECT count(*) FROM ("
-    "SELECT 1 FROM duckdb_views() WHERE temporary UNION ALL SELECT 1 FROM duckdb_tables() WHERE temporary)"
-)
-_TEMPORARY_OBJECTS: Final = f"EXECUTE {_TEMPORARY_OBJECTS_STATEMENT}"
-
-
-def _temporary_objects(cursor: Any) -> int:
-    """how many temporary views and tables a cursor sees (its registrations among them), by the statement
-    :data:`_PREPARE_TEMPORARY_OBJECTS` prepared on it as it was made.
-
-    :param cursor: the cursor
-    :ptype cursor: duckdb.DuckDBPyConnection
-    :return: the count
-    :rtype: int
-    """
-    (count,) = cursor.execute(_TEMPORARY_OBJECTS).fetchone()
-    return int(count)
-
-
-def _clean_cursor(cursor: Any, made: int) -> bool:
-    """whether a read left its cursor as it was made (no temporary view or table added or dropped), so the next read
-    may borrow it.
-
-    :param cursor: the cursor
-    :ptype cursor: duckdb.DuckDBPyConnection
-    :param made: its count of temporary objects as made
-    :ptype made: int
-    :return: whether it is clean; False when it cannot be read
-    :rtype: bool
-    """
-    try:
-        return _temporary_objects(cursor) == made
-    except duckdb.Error:
-        return False
-
-
-#: reads a serving process's shared Arrow readers have running now, and waiting for a slot (:class:`_Admission`): a
-#: starved reader shows as a queue that does not drain
-_READS_IN_FLIGHT = gauge(
-    "threetears_shared_arrow_reads_in_flight",
-    description="shared Arrow reads running now, across this process's readers",
-)
 #: the pieces each result in pieces took, counted as it is claimed (:meth:`SharedArrowStore.reserve_pieces`)
 _SLOT_PIECES = counter(
     "threetears_shared_arrow_slot_pieces",
     description="pieces the shared Arrow results claimed took, every result's together",
 )
-_READS_QUEUED = gauge(
-    "threetears_shared_arrow_reads_queued",
-    description="shared Arrow reads waiting for an engine slot, across this process's readers",
-)
-
-
-def _usable_cores() -> int:
-    """the cores this process may run on: its cgroup's quota, within its CPU affinity (never the machine's count)."""
-    return effective_cpu_count(cpu_count=getattr(os, "process_cpu_count", os.cpu_count))
-
-
-class ReadSlot:
-    """one read's engine slot (:class:`_Admission`): it belongs to the read, not the thread that took it, so the read
-    gives it back from whichever thread its block ends on. A read opened on one worker thread and closed on another
-    (``asyncio.to_thread`` twice, as a copy's checkpoint does) gives back exactly its own slot; when the slot was kept
-    per thread, the close on the other thread gave back nothing, and three such reads held every slot of a pod until
-    each read there timed out (reports' replay 9, 2026-11-25: reads in flight 3 with nothing running).
-
-    A read opened inside another's block, in its context on the same thread, rides the outer read's slot
-    (:attr:`rides`): that thread runs no second query at once, and waiting for a slot of its own it would wait on
-    itself. Made only by :meth:`_Admission.enter`; given back only by :meth:`_Admission.leave`.
-    """
-
-    __slots__ = ("admission", "done", "prior", "rides")
-
-    def __init__(self, admission: _Admission, rides: ReadSlot | None) -> None:
-        #: the admission it was taken from
-        self.admission = admission
-        #: the slot this read rides; None when it holds a slot of its own
-        self.rides = rides
-        #: what its context held before it, put back as it is given back there
-        self.prior = _HELD_SLOT.get()
-        #: written once, by its admission under its lock, as the slot is given back
-        self.done = False
-
-
-#: the slot a read in this context holds, and the thread it may be ridden from (None: any thread, as :func:`riding`
-#: hands it): a context, so ``asyncio.to_thread``'s copy of it ends with the call and another task on the same pool
-#: thread never sees it
-_HELD_SLOT: contextvars.ContextVar[tuple[ReadSlot, int | None] | None] = contextvars.ContextVar(
-    "threetears_shared_arrow_held_slot", default=None
-)
-
-
-def held_slot() -> ReadSlot | None:
-    """the slot the read open in this context holds, for :func:`riding` on another thread.
-
-    :return: the slot; None when no shared Arrow read is open in this context
-    :rtype: ReadSlot | None
-    """
-    held = _HELD_SLOT.get()
-    return None if held is None else held[0]
-
-
-@contextlib.contextmanager
-def riding(slot: ReadSlot | None) -> Iterator[None]:
-    """let a read opened in the block, on this thread, ride a read's slot held elsewhere (:func:`held_slot`): the
-    holder opened it on another thread and keeps it open, idle, until the block ends. A copy's checkpoint opens its
-    read on a thread and, when an apply landed meanwhile, opens a fresh one on the loop beside it: riding, the fresh
-    read takes no slot, so the loop never waits for one (up to the reader's ``admit_wait``; with one slot, the read
-    ahead holding it, every time).
-
-    :param slot: the slot; None rides nothing
-    :ptype slot: ReadSlot | None
-    :return: the block
-    :rtype: Iterator[None]
-    """
-    if slot is None:
-        yield
-        return
-    token = _HELD_SLOT.set((slot, None))
-    try:
-        yield
-    finally:
-        _HELD_SLOT.reset(token)
-
-
-class _Admission:
-    """the reads one reader runs at once: as many as keep (reads x engine threads) within the process's usable cores.
-
-    Past that, the OS shares the cores among more runnable threads than there are, and a read thread holding the
-    interpreter lock (building a result's Python rows) is preempted with it: the event loop then waits until that
-    thread runs again (2 CPUs, 4 reads of 2 engine threads each: the loop 12.6-15.8 ms late with the host idle on
-    time; prod 2026-10-31, engines sized past the pod's CPU quota froze the loop each throttled period). A read past
-    the slots waits, off the loop, first come first served, at most ``wait`` seconds. Each read holds a
-    :class:`ReadSlot` of its own, given back from any thread.
-    """
-
-    def __init__(self, slots: int, wait: float) -> None:
-        self.slots = max(1, slots)
-        self._wait = wait
-        self._turn = threading.Condition()
-        self._running = 0
-        #: the reads waiting, first come first; replaced whole under ``_turn``
-        self._waiting: tuple[object, ...] = ()
-
-    @property
-    def counts(self) -> tuple[int, int]:
-        """the reads running and waiting now."""
-        with self._turn:
-            return self._running, len(self._waiting)
-
-    def _ridden(self) -> ReadSlot | None:
-        """the slot of this admission a read opened now rides: one held in this context, still held, from this thread
-        (or handed by :func:`riding`); None to take a slot of its own."""
-        held = _HELD_SLOT.get()
-        if held is None:
-            return None
-        slot, thread = held
-        if slot.admission is not self or (thread is not None and thread != threading.get_ident()):
-            return None
-        with self._turn:
-            return None if slot.done else slot
-
-    def enter(self) -> ReadSlot:
-        """take a slot, waiting in turn for one; a read inside another's block on this thread rides its slot.
-
-        :return: the read's slot, for :meth:`leave`
-        :rtype: ReadSlot
-        :raises TimeoutError: when no slot came within the wait
-        """
-        outer = self._ridden()
-        if outer is not None:
-            return ReadSlot(self, outer)
-        slot = ReadSlot(self, None)
-        with self._turn:
-            self._waiting = (*self._waiting, slot)
-            _READS_QUEUED.inc()
-            try:
-                admitted = self._turn.wait_for(
-                    lambda: self._running < self.slots and self._waiting[0] is slot, timeout=self._wait
-                )
-            finally:
-                self._waiting = tuple(each for each in self._waiting if each is not slot)
-                _READS_QUEUED.dec()
-            if not admitted:
-                self._turn.notify_all()
-                raise TimeoutError(
-                    f"a shared Arrow read waited {self._wait:.0f} s for one of {self.slots} engine slots "
-                    f"({self._running} running, {len(self._waiting)} waiting)"
-                )
-            self._running += 1
-            _READS_IN_FLIGHT.inc()
-            # the next in line may be admitted too, when slots remain
-            self._turn.notify_all()
-        _HELD_SLOT.set((slot, threading.get_ident()))
-        return slot
-
-    def leave(self, slot: ReadSlot) -> None:
-        """give the read's slot back, from whichever thread its block ends on; a read that rode another's gives back
-        nothing.
-
-        :param slot: what :meth:`enter` gave the read
-        :ptype slot: ReadSlot
-        :return: nothing
-        :rtype: None
-        :raises RuntimeError: when the slot is another reader's or was given back already: never a silent count
-        """
-        if slot.admission is not self:
-            raise RuntimeError("a shared Arrow read's slot was given back to another reader's admission")
-        with self._turn:
-            if slot.done:
-                raise RuntimeError("a shared Arrow read's slot was given back twice")
-            slot.done = True
-            if slot.rides is None:
-                self._running -= 1
-                _READS_IN_FLIGHT.dec()
-                self._turn.notify_all()
-        held = _HELD_SLOT.get()
-        if held is not None and held[0] is slot:
-            # the context the read opened in: reads opened in it after this take slots of their own
-            _HELD_SLOT.set(slot.prior)
-
-
-class SharedArrowReader:
-    """the current version read in place by the process that owns the store: a serving process answering from the
-    same pages its workers map, with no copy of its own. Each read takes the version current as it opens and keeps it
-    for its block, whatever is published meanwhile; a superseded version is let go when its last read ends (the
-    store tells this reader after each publish), so the store holds two versions only while a read of the old one
-    is open. Made by :meth:`SharedArrowStore.reader`.
-
-    Blocking: a read that finds a new version maps it (one file per table or part); call :meth:`read` from a worker
-    thread, never the event loop.
-
-    :param store: the store
-    :ptype store: SharedArrowStore
-    :param schema: the schema each read's views are made in; None for the connection's default
-    :ptype schema: str | None
-    :param config: DuckDB settings for the reader's connection; ``threads`` unset is 2 (always set explicitly: the
-        slots are counted from it)
-    :ptype config: Mapping[str, Any] | None
-    :param prepare: called once with each version's connection as it is mapped; its answer is each read's
-        ``prepared``
-    :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
-    :param admit_wait: the longest a read waits for an engine slot (:class:`_Admission`: reads run at once only as
-        many as keep reads x the connection's ``threads`` within the process's usable cores)
-    :ptype admit_wait: float
-    :param cores: the cores its reads may share; None for the process's usable cores (its cgroup quota within its CPU
-        affinity)
-    :ptype cores: int | None
-    """
-
-    def __init__(
-        self,
-        store: SharedArrowStore,
-        *,
-        schema: str | None = None,
-        config: Mapping[str, Any] | None = None,
-        prepare: Callable[[Any], Any] | None = None,
-        admit_wait: float = _ADMIT_WAIT_SECONDS,
-        cores: int | None = None,
-    ) -> None:
-        self._store = store
-        self._schema = schema
-        self._config = dict(config or {})
-        # set on the connection explicitly, so the engine runs on the threads the slots are counted from
-        if self._config.get("threads") is None:
-            self._config["threads"] = _READER_THREADS
-        engine_threads = int(self._config["threads"])
-        if engine_threads < 1:
-            raise ValueError(f"a shared Arrow reader's DuckDB threads must be at least 1, got {engine_threads}")
-        self._admission = _Admission((_usable_cores() if cores is None else cores) // engine_threads, admit_wait)
-        self._prepare = prepare
-        self._lock = threading.Lock()
-        self._held: _HeldVersion | None = None
-        #: the files of the version let go that the current one shares, by identity, for its first read to take
-        #: (:class:`MappedTables`): mapped already, so keeping them keeps no page the current version does not hold
-        #: read-only, replaced whole; what it lets go goes to :func:`_free_in_turns` as a list of its tables, so they
-        #: are freed one at a time there, never with the mapping that held them
-        self._lend: Mapping[Any, Any] = EMPTY
-        self._closed = False
-        self._reads = 0
-        self._mapped = 0
-
-    @property
-    def reads(self) -> int:
-        """reads served: a diagnostic, also in :meth:`status`, written only by this object.
-
-        :return: the count
-        :rtype: int
-        """
-        return self._reads
-
-    @property
-    def mapped(self) -> int:
-        """versions mapped: a diagnostic, also in :meth:`status`, written only by this object.
-
-        :return: the count
-        :rtype: int
-        """
-        return self._mapped
-
-    @contextlib.contextmanager
-    def read(self) -> Iterator[SharedRead]:
-        """read the current version for the block.
-
-        :return: the read
-        :rtype: Iterator[SharedRead]
-        :raises LookupError: when nothing is published yet
-        :raises RuntimeError: after :meth:`close`
-        :raises TimeoutError: when no engine slot came within the reader's ``admit_wait``
-        """
-        # the slot is the read's: its block may end on another thread than it opened on (:class:`ReadSlot`)
-        slot = self._admission.enter()
-        try:
-            with self._read() as read:
-                yield read
-        finally:
-            self._admission.leave(slot)
-
-    @contextlib.contextmanager
-    def _read(self) -> Iterator[SharedRead]:
-        """:meth:`read`, its slot taken."""
-        let_go: _HeldVersion | None = None
-        lent: list[Any] = []
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("the shared Arrow reader is closed")
-            current = self._store.current
-            if current is None:
-                raise LookupError("no shared Arrow version is published yet")
-            held = self._held
-            if held is None or held.name != current.name:
-                # the version it replaces (or what it left to lend) gives it every file the two share: only what
-                # changed is mapped
-                # no local keeps the lent mapping: its tables must go one at a time below, not with the mapping
-                held = _HeldVersion(
-                    self._store.lease(),
-                    self._schema,
-                    self._config,
-                    self._prepare,
-                    self._lend if held is None else held.mapped.by_inode,
-                )
-                lent = list(self._lend.values())
-                self._lend = EMPTY
-                self._mapped += 1
-                let_go = self._supersede()
-                self._held = held
-            held.reads += 1
-            self._reads += 1
-            try:
-                cursor, made = held.borrow()
-            except BaseException:
-                held.reads -= 1
-                raise
-        # what the new version did not take is freed in turns, out of the lock (:func:`_free_in_turns`)
-        _free_in_turns(lent)
-        if let_go is not None:
-            let_go.close()
-        clean = False
-        try:
-            yield SharedRead(version=held.name, tables=held.mapped.tables, cursor=cursor, prepared=held.prepared)
-            clean = True
-        finally:
-            # handed back only as it was made: a temporary view or table left on it would shadow a mapped table for
-            # the next read, and a read that raised may have left anything
-            clean = clean and _clean_cursor(cursor, made)
-            with self._lock:
-                held.reads -= 1
-                if clean:
-                    held.free = (*held.free, (cursor, made))
-                done = held.superseded and held.reads == 0
-            if not clean:
-                cursor.close()
-            if done:
-                held.close()
-
-    def refresh(self) -> None:
-        """let go of the version held when another is current now; a read still open keeps it until it ends.
-
-        :return: nothing
-        :rtype: None
-        """
-        lent: list[Any] = []
-        with self._lock:
-            current = self._store.current
-            let_go = None
-            if self._held is not None and (current is None or self._held.name != current.name):
-                if current is not None:
-                    lent = list(self._lend.values())
-                    self._lend = _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode})
-                let_go = self._supersede()
-            elif self._held is None and self._lend and current is not None:
-                lent = list(self._lend.values())
-                self._lend = _shared_files(current.path, self._lend)
-        # what the current version no longer holds is freed in turns, out of the lock (:func:`_free_in_turns`)
-        _free_in_turns(lent)
-        if let_go is not None:
-            let_go.close()
-
-    def close(self) -> None:
-        """let the version go (when its open reads end) and read no more. Harmless twice.
-
-        :return: nothing
-        :rtype: None
-        """
-        with self._lock:
-            self._closed = True
-            lent = list(self._lend.values())
-            self._lend = EMPTY
-            let_go = self._supersede()
-        _free_in_turns(lent)
-        if let_go is not None:
-            let_go.close()
-
-    def status(self) -> dict[str, Any]:
-        """what the reader holds, as plain JSON values.
-
-        :return: the version held, its open reads, the reads and mappings so far, and the engine slots with the reads
-            running in them and waiting for one
-        :rtype: dict[str, Any]
-        """
-        with self._lock:
-            held = self._held
-            return {
-                "version": None if held is None else held.name,
-                "open_reads": 0 if held is None else held.reads,
-                "reads": self._reads,
-                "mapped": self._mapped,
-                "slots": self._admission.slots,
-                "in_flight": self._admission.counts[0],
-                "queued": self._admission.counts[1],
-            }
-
-    def _supersede(self) -> _HeldVersion | None:
-        """stop handing out the held version; the caller closes what this returns (nothing while a read is open, its
-        last read closes it then). Called under ``_lock``.
-
-        :return: the version to close now, or None
-        :rtype: _HeldVersion | None
-        """
-        held, self._held = self._held, None
-        if held is None:
-            return None
-        held.superseded = True
-        return held if held.reads == 0 else None
-
-    def __enter__(self) -> SharedArrowReader:
-        return self
-
-    def __exit__(
-        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
-    ) -> None:
-        self.close()
 
 
 def _slot_of(name: str) -> str:

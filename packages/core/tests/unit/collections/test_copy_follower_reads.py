@@ -21,7 +21,6 @@ import asyncio
 import sys
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
-from contextlib import AbstractContextManager
 from pathlib import Path
 from types import FrameType, SimpleNamespace
 from typing import Any
@@ -180,12 +179,6 @@ class _PublishedCopy:
         self._store.publish(f"c-{self._published}", tables)
         self._published += 1
         return rows
-
-    def read_snapshot(self) -> AbstractContextManager[Any]:
-        return self.backend.read_snapshot()
-
-    def staged_mark(self, cursor: Any) -> int | None:
-        return self.backend.staged_mark(cursor)
 
 
 def _followed(name: str, key: tuple[str, ...]) -> FollowedTable:

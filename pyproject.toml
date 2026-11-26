@@ -658,6 +658,8 @@ module = [
     # and the copy follower's own reads over its copy (lookups and jobs answered in shared Arrow)
     "threetears.core.collections.copy_reads",
     "threetears.core.collections.copy_checkpoint",
+    # and a test's copy that publishes each applied state as shared Arrow (testing.published_copy)
+    "threetears.core.testing.published_copy",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
     # and the writer's fold of a table's delta files into the full's parts (Arrow IPC)

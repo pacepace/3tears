@@ -2,7 +2,7 @@
 read-only in a worker, and its answer comes back as shared Arrow, never pickled.
 
 **Why** (``design-copy-worker-backend.md``, decision 4). Reports' tool reads queried the copy with DuckDB on threads of
-the serving process (the "engine slots", ``shared_arrow.SharedArrowReader``): CPU beside the event loop, and three
+the serving process (the "engine slots", deleted in 3T-8): CPU beside the event loop, and three
 slots leaked in replay 9 and starved every read. Here every query runs in a worker of a
 :class:`~threetears.core.shared_arrow.SharedArrowPool` (named ``copy-query``). The serving process does IO alone: it
 leases the version, hands the query's tables over (``SharedArrowStore.hand``: Arrow IPC in shared memory), and maps the
@@ -53,8 +53,8 @@ table.
 the change it holds (:data:`~threetears.core.collections.shared_copy.MARK_TABLE`, a one-row file read on a thread). No
 DuckDB and no cursor in the serving process: what a reader pins to read one state of the copy in its jobs.
 
-**Not yet here** (later chunks of the design): reports' tool reads (R-3) moving onto this; the engine slots' removal
-(3T-8).
+**The only reads of the copy.** The engine slots (the serving process's DuckDB reads on threads) are gone (3T-8):
+every read of the copy is a query here. Not yet here (later chunks of the design): reports' tool reads (R-3).
 """
 
 from __future__ import annotations

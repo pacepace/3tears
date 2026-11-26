@@ -12,7 +12,7 @@ and that work reads, or produces, more data than you want copied per process.
 
 | Fact | Value |
 |---|---|
-| Install | `3tears[snapshot]` (pyarrow and duckdb). The store, its slots and hand-offs, and the pool need pyarrow alone; `MappedTables.connect`, `SharedArrowStore.reader` and `publish_query` also need duckdb. |
+| Install | `3tears[snapshot]` (pyarrow and duckdb). The store, its slots and hand-offs, and the pool need pyarrow alone; `MappedTables.connect` and `publish_query` also need duckdb. |
 | Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables, merge_parts, merged_rows` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
@@ -22,9 +22,9 @@ and that work reads, or produces, more data than you want copied per process.
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
 | Eviction | A store short of room first lets go of what is only cached -- a superseded version an idle worker keeps mapped for its next read -- least recently used first, then refuses only when what it must keep alone does not fit. Every kind of entry declares its policy (`EVICTABLE` or `KEEP`, with why; no default): `threetears.core.eviction.policies_declared(Tier.SHARED)` lists them. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it, and a part file when the last version naming it goes; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds, part files no kept version names among it. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, and a reader's `read` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, and a segment's `close` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` names the base's files it does not rewrite: they exist once, the store counts them once, and the publish touches none of them. |
-| What a publish costs | The files it writes and one manifest, whatever the version holds besides. The sweep it leaves (readers told, superseded versions retired, their files removed) runs after it returns, on the store's own thread, one at a time; `store.settle()` waits for it. A publish short of room sweeps first itself. |
+| What a publish costs | The files it writes and one manifest, whatever the version holds besides. The sweep it leaves (superseded versions retired, their files removed) runs after it returns, on the store's own thread, one at a time; `store.settle()` waits for it. A publish short of room sweeps first itself. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
 
 ## Give the volume to the pod
@@ -88,9 +88,8 @@ async def on_change(epochs: dict[str, int]) -> None:
 
 A table given as `Parts` is one file per part (a state's rows, say). Publish the next version from the current one
 with `base=`, naming only the parts that changed: every other part, and every table not named, is the base's own file,
-named in the new version's manifest, so a change costs one part's write and one part's memory, at 60 parts or 6,000. Its first read maps only those parts too: the
-serving process's reader and a worker's kept version take every file the two versions share from the mapping they
-had.
+named in the new version's manifest, so a change costs one part's write and one part's memory, at 60 parts or 6,000. Its first read maps only those parts too: a
+worker's kept version takes every file the two versions share from the mapping it had.
 
 ```python
 import pyarrow as pa
@@ -203,38 +202,27 @@ with store.lease("v2"):
 - `file_tokens(path)` reads a file's footer once per process (kept by path, inode, size and modified time). It
   blocks: call it off the loop. Stamping compares in Arrow's C++ over the mapped base: run it in the worker.
 
-## Read the current version in the serving process
+## Query the current version from the serving process
 
-The process that owns the store reads the current version in place through a reader: the same pages its workers map,
-no copy of its own.
+The serving process never runs DuckDB over the store: no cursor, no engine thread. A query goes to a query worker
+through `CopyQueries` (`threetears.core.collections.copy_queries`), and its answer comes back as shared Arrow.
 
 ```python
-import asyncio
+from threetears.core.collections.copy_queries import CopyQueries
 
-reader = store.reader(config={"threads": 2})
-
-
-def total(state: str) -> int:
-    with reader.read() as read:                           # the version current as the read opens
-        return read.cursor.execute("SELECT sum(votes) FROM races WHERE state = ?", [state]).fetchone()[0]
+queries = CopyQueries(store, workers=2)
 
 
-async def handler(state: str) -> int:
-    return await asyncio.to_thread(total, state)
+async def total(state: str) -> int:
+    async with await queries.run("SELECT sum(votes) AS votes FROM races WHERE state = ?", [state]) as answer:
+        return answer.table.column("votes")[0].as_py()
 ```
 
-- A read keeps its version for its block, whatever is published meanwhile; the next read takes the new one.
-- The store tells its readers after each publish: a superseded version goes as soon as its last read ends, so two
-  versions are held only while a read of the old one is open.
-- `read.cursor` is a DuckDB cursor with every table as a view over its mapped Arrow; `read.tables` the tables.
-- A reader runs as many reads at once as keep reads x DuckDB `threads` within the process's usable cores (its cgroup
-  quota within its CPU affinity); a read past that waits its turn off the loop, at most `admit_wait` seconds (30), then
-  raises `TimeoutError`. More engine threads than cores leave a read thread that holds the interpreter lock preempted,
-  and the event loop waits for it.
-- `threads` unset is 2, set on the connection explicitly (never DuckDB's default of every core), so what runs is what
-  the slots were counted from.
-- `reader.status()` gives the version held, its open reads, the reads and mappings so far, and the slots with the
-  reads running in them (`in_flight`) and waiting (`queued`). Close the reader when done.
+- A query reads the version current as it is submitted, leased until its answer is mapped; `answer.version` names it.
+- `queries.lookup(table, keys, key)` finds rows by key in Arrow's hash kernels, in a worker.
+- `queries.current()` leases the current version with its mark, no DuckDB: what a reader pins to run jobs over one
+  state (`queries.run_job(job, args, version=...)`).
+- Close the pool when done (`await queries.close()`).
 
 ## Run jobs in workers over the current version
 

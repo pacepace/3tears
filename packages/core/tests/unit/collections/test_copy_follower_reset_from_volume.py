@@ -53,6 +53,8 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     PreparesStaged,
     is_reload_stage,
 )
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
+from threetears.core.collections.copy_queries import CopyQueries  # noqa: E402
 from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.coordination.lease import KVLease  # noqa: E402
@@ -297,10 +299,11 @@ class _World:
         self.registry = CollectionRegistry()
         for name in (_RESET, _OTHER, _PLAIN):
             self.registry.follow_generation(name)
+        self.published = published = PublishedCopy(self.backend)
         self.follower = CopyFollower(
             self.registry,
             [_followed(_RESET), _followed(_OTHER), _followed(_PLAIN)],
-            self.backend,
+            published,
             self.l3,
             settled=self.lock.settled,
             generation=self.log.current,
@@ -312,6 +315,7 @@ class _World:
             recreate=recreate,
             file_poll_seconds=0.01 if recreate is not None else None,
             drift_workers=COPY_WORKERS,
+            queries=published.queries,
         )
         self.writes = 0
 
@@ -1216,8 +1220,8 @@ async def test_a_backend_that_prepares_a_reload_does_it_outside_the_pass_lock_on
         entered.set()
         release.wait(timeout=30)
 
-    monkeypatch.setattr(world.backend, "prepare_staged", prepare_staged, raising=False)
-    assert isinstance(world.backend, PreparesStaged)
+    monkeypatch.setattr(world.published, "prepare_staged", prepare_staged, raising=False)
+    assert isinstance(world.published, PreparesStaged)
     _publish_reset_full(world, term=2)
     try:
         for _ in range(1000):
@@ -1387,19 +1391,19 @@ async def test_a_reset_heard_while_a_cleared_prefix_is_named_puts_no_key_of_the_
     await world.started()
     old = world.copy(_RESET)
     world.clear(_RESET, "IL")
-    reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
-    snapshot = world.backend.read_snapshot
+    looked_up = CopyQueries.lookup
     told: list[str] = []
 
-    def reading() -> Any:
-        # the pass's first read of the copy is the one naming the cleared prefix's keys
+    async def reading(self: CopyQueries, *args: Any, **kwargs: Any) -> Any:
+        # the pass's first read of the copy (a lookup, in a query worker) is the one naming the cleared prefix's keys:
+        # the reset heard on the loop while it reads
         if not told:
-            told.append(reset())
-        return snapshot()
+            told.append(_reset_now(world, _AFTER_RESET))
+        return await looked_up(self, *args, **kwargs)
 
-    monkeypatch.setattr(world.backend, "read_snapshot", reading)
+    monkeypatch.setattr(CopyQueries, "lookup", reading)
     await world.follower.catch_up()
-    monkeypatch.setattr(world.backend, "read_snapshot", snapshot)
+    monkeypatch.setattr(CopyQueries, "lookup", looked_up)
     assert told
     assert _RESET in world.follower.status().waiting_for_full
     assert _RESET not in world.follower.status().pending, "keys of the replaced table were put back pending"
@@ -1494,10 +1498,11 @@ class _Checkpointed(_World):
             decode_stamp=lambda data: SimpleNamespace(**data, pending=frozenset()),
         )
         self.registry.set_noted_keys_reader(_Notes([("VA", "1")]))
+        self.published = published = PublishedCopy(self.backend)
         self.follower = CopyFollower(
             self.registry,
             [_followed(_RESET), _followed(_OTHER), _followed(_PLAIN)],
-            self.backend,
+            published,
             self.l3,
             settled=self.lock.settled,
             generation=self.log.current,
@@ -1507,6 +1512,7 @@ class _Checkpointed(_World):
             checkpoints=self.checkpoints,
             fulls=VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
             drift_workers=COPY_WORKERS,
+            queries=published.queries,
         )
 
     def seq(self) -> int:

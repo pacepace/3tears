@@ -34,6 +34,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage, noted_keys_page  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy, close_published_copies  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.ddl.change_notes import note_trigger_sql, trigger_function_sql  # noqa: E402
@@ -54,6 +55,13 @@ _HELD = 150_000
 _CHANGED = 70_000
 #: timed runs of each path, the best kept
 _RUNS = 3
+
+
+@pytest.fixture(autouse=True)
+async def _published_copies_closed() -> AsyncIterator[None]:
+    """every copy a test published (``testing.published_copy``) closed after it: its query workers and its store."""
+    yield
+    await close_published_copies()
 
 
 def _metadata() -> MetaData:
@@ -175,14 +183,16 @@ async def _warm_follower(db: _Db, log: _Log, version: list[int]) -> tuple[CopyFo
     async def settled() -> int:
         return version[0]
 
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)],
-        backend,
+        published,
         db.pool,
         settled=settled,
         generation=log.current,
         changes=log,
+        queries=published.queries,
     )
     follower.register()
     await follower.warm()

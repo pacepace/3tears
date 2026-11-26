@@ -81,7 +81,6 @@ if TYPE_CHECKING:
 try:
     import pyarrow as pa
     import pyarrow.compute as pc
-    import pyarrow.ipc as pa_ipc
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a full refuses without it, saying so
@@ -113,7 +112,6 @@ __all__ = [
     "deletable_full_files",
     "fingerprint_columns",
     "fingerprint_comparable",
-    "fingerprint_ipc",
     "fingerprint_kinds",
     "full_table_floor",
     "other_columns_parts",
@@ -432,20 +430,6 @@ def other_columns_parts(entry: FullTable, kinds: Sequence[tuple[str, str]]) -> t
         and fingerprint_comparable(part.fingerprint)
         and not part.fingerprint.startswith(opening)
     )
-
-
-def fingerprint_ipc(ipc: bytes, kinds: tuple[tuple[str, str], ...]) -> str:
-    """:func:`rows_fingerprint` of rows handed over as an Arrow IPC stream: the worker-process job a copy runs it as
-    (plain data in and out, :mod:`~threetears.core.process_workers`).
-
-    :param ipc: the rows, an Arrow IPC stream
-    :ptype ipc: bytes
-    :param kinds: :func:`fingerprint_kinds` of the columns
-    :ptype kinds: tuple[tuple[str, str], ...]
-    :return: the fingerprint
-    :rtype: str
-    """
-    return rows_fingerprint(pa_ipc.open_stream(ipc).read_all(), kinds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -953,7 +937,7 @@ class StatesNotSplitError(ValueError):
 def state_rows(connection: Any, args: Sequence[Any]) -> Any:
     """a job over one state of the copy (``copy_reads``): its rows of one state, pinned by the table's scope column
     (``read_state_arrow``, pinned by its DeclaredScope column), every row it holds of the state, never L3. Run in a
-    query worker over a shared copy's version, or on the in-process copy's snapshot cursor.
+    query worker over a version of the shared copy.
 
     :param connection: the state's connection or cursor
     :ptype connection: duckdb.DuckDBPyConnection

@@ -12,9 +12,9 @@ from L3, and the copy is the registry's L1 backend's own tables.
 **One state of every table.** A change is applied only at a settled stamp of the writer's seqlock (``settled``, as
 :class:`~threetears.core.collections.complete_copy.BufferedCopies` takes it; on the reports pod ``ScopeEpochs``): the
 stamp is read, every table is caught up to its generation read AFTER it, the keys heard are read from L3 and staged
-beside the copy (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.stage_rows`), the stamp is read again, and only
-when it has not moved is everything staged applied in ONE DuckDB transaction
-(:meth:`~threetears.core.cache.duckdb.DuckDBBackend.apply_staged`) and the copy labelled with the stamp. A stamp that
+beside the copy (:meth:`FollowerBackend.stage_rows`), the stamp is read again, and only when it has not moved is
+everything staged applied in ONE change (:meth:`FollowerBackend.apply_staged`, in the backend's apply worker, published
+as one version of the shared copy) and the copy labelled with the stamp. A stamp that
 moved, or a write in progress, keeps every key pending for the next pass and the copy as it was: stale, never mixed.
 The label is exact when the writer's seqlock commit comes after the generation advances of the data it covers (a
 writer whose last data transaction commits the stamp itself races that transaction's advance).
@@ -106,9 +106,9 @@ from itertools import chain
 from operator import attrgetter
 from datetime import UTC, datetime
 from decimal import Decimal
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
@@ -171,7 +171,7 @@ from threetears.core.collections.copy_key_work import (
     without_keys_job,
     without_keys_of,
 )
-from threetears.core.collections.copy_reads import CopyReads, CursorReads, PinnedCopy, QueriedReads, keyed_job
+from threetears.core.collections.copy_reads import CopyReads, PinnedCopy, QueriedReads, keyed_job
 from threetears.core.collections.delta_copy_beats import CopyBeats
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
@@ -220,7 +220,6 @@ from threetears.core.process_workers import ProcessWorkers
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
-    from threetears.core.cache.duckdb import DuckDBBackend
     from threetears.core.collections.copy_queries import CopyQueries
     from threetears.core.collections.copy_checkpoint import CopyCheckpoints
     from threetears.core.collections.epoch_change import EpochChangeReader
@@ -1838,7 +1837,7 @@ class PreparesStaged(Protocol):
     Why: a reload held the pass lock through the whole of its apply, and a pod's backend that rewrites the table's
     parts in a worker process took seconds for it (a local burst replay, 2026-11-24: writer commit to copy publish
     a median 0.5 s with no reload between, 9.4 s and up to 45 s with one). A backend without this method does the
-    whole apply under the lock, as before (the in-process DuckDB's apply is its swap).
+    whole apply under the lock, as before.
     """
 
     def prepare_staged(self, changes: Sequence[StagedChange]) -> None:
@@ -1850,8 +1849,10 @@ class PreparesStaged(Protocol):
 
 class FollowerBackend(Protocol):
     """what a :class:`CopyFollower` keeps its copy in: a backend that stages a change beside the copy and applies
-    everything staged in one transaction (:class:`~threetears.core.cache.duckdb.DuckDBBackend` is one; a pod's own
-    backend that publishes the copy to its worker processes is another). Each method is called on a thread.
+    everything staged as one change in its apply worker, publishing each applied state as a version of the shared copy
+    (with the change's mark, ``shared_copy.MARK_TABLE``) that the follower's ``queries`` read. Each method is called on
+    a thread. It has no read: every read of the copy is a query worker's (``copy_reads``), never a cursor here
+    (``design-copy-worker-backend.md``, chunk 3T-8: the in-process DuckDB is no follower's backend).
     """
 
     def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
@@ -1881,14 +1882,6 @@ class FollowerBackend(Protocol):
         """apply every change staged in one transaction, labelled with ``mark``; the rows applied. Raises
         ``LookupError`` when the stages are gone (the worker holding them died; nothing applied): the follower then
         reads the change again. Any other failure keeps the stages for the apply to be tried again."""
-        ...
-
-    def read_snapshot(self) -> AbstractContextManager[Any]:
-        """a cursor over one applied state of the copy, for as long as the block runs."""
-        ...
-
-    def staged_mark(self, cursor: Any) -> int | None:
-        """the mark of the change the state ``cursor`` reads was applied with; None before any."""
         ...
 
 
@@ -1940,12 +1933,10 @@ class CopyFollower:
         (:mod:`~threetears.core.collections.copy_key_work`); None shares the process's one (:data:`_COPY_WORKERS`)
     :ptype drift_workers: ProcessWorkers | None
     :param queries: the copy's query pool (:class:`~threetears.core.collections.copy_queries.CopyQueries`) over the
-        store a pod's backend publishes the copy in as shared Arrow: the follower's own reads of its copy (a pass's
-        keyed lookups, a checkpoint's parts, a drift check's and a reload's rows of a state) run there, in query
-        workers, and none opens a DuckDB connection or a cursor in this process (``copy_reads``). None: the copy is
-        the in-process DuckDB, read on its snapshot cursor on a thread (``copy_reads.CursorReads``; that backend's own
-        reads, which go with it as a follower's backend)
-    :ptype queries: CopyQueries | None
+        store ``backend`` publishes the copy in as shared Arrow: the follower's own reads of its copy (a pass's keyed
+        lookups, a checkpoint's parts, a drift check's and a reload's rows of a state) run there, in query workers, and
+        none opens a DuckDB connection or a cursor in this process (``copy_reads``)
+    :ptype queries: CopyQueries
     :param beats: this copy's beat for a writer whose fold deletes its delta files (``retention="delete"``, decision
         54): the copy registers ``starting`` before it loads or follows anything and renews it until the start is
         done, then beats the marks it holds every key of each beat interval and after each change applied (off the
@@ -1975,7 +1966,7 @@ class CopyFollower:
         file_poll_seconds: float | None = None,
         drift_check_seconds: float | None = None,
         drift_workers: ProcessWorkers | None = None,
-        queries: CopyQueries | None = None,
+        queries: CopyQueries,
         beats: CopyBeats | None = None,
     ) -> None:
         if pa is None:
@@ -2120,9 +2111,8 @@ class CopyFollower:
         self._drift_seconds = _drift_check_seconds(drift_check_seconds)
         #: the copy's one worker process: its drift checks' fingerprints and a pass's key work (copy_key_work)
         self._workers = drift_workers if drift_workers is not None else _COPY_WORKERS
-        #: the follower's reads of its copy: in query workers over a shared copy, on a snapshot cursor of the
-        #: in-process one
-        self._copy: CopyReads = QueriedReads(queries) if queries is not None else CursorReads(backend, self._workers)
+        #: the follower's reads of its copy: in query workers over the shared copy
+        self._copy: CopyReads = QueriedReads(queries)
         #: for each opted-in table, the version the copy holds each state at (decision 32): the full's part's at the
         #: load, then the newest epoch applied of the state; :data:`_VERSION_UNKNOWN` once a change of it applied with
         #: no epoch. A table read whole or by partition since its load holds none (:meth:`_hold_state_versions`)
@@ -4399,8 +4389,7 @@ class CopyFollower:
 
         Why pinned, not a cursor: a checkpoint's parts are read in jobs over the pinned state (``copy_reads``), which
         over a shared copy run in query workers, so the write opens no DuckDB connection or cursor in this process and
-        holds no engine slot; the pin is a lease taken on a thread. Over the in-process copy the state is a snapshot
-        cursor, opened and closed on a thread.
+        holds no engine slot; the pin is a lease taken on a thread.
 
         :return: nothing
         :rtype: None
@@ -5185,8 +5174,8 @@ class CopyFollower:
         self, table: FollowedTable, columns: Annotated[Sequence[str], DeclaredKey], keys: Any
     ) -> Any:
         """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a keyed lookup of the
-        copy on a leading part of the key (the whole key, or a load's prefix), never L3; each row once. Over a shared
-        copy a query worker's (``copy_reads.QueriedReads``), never a cursor here.
+        copy on a leading part of the key (the whole key, or a load's prefix), never L3; each row once: a query
+        worker's (``copy_reads.QueriedReads``), never a cursor here.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -5718,7 +5707,7 @@ class CopyFollower:
 
     async def _held_arrow(self, table: FollowedTable, keys: Any) -> Any:
         """the rows the copy holds of some keys, typed as the L3 rail answers them: a keyed lookup of the copy, never
-        L3 (over a shared copy a query worker's, never a cursor here).
+        L3 (a query worker's, never a cursor here).
 
         Why the copy's: an upsert keeps every column its write left out, and the row's ``date_created``, from the row
         L3 held, which is the row the copy holds before the change (``design-pod-delta-files.md``, decision 19).
@@ -6536,27 +6525,11 @@ class CopyFollower:
         """
         return self._status.stamp
 
-    @contextmanager
-    def reading(self) -> Iterator[tuple[Any, Any]]:
-        """a cursor reading one state of every table, and the stamp it holds them at.
-
-        The stamp is read from the snapshot itself (the change's mark, committed with it), so it is exactly the
-        change the cursor reads, whatever is applied meanwhile. A product's cursor read of its copy: the follower's
-        own reads take none (:meth:`current`).
-
-        :return: ``(cursor, stamp)``; the stamp is None before the first change
-        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any]]
-        """
-        with self._backend.read_snapshot() as cursor:
-            mark = self._backend.staged_mark(cursor)
-            stamp = self._stamps.get(mark, (None, {}))[0] if mark is not None else None
-            yield cursor, stamp
-
     @asynccontextmanager
     async def current(self) -> AsyncIterator[tuple[PinnedCopy, Any, Mapping[str, str | None]]]:
         """the state of the copy applied now, pinned for the block (``copy_reads.PinnedCopy``: a version leased with
-        its mark over a shared copy, no cursor and no DuckDB here; a snapshot cursor over the in-process one), with
-        the stamp and each table's epoch mark of the change it holds: what a checkpoint of it records.
+        its mark, no cursor and no DuckDB here), with the stamp and each table's epoch mark of the change it holds:
+        what a checkpoint of it records, and what a product's read of one state of its copy pins.
 
         A state pinned while a change was being applied may hold the change before it, which a checkpoint counts as
         held: pinned again, up to :data:`_PIN_TRIES` times; one still behind says no stamp (a checkpoint of it writes
@@ -6618,10 +6591,3 @@ class CopyFollower:
             log.info("copy follower", extra={"extra_data": {"phase": phase.value, "detail": detail}})
         self._status.phase = phase
         self._status.detail = detail
-
-
-if TYPE_CHECKING:
-
-    def _duckdb_is_a_follower_backend(backend: DuckDBBackend) -> FollowerBackend:
-        """mypy's proof that the DuckDB L1 is a copy follower's backend: it fails here if they part."""
-        return backend

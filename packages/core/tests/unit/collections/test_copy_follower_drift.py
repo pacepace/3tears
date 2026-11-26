@@ -38,6 +38,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, rail_arrow_types  # noqa: E402
@@ -258,10 +259,11 @@ class _World:
         self.registry = CollectionRegistry()
         for name in _OPTED:
             self.registry.follow_generation(name)
+        self.published = published = PublishedCopy(self.backend)
         self.follower = CopyFollower(
             self.registry,
             [_followed(name, key) for name in _OPTED],
-            self.backend,
+            published,
             self.l3,
             settled=self.lock.settled,
             generation=self.log.current,
@@ -271,6 +273,7 @@ class _World:
             fulls=VolumeFulls(volume, [_followed(name, key) for name in _OPTED], poll_seconds=0.01),
             drift_check_seconds=0,
             drift_workers=workers,
+            queries=published.queries,
         )
         self.writes = 0
 
@@ -335,6 +338,8 @@ async def test_a_corrupted_copy_row_flips_the_gauge_for_exactly_that_table_and_s
     drift_before = _checks(_RESULTS, "drift")
     timed_before = _check_seconds("drift")
     world.backend.execute_query("UPDATE results SET votes = 999 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
+    # a corruption of the copy itself, outside any change: published as a pod's copy would hold it
+    world.published.publish()
     outcomes = await world.follower.check_drift()
     assert outcomes[(_RESULTS, "state:VA")] == "drift"
     assert {key: outcome for key, outcome in outcomes.items() if outcome != "equal"} == {
@@ -348,6 +353,8 @@ async def test_a_corrupted_copy_row_flips_the_gauge_for_exactly_that_table_and_s
     assert _check_seconds("drift") == timed_before + 1
     # the row put back: the next check finds the state equal and the gauge drops to 0
     world.backend.execute_query("UPDATE results SET votes = 11 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
+    # a corruption of the copy itself, outside any change: published as a pod's copy would hold it
+    world.published.publish()
     assert (await world.follower.check_drift())[(_RESULTS, "state:VA")] == "equal"
     assert _parts(_RESULTS, "VA") == 0
     assert world.l3.statements == 0
@@ -385,6 +392,8 @@ async def test_an_extra_copy_row_of_a_state_flips_the_gauge(_volume: Path, worke
     world = _World(_volume, workers, _KEYS[shape])
     await world.started()
     world.backend.execute_query("INSERT INTO results (state, geo_id, votes) VALUES ('VA', 99, 5) RETURNING geo_id")
+    # a corruption of the copy itself, outside any change: published as a pod's copy would hold it
+    world.published.publish()
     outcomes = await world.follower.check_drift()
     assert {key: outcome for key, outcome in outcomes.items() if outcome != "equal"} == {
         (_RESULTS, "state:VA"): "drift"
@@ -420,6 +429,8 @@ async def test_a_part_fingerprinted_in_an_older_format_reads_no_fingerprint_neve
         },
     )
     world.backend.execute_query("UPDATE results SET votes = 999 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
+    # a corruption of the copy itself, outside any change: published as a pod's copy would hold it
+    world.published.publish()
     drift_before = _checks(_RESULTS, "drift")
     outcomes = await world.follower.check_drift()
     assert outcomes == {(name, f"state:{state}"): "no_fingerprint" for name in _OPTED for state in ("IL", "VA")}

@@ -64,9 +64,9 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Annotated, Any, Final, Protocol
 
-from threetears.interfaces.keyed.rows import KeyColumn
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn
 from threetears.observe import cancel_and_wait, contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
@@ -74,7 +74,7 @@ from threetears.core.declared import whole_read
 from threetears.core.operator import operator_reset
 from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
-from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
+from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
 from threetears.core.ddl.change_notes import DEFAULT_NOTE_FENCE
@@ -97,6 +97,7 @@ __all__ = [
     "COLD_START",
     "SCHEMA_CHANGE",
     "Checkpoint",
+    "CheckpointCopy",
     "CheckpointTable",
     "CopyCheckpoints",
     "StagedCheckpoint",
@@ -249,12 +250,41 @@ def _decode_part(data: bytes) -> Any:
     return ipc.open_stream(data).read_all()
 
 
+class CheckpointCopy(Protocol):
+    """what a checkpoint loads into and records beside its parts: the copy's stages (a load stages each part, applied
+    by the follower) and each table's schema digest. A follower's backend (``copy_follower.FollowerBackend``), never a
+    read of the copy: a write reads its parts in query workers over the pinned state (``copy_reads.PinnedCopy``).
+    Each method is called on a thread.
+    """
+
+    def schema_digest(self, table: str) -> str:
+        """a digest of ``table``'s schema in the copy: a part written under another is not loaded."""
+        ...
+
+    def stage_rows(
+        self,
+        stage: str,
+        table: str,
+        rows: Any,
+        key: Annotated[Sequence[str], DeclaredKey],
+        *,
+        unique_keys: bool = False,
+    ) -> int:
+        """stage some rows of ``table`` under ``stage`` (``unique_keys``: no key repeats among them); the rows
+        staged."""
+        ...
+
+    def drop_stage(self, *stages: str) -> None:
+        """drop these stages."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class CheckpointTable:
     """one table in a checkpoint: the mark its rows are at, the schema they were written with, and its parts.
 
     :ivar mark: the table's epoch mark
-    :ivar digest: :meth:`DuckDBBackend.schema_digest` of the table that wrote it
+    :ivar digest: :meth:`CheckpointCopy.schema_digest` of the table that wrote it
     :ivar parts: each part's object name, scope (None for a table with no scope) and rows, in order
     :ivar derived: a table the copy derives from the followed ones (no epoch mark): it holds what they hold at the
         checkpoint's stamp, so it loads only with every followed table from the same checkpoint
@@ -539,7 +569,7 @@ class CopyCheckpoints:
     :param tables: the tables the copy holds
     :ptype tables: Sequence[FollowedTable]
     :param backend: the copy (each table's schema digest is recorded beside its parts)
-    :ptype backend: DuckDBBackend
+    :ptype backend: CheckpointCopy
     :param store: the Object Store: ``put``, ``get``, ``list_names``, and ``require_room`` (a write asks it for all its
         new parts' room before it puts the first: :meth:`threetears.nats.object_store.NatsObjectStore.require_room`)
     :ptype store: Any
@@ -564,7 +594,7 @@ class CopyCheckpoints:
         *,
         name: str,
         tables: Sequence[FollowedTable],
-        backend: DuckDBBackend,
+        backend: CheckpointCopy,
         store: Any,
         pointers: Any,
         retire: Callable[[list[str]], Awaitable[Any]],

@@ -84,3 +84,16 @@ def dies(connection: Any, binds: Sequence[Any]) -> Any:
     :rtype: Any
     """
     os._exit(9)
+
+
+def sql(connection: Any, args: Sequence[Any]) -> Any:
+    """SQL over the state a job is run over: a test's read of one pinned state of the copy, in a query worker.
+
+    :param connection: the state's connection
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param args: the SQL, then its binds
+    :ptype args: Sequence[Any]
+    :return: its answer
+    :rtype: duckdb.DuckDBPyConnection
+    """
+    return connection.execute(args[0], list(args[1:]))

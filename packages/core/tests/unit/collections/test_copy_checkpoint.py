@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from contextlib import ExitStack, asynccontextmanager
 from typing import Any
 
 import pytest
@@ -44,10 +44,9 @@ from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     StagedCheckpoint,
 )
 from threetears.core.collections.copy_follower import FollowedTable  # noqa: E402
-from threetears.core.collections.copy_reads import CursorReads, PinnedCopy  # noqa: E402
+from threetears.core.collections.copy_reads import PinnedCopy  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join  # noqa: E402
-from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.nats import ObjectStoreFullError  # noqa: E402
 
 _VOTES = "votes"
@@ -257,9 +256,9 @@ class _Copy:
 
     @asynccontextmanager
     async def read(self) -> AsyncIterator[tuple[PinnedCopy, Any, Mapping[str, str | None]]]:
-        """the state the copy holds, pinned as a follower pins it (its snapshot, read on a thread), every statement a
-        write runs on it recorded."""
-        state = await CursorReads(_Recorded(self.backend, self.statements), _WORKERS).current()
+        """the state the copy holds, pinned as a follower pins it, its jobs run here on a snapshot cursor that records
+        every statement a write runs on it (a follower's run in a query worker: the same jobs, unrecorded)."""
+        state = await asyncio.to_thread(_RecordingPin.opened, self.backend, self.statements)
         try:
             mark = state.mark
             stamp, marks = self.stamps.get(mark, (None, {})) if mark is not None else (None, {})
@@ -273,26 +272,55 @@ class _Copy:
             return sorted(cursor.execute(f"SELECT {columns} FROM {table}").fetchall())  # noqa: S608
 
 
-#: the worker processes a cursor read's fingerprint would be taken in: none is (a checkpoint takes none), and none
-#: starts until a job is given
-_WORKERS = ProcessWorkers(workers=1, name="test copy checkpoint")
+class _RecordingPin:
+    """one applied state of the copy, as a checkpoint write pins it (``copy_reads.PinnedCopy``): its jobs run on a
+    snapshot cursor of the test's DuckDB, on a thread, each statement recorded; its mark read on the cursor itself,
+    unrecorded. A test fixture: a follower's pin is a leased version whose jobs run in a query worker."""
 
-
-class _Recorded:
-    """the copy's snapshot reads, each cursor recording the statements run on it; its mark read on the cursor itself,
-    unrecorded."""
-
-    def __init__(self, backend: DuckDBBackend, statements: list[tuple[str, Any]]) -> None:
-        self._backend = backend
+    def __init__(self, stack: ExitStack, cursor: Any, mark: int | None, statements: list[tuple[str, Any]]) -> None:
+        self._stack = stack
+        self._cursor = cursor
+        self._mark = mark
         self._statements = statements
 
-    @contextmanager
-    def read_snapshot(self) -> Iterator[Any]:
-        with self._backend.read_snapshot() as cursor:
-            yield _Recording(cursor, self._statements)
+    @classmethod
+    def opened(cls, backend: DuckDBBackend, statements: list[tuple[str, Any]]) -> _RecordingPin:
+        stack = ExitStack()
+        cursor = stack.enter_context(backend.read_snapshot())
+        return cls(stack, cursor, backend.staged_mark(cursor), statements)
 
-    def staged_mark(self, cursor: Any) -> int | None:
-        return self._backend.staged_mark(cursor.cursor)
+    @property
+    def mark(self) -> int | None:
+        return self._mark
+
+    def _run(self, job: Any, args: Sequence[Any], tables: Mapping[str, Any] | None) -> Any:
+        named = tuple(() if tables is None else tables.items())
+        for name, table in named:
+            self._cursor.register(name, table)
+        try:
+            answer = job(_Recording(self._cursor, self._statements), args)
+            if isinstance(answer, pa.Table):
+                return answer
+            return answer.read_all() if isinstance(answer, pa.RecordBatchReader) else answer.fetch_arrow_table()
+        finally:
+            for name, _ in named:
+                self._cursor.unregister(name)
+
+    async def run_job(self, job: Any, args: Sequence[Any] = (), *, tables: Mapping[str, Any] | None = None) -> Any:
+        return await asyncio.to_thread(self._run, job, args, tables)
+
+    async def fingerprint(
+        self,
+        job: Any,
+        args: Sequence[Any],
+        kinds: tuple[tuple[str, str], ...],
+        *,
+        tables: Mapping[str, Any] | None = None,
+    ) -> str:
+        raise AssertionError("a checkpoint write takes no fingerprint")
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._stack.close)
 
 
 class _Recording:

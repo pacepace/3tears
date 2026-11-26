@@ -86,7 +86,6 @@ _SCRIPT = textwrap.dedent(
 
         store.publish("v1", {"t": table})
         said["connect"] = _raises(lambda: claimed_connect(store))
-        said["reader"] = _raises(lambda: store.reader())
         said["publish_query"] = _raises(lambda: store.publish_query("v2", object(), {"t": "SELECT 1"}))
         said["duckdb_loaded"] = "duckdb" in sys.modules
         print(json.dumps(said))
@@ -122,7 +121,7 @@ def test_the_store_and_pool_run_without_duckdb(tmp_path: Path) -> None:
     assert said["pool_handed"] == 6
     assert said["worker_saw_duckdb"] is False
     assert said["pool_result"] == [0, 1, 2, 3, 4]
-    for call in ("connect", "reader", "publish_query"):
+    for call in ("connect", "publish_query"):
         assert said[call] is not None, f"{call} ran without duckdb"
         assert "3tears[snapshot]" in said[call] and "duckdb" in said[call], said[call]
     assert said["duckdb_loaded"] is False

@@ -62,6 +62,7 @@ import threetears.core.collections.copy_key_work as copy_key_work  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, read_delta_file_keys, write_delta_file  # noqa: E402
 from threetears.core.collections.delta_recreate import DeltaRecreator  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
@@ -372,10 +373,11 @@ def _world(
     registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
     registry.set_noted_keys_reader(notes)
+    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=key, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)],
-        backend,
+        published,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -385,6 +387,7 @@ def _world(
         recreate=recreate,
         fulls=fulls,
         drift_workers=_WORKERS if workers is None else workers,
+        queries=published.queries,
     )
     follower.register()
     return l3, log, lock, backend, follower

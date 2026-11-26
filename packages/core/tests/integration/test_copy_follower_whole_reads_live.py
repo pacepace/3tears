@@ -49,14 +49,14 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_arrow_types  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
-from threetears.core.collections.copy_reads import CursorReads, PinnedCopy  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy, close_published_copies  # noqa: E402
+from threetears.core.collections.copy_reads import PinnedCopy, QueriedReads  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.volume_fulls import write_full_part  # noqa: E402
 from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
-from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.sql_fragments import unnest_key_join  # noqa: E402
 from threetears.core.testing.calibrate import best_seconds, budget_problem  # noqa: E402
 
@@ -73,6 +73,13 @@ _ROWS = int(os.environ.get("THREETEARS_FOLLOW_SPEED_ROWS", "1000000"))
 #: the states the rows spread over: a checkpoint's scopes
 _STATES = 50
 _TABLE_DEF = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))
+
+
+@pytest.fixture(autouse=True)
+async def _published_copies_closed() -> AsyncIterator[None]:
+    """every copy a test published (``testing.published_copy``) closed after it: its query workers and its store."""
+    yield
+    await close_published_copies()
 
 
 def _metadata() -> MetaData:
@@ -228,16 +235,14 @@ def _checkpoints(backend: DuckDBBackend, store: _Store, pointers: _Pointers) -> 
     )
 
 
-#: the worker processes a cursor read's fingerprint would be taken in: a checkpoint takes none, and none starts until
-#: a job is given
-_WORKERS = ProcessWorkers(workers=1, name="test copy follower whole reads")
-
-
 def _reader(backend: DuckDBBackend) -> Any:
+    published = PublishedCopy(backend)
+
     @asynccontextmanager
     async def read() -> AsyncIterator[tuple[PinnedCopy, Any, Any]]:
-        # the in-process copy's own state, pinned as its follower pins it (its snapshot, on a thread)
-        state = await CursorReads(backend, _WORKERS).current()
+        # the copy's state now, published and pinned as its follower pins it (a leased version, read in a query worker)
+        await asyncio.to_thread(published.publish)
+        state = await QueriedReads(published.queries).current()
         try:
             yield state, 1, {_TABLE: "inc:0"}
         finally:
@@ -286,15 +291,17 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
         registry = CollectionRegistry()
         registry.follow_generation(_TABLE)
         log = _Log()
+        published = PublishedCopy(_backend())
         follower = CopyFollower(
             registry,
             [_TABLE_DEF],
-            _backend(),
+            published,
             db.pool,
             settled=lambda: asyncio.sleep(0, 1),
             generation=log.current,
             changes=log,
             stamp_table="scope_epochs",
+            queries=published.queries,
         )
         follower.register()
         await follower.warm()
@@ -485,9 +492,12 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
             [StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True, whole_kind="cold_start")], mark=stamp[0]
         )
 
+    published = PublishedCopy(backend)
+
     @asynccontextmanager
     async def read() -> AsyncIterator[tuple[PinnedCopy, Any, Any]]:
-        state = await CursorReads(backend, _WORKERS).current()
+        await asyncio.to_thread(published.publish)
+        state = await QueriedReads(published.queries).current()
         try:
             yield state, stamp[0], {_TABLE: f"inc:{stamp[0]}"}
         finally:
