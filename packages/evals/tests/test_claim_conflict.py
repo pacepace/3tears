@@ -356,9 +356,7 @@ async def test_precedence_decides_first_and_a_conflict_it_settles_is_never_asked
     assert [_schema(call) for call in client.calls] == ["claim_truth"], "no re-ask"
 
 
-async def test_a_conflict_between_case_passages_is_shown_its_passages_and_their_precedence_and_no_key_is_needed() -> (
-    None
-):
+async def test_a_conflict_between_case_passages_is_shown_the_passages_it_cited_and_no_key_is_needed() -> None:
     """With no override between them, two case documents' passages on opposite sides are a conflict: the re-ask is
     shown the two passages the claim cited, and a re-ask citing only one side reads from it."""
     plain = _UPDATE.model_copy(update={"overrides": ()})
@@ -520,6 +518,37 @@ async def test_the_price_ceiling_bounds_the_reask_of_a_conflict_between_case_pas
     assert len(reasks) == 3 and spent <= ceiling - bare
 
 
+async def test_the_price_ceiling_prices_the_reask_at_the_truth_steps_whole_evidence() -> None:
+    """A conflict cites a key fact and a long case passage, and the truth batch and the re-ask are each asked to their
+    attempts: everything spent stays under the ceiling. A re-ask priced at the key facts alone would leave out the
+    passage it is shown, three times over, more than every allowance in the ceiling covers."""
+    repairs = RepairBudget(rounds=0, max_items_per_cell=0)
+    sentence = "A loan runs three weeks."
+    filler = " ".join(f"The reading room holds shelf {at} of the loan collection." for at in range(2400))
+    ledger = EvidenceDocument(id="ledger", provenance="case", title="Loan ledger", text=f"{sentence} {filler}")
+    budget = PageBudget(per_document_chars=200_000, total_chars=200_000, window_chars=200_000)
+    key = _key(("A loan", "A loan runs two weeks."))
+    segments = (Segment(text="A loan runs two weeks.", unit=0),)
+    priced = ClaimVerifier(client=_FakeBytePricedClient([]), pages=budget, repairs=repairs)
+    ceiling = priced.price_ceiling(segments, key=key, documents=(ledger,))
+    both = (
+        _cite("K1", quote="A loan runs two weeks.", subject="A loan", value="two weeks"),
+        _cite("S1", "contradicts", quote=sentence, subject="A loan", value="three weeks"),
+    )
+    unreadable = [_Reply(content="not json")] * 2
+    client = _FakeScriptedClient([*unreadable, _batch(_answer(0, *both)), *unreadable, _reasked((0, list(both)))])
+
+    verifier = ClaimVerifier(client=client, pages=budget, repairs=repairs)
+    await verifier.verify(
+        _claims("A loan runs two weeks."), key=key, documents=(ledger,), ledger=RoleUsageLedger(role="judge")
+    )
+
+    assert [_schema(call) for call in client.calls] == ["claim_truth"] * 3 + ["claim_reask"] * 3
+    assert len(ledger.text) > 100_000 and all(filler in call["user"] for call in client.calls[3:])
+    spent = sum((len(call["system"].encode()) + len(call["user"].encode())) * 1e-6 for call in client.calls)
+    assert ceiling is not None and spent <= ceiling
+
+
 # --- compound claims: a support states every value --------------------------------------------------------------------
 
 _CONNOR = "Dace Connor"
@@ -538,9 +567,76 @@ async def test_the_every_value_rule_reaches_the_truth_its_repair_and_the_reask_p
 
     await _verify(client, claims, key=key)
 
-    rule = "states every value the claim states"
+    rule = "state every value the claim states between them"
     assert [rule in call["system"] for call in client.calls] == [True, True, True]
+    relation = "in the relation the claim gives them"
+    assert [relation in call["system"] for call in client.calls] == [True, True, True]
     assert [_schema(call) for call in client.calls] == ["claim_truth", "claim_reask", "claim_truth_repair"]
+
+
+_BEGAN = "Rook Vale began in Glasgow with Fen Tribe."
+_GUITAR = "Rook Vale played guitar in Fen Tribe."
+_LIVED = "Rook Vale lived in Glasgow."
+_FIRST_BAND = "Rook Vale's first band, in Edinburgh, was Fen Tribe."
+
+
+def _pooled(key: ReferenceKey) -> list[dict[str, Any]]:
+    """The two facts about other properties of Rook Vale, cited together as support, between them naming every value
+    the claim states."""
+    return [
+        _cite(_ref(key, _GUITAR), quote=_GUITAR, subject="Rook Vale", value="Fen Tribe"),
+        _cite(_ref(key, _LIVED), quote=_LIVED, subject="Rook Vale", value="Glasgow"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reask", "expected"),
+    [
+        ("contradiction", ("contradicted", "case", False, None, "none")),
+        ("pooled-and-contradiction", ("unverifiable", None, True, None, "none")),
+    ],
+)
+async def test_facts_about_other_properties_pooled_as_support_beside_a_contradiction_never_read_supported(
+    reask: str, expected: tuple[Any, ...]
+) -> None:
+    """Two facts each about another property of the subject (where it played, where it lived) name every value the
+    claim states between them. Pooled as support beside the fact that gives another value, they make a conflict: the
+    re-ask reads it, and whether it keeps them or drops them, the claim never reads supported."""
+    claims = _claims(_BEGAN)
+    key = _key(("Rook Vale", _GUITAR), ("Rook Vale", _LIVED), ("Rook Vale", _FIRST_BAND))
+    against = _cite(_ref(key, _FIRST_BAND), "contradicts", quote=_FIRST_BAND, subject="Rook Vale", value="Edinburgh")
+    again = [against] if reask == "contradiction" else [*_pooled(key), against]
+    client = _FakeScriptedClient([_batch(_answer(0, *_pooled(key), against)), _reasked((0, again))])
+
+    (claim,) = _grade(claims, await _verify(client, claims, key=key)).claims
+
+    assert [_schema(call) for call in client.calls] == ["claim_truth", "claim_reask"]
+    assert _read(claim) == expected
+
+
+async def test_a_reply_obeying_the_rule_cites_no_pooled_support_and_reads_unverifiable() -> None:
+    claims = _claims(_BEGAN)
+    key = _key(("Rook Vale", _GUITAR), ("Rook Vale", _LIVED))
+    client = _FakeScriptedClient([_batch(_answer(0))])
+
+    (claim,) = _grade(claims, await _verify(client, claims, key=key)).claims
+
+    assert _read(claim) == ("unverifiable", None, False, None, "none")
+
+
+async def test_pooled_support_with_nothing_against_it_passes_every_code_check_and_is_left_to_the_model() -> None:
+    """The known limit: code checks each support's quote against the fact shown and its subject and value spans inside
+    that quote, in one sentence, and both pass here. Which relation a fact states a value in, and whether the facts
+    cover the claim, are readings of meaning: only the rule the prompt states stands between this reply and a false
+    supported."""
+    claims = _claims(_BEGAN)
+    key = _key(("Rook Vale", _GUITAR), ("Rook Vale", _LIVED))
+    client = _FakeScriptedClient([_batch(_answer(0, *_pooled(key)))])
+
+    (claim,) = _grade(claims, await _verify(client, claims, key=key)).claims
+
+    assert "in the relation the claim gives them" in client.calls[0]["system"]
+    assert _read(claim) == ("supported", "case", False, None, "none"), "code passes it"
 
 
 _MINISTRY = f"{_CONNOR} was in Ironhall and performed drums and vocals on Mind Lathe."

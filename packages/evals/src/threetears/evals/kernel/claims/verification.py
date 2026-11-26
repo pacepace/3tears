@@ -72,11 +72,17 @@ contradicts is a conflict, asked again in the re-ask (below), and code cannot de
 its key facts to the values in force. The ground step reads no precedence, since it cites support alone.
 
 **A support states every value.** A claim may state several values ("drums and vocals", "in a band and on its
-album"). The truth and re-ask rules say evidence supports it only where what is cited as support, one piece or several
-together, states every value it states: evidence that states some of them and is silent on the rest is not cited as
-support, and evidence that gives a different value for one of them contradicts it. A value joint by meaning (a song
-two people wrote together) is one value. Code cannot read whether evidence covers a value, so the rule binds the model
-and no check holds it: a reply citing a partial support passes every code check and reads ``supported``. A partial
+album"). The truth and re-ask rules say each piece cited as support states its values for the claim's own subject
+and in the relation the claim gives them, and the pieces cited as support, one or several, state every value the claim
+states between them: a value stated in another relation (another role, attribute, time or place) supports nothing,
+evidence that states some of the values and is silent on the rest is not cited as support alone, and evidence that
+gives a different value for one of them contradicts it. A value joint by meaning (a song two people wrote together) is
+one value. Code cannot read whether evidence covers a value or in which relation it states it, so the rule binds the
+model and no check holds it. What code does check of each support is what it checks of any citation: its quote is a
+stretch of evidence the call was shown for that claim, and its subject and value spans lie inside that quote, in one
+sentence. So a reply citing a partial support, or pooling facts about other properties that between them name every
+value, passes every code check and reads ``supported``; pooled beside a contradiction, they make a conflict, never a
+support. A partial
 support beside a contradiction of another of its values is a conflict, and goes to the re-ask. The cost, taken for the
 false rate: a true compound the evidence states only part of reads ``unverifiable``, never ``supported``.
 
@@ -140,7 +146,8 @@ a script written without spaces between words, is asked nothing again as a doubt
 relation: evidence about another attribute of the same subject ("Ann Lee was born in Leeds", against "Ann Lee lives in
 York"), cited as a contradiction that passes every check, reads ``contradicted``, and cited as the only support of a
 conflict asked again, reads ``supported``. A conflict is shown again the very evidence it misread, so a model that
-binds it the same way twice keeps that reading. The re-ask's prompt says that such evidence bears on nothing, and that
+binds it the same way twice keeps that reading; and whatever a conflict's re-ask cites alone stands, so one that drops
+the contradiction an overriding document gave reads the support it kept. The re-ask's prompt says that such evidence bears on nothing, and that
 binding stays the model's, as in the truth batch.
 
 **Truth and groundedness fail apart.** A truth failure raises
@@ -271,11 +278,13 @@ _CITING_RULES: Final = (
 #: A claim that states several values is supported only where its support states every one: the truth and re-ask
 #: rules', and no code check's, since code cannot read whether evidence covers a value.
 _EVERY_VALUE_RULE: Final = (
-    "- A claim may state several values (drums and vocals; in a band and on its album). Evidence supports it only "
-    "when it states every value the claim states, alone or with the other evidence you cite as support for it. "
-    "Evidence that states some of the values and is silent on the rest is not cited as support unless other evidence "
-    "you cite states the rest. Evidence that gives a different value for one of them contradicts the claim, even when "
-    "it states the others. Values joined by meaning (a song two people wrote together) are one value.\n"
+    "- A claim may state several values (drums and vocals; in a band and on its album). Each piece you cite as "
+    "support states its values for this same subject and in the relation the claim gives them: a value that evidence "
+    "states in another relation (another role, attribute, time or place of the subject) supports nothing here. Cite "
+    "support only when the pieces you cite as support, one or several, state every value the claim states between "
+    "them; when no evidence given states one of its values that way, cite nothing as support, not even evidence that "
+    "states the rest. Evidence that gives a different value for one of them contradicts the claim, even when it "
+    "states the others. Values joined by meaning (a song two people wrote together) are one value.\n"
 )
 
 _TRUTH_RULES: Final = (

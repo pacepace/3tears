@@ -2282,7 +2282,7 @@ async def test_the_price_ceiling_bounds_the_reask() -> None:
 #: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:340d6258dbf1"
+_PINNED_IDENTITY = "scripted/verify|claimverify:ccd45a1bd584"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

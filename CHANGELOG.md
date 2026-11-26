@@ -22,10 +22,14 @@ a conflict, asked again. The known limit: the re-ask is shown the very evidence 
 cites the other property's fact as the only support again still reads `supported`.
 
 **Changed:** the truth and re-ask rules say a claim stating several values ("performed drums and vocals") is supported
-only where what is cited as support, one piece or several together, states every value it states; evidence that states
-some and is silent on the rest is not cited as support, and evidence giving another value for one of them contradicts.
-A value joint by meaning ("written by two people together") is one value. This binds the model by rule; code cannot
-read whether evidence covers a value, so a reply citing a partial support still reads `supported`. A true compound the
+only where each piece cited as support states its values for the claim's own subject and in the relation the claim
+gives them, and the pieces cited, one or several, state every value it states between them. A value stated in another
+relation (another role, attribute, time or place) supports nothing; evidence that states some values and is silent on
+the rest is not cited as support alone; evidence giving another value for one of them contradicts. A value joint by
+meaning ("written by two people together") is one value. This binds the model by rule. Code checks each support's
+quote against the evidence shown for that claim and its subject and value spans inside the quote, in one sentence, but
+cannot read coverage or relation, so a reply citing a partial support, or facts about other properties pooled to name
+every value, still reads `supported`; pooled beside a contradiction they make a conflict, never a support. A true compound the
 evidence states only in part now reads `unverifiable`, so supported counts may fall.
 
 **Cost:** no added call where a cell already asks a doubted claim again: a conflict rides in that call. A cell with a
@@ -40,8 +44,9 @@ moves, and grades made before and after this never pool. The web step's identity
 past it once one has been. A stored claim may now read `unverifiable` with `evidence_conflict` (a `GradedClaim`), and a
 tally may count a conflict among its unverifiable claims (`ClaimJudgeCounts.evidence_conflicts` now nests in supported
 plus unverifiable); a build from before this change refuses both by name ("case evidence in conflict reads
-supported, not 'unverifiable'"; "counts do not nest: evidence_conflicts"), so it cannot load a trace or result graded
-here. Grades stored before load as they were, a conflict among them still `supported`. Nothing to change in code.
+supported, not 'unverifiable'"; "counts do not nest: evidence_conflicts"). So it refuses every trace graded here that
+holds such a claim, and a result only where one judge's conflicts outnumber the claims it read supported; a result it
+does load describes those conflicts with the old "reads supported" text. Grades stored before load as they were, a conflict among them still `supported`. Nothing to change in code.
 Re-judging stored cells gives a new fingerprint; the `evidence_conflicts` and `unverifiable` readings' descriptions
 say what they now count.
 
