@@ -139,15 +139,21 @@ server whose tools report progress builds its transport with `json_response=Fals
 handles both, since the protocol requires it. `current_request_streams()` (in
 `threetears.mcp.http_server`) says whether the request being served can carry them.
 
-On the handshake-era protocol every level is sent; on 2026-07-28 the client chooses per request, as
-above.
+On 2026-07-28 the client chooses per request, as above. On the handshake-era protocols (up to
+2025-11-25) the server declares the `logging` capability in its `initialize` result and serves
+`logging/setLevel`, as the specification has a server that sends log entries do (owner-confirmed
+2026-11-25):
 
-The server does not declare the `logging` capability and does not serve `logging/setLevel`. That is
-the current state, not a settled choice: it is open for the owner. The SDK declares the capability
-only when a set-level handler is passed, which it deprecates; its own client accepts
-`notifications/message` without the capability. On the handshake-era protocols (up to 2025-11-25) the
-specification has a server that sends log entries declare it, so a stricter client may drop or refuse
-them.
+| | handshake-era protocols (up to 2025-11-25) | 2026-07-28 |
+|---|---|---|
+| `logging` capability | declared | not declared (the protocol removed it) |
+| which levels a call's log entries are sent at | every level, until the connection sends `logging/setLevel`; from then on that level and every more severe one, for the connection's later calls (a later `setLevel` replaces it) | the level the request opts in at, and every more severe one; none when it does not opt in |
+
+A level is the connection's: another client's connection keeps every level. In stateless mode each
+request is a connection of its own, so `logging/setLevel` is answered but leaves no level for a later
+call to keep, and every level is sent as before. The SDK's server warns that the logging capability is
+deprecated as of 2026-07-28; `McpServer` serves it on purpose for the handshake-era protocols and
+builds its SDK server without that warning.
 
 ## A live tool set
 

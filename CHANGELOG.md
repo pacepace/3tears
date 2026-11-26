@@ -1601,6 +1601,17 @@ version reaches its shell through the environment rather than being expanded int
 `pull_request_target`, `issue_comment` or `workflow_run`. `zizmor` reports nothing beyond the release unit job's
 Playwright cache, which holds only the test browser and carries an inline ignore saying so.
 
+### mcp: the server declares the `logging` capability and serves `logging/setLevel` on the handshake-era protocols
+
+**Added:** on the handshake-era protocols (up to 2025-11-25) `McpServer` declares the `logging` capability in its
+`initialize` result and serves `logging/setLevel` (owner-confirmed 2026-11-25), as the specification has a server
+that sends log entries do. After a connection's `setLevel`, its later calls send `CallContext.log` entries at that
+level and every more severe one; a later `setLevel` replaces it, and another connection keeps every level. A
+connection that sends none gets every level, as before. In stateless mode each request is a connection of its own,
+so a `setLevel` is answered and leaves nothing for a later call. On 2026-07-28 the capability is not declared (the
+protocol removed it and the request) and the per-request opt-in is unchanged. The SDK's deprecation warning for the
+capability is not raised when the server is built.
+
 ### mcp: which HTTP transports carry a handler's progress and log entries, and a warning when one cannot
 
 A handler's `CallContext.report_progress` and `CallContext.log` reach the client on the call's own SSE
@@ -1646,8 +1657,7 @@ named as an input property, or one that names `CallContext` in any other form is
 `ValueError` when the `McpTool` is built. An annotation that cannot be evaluated (a type imported only
 for type checking) is read by its module's import statements, so an alias of the call context is
 found and `threetears.core`'s own `CallContext` is not taken for it; one that names nothing the module
-imports is logged as a warning, once per tool and parameter. The server does not declare the
-`logging` capability; whether it should is open (see the README's call-context section). A call that
+imports is logged as a warning, once per tool and parameter. A call that
 passes an argument named as the context (a schema allowing extra properties lets it through) is refused
 as an input validation error before the handler runs. The context holds no MCP SDK type.
 

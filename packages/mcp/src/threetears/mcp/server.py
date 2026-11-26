@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
+import weakref
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, get_args
 
 import jsonschema
 import mcp.types as mcp_types
@@ -41,6 +44,8 @@ from mcp.server import Server as _SdkServer
 from mcp.server.connection import allowed_log_levels
 from mcp.server.context import ServerRequestContext
 from mcp.server.stdio import stdio_server as _stdio_server
+from mcp.shared.exceptions import MCPDeprecationWarning
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
@@ -69,6 +74,33 @@ _TOOLS_UNAVAILABLE_MESSAGE = "the server's tool set could not be read"
 #: how much of a refused result's structured content the refusal's log line keeps: enough for an
 #: operator to see what the call returned, without one oversized result flooding the log
 _MAX_LOGGED_STRUCTURED_CHARS = 4000
+
+
+#: the protocol's log levels, least severe first: a client's ``logging/setLevel`` asks for its level and every one after it
+_LOG_LEVELS: tuple[LogLevel, ...] = get_args(LogLevel)
+
+
+class _HandshakeLoggingServer(_SdkServer[Any]):
+    """the SDK server, declaring the ``logging`` capability only on the handshake-era protocols.
+
+    The SDK declares it whenever a ``logging/setLevel`` handler is registered; 2026-07-28 removed both the capability
+    and the request (a client there opts in per request), so on those protocols it is left out.
+    """
+
+    def get_capabilities(self, *args: Any, **kwargs: Any) -> mcp_types.ServerCapabilities:
+        """the SDK's capabilities, less ``logging`` on a 2026-07-28-era protocol.
+
+        :param args: the SDK's positional arguments
+        :ptype args: Any
+        :param kwargs: the SDK's keyword arguments; ``protocol_version`` names the era when given
+        :ptype kwargs: Any
+        :return: the capabilities
+        :rtype: mcp.types.ServerCapabilities
+        """
+        capabilities = super().get_capabilities(*args, **kwargs)
+        if kwargs.get("protocol_version") in MODERN_PROTOCOL_VERSIONS:
+            return capabilities.model_copy(update={"logging": None})
+        return capabilities
 
 
 class McpServer:
@@ -147,6 +179,10 @@ class McpServer:
         # one WARNING per server, the first time a handler's progress or log entry is dropped because
         # the HTTP transport answers in plain JSON: every such call drops them the same way
         self._undeliverable_notifications_logged = False
+        # the level each connection asked for with logging/setLevel (handshake-era protocols), keyed by the identity of
+        # the connection's initialize parameters, which live exactly as long as the connection; an entry goes when they
+        # do. A connection that never asked is absent: every level is sent, as before
+        self._log_levels: Mapping[int, LogLevel] = MappingProxyType({})
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -179,7 +215,70 @@ class McpServer:
             # request with a JSON-RPC error
             return await self._dispatch(params.name, params.arguments or {}, request=ctx)
 
-        return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
+        async def _on_set_logging_level(
+            ctx: ServerRequestContext[Any, Any], params: mcp_types.SetLevelRequestParams
+        ) -> mcp_types.EmptyResult:
+            self._set_log_level(ctx, params.level)
+            return mcp_types.EmptyResult()
+
+        # the SDK warns that the logging capability is deprecated as of 2026-07-28; on the handshake-era protocols it
+        # is the specification's, and _HandshakeLoggingServer leaves it out of the later ones
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", MCPDeprecationWarning)
+            return _HandshakeLoggingServer(
+                name,
+                on_list_tools=_on_list_tools,
+                on_call_tool=_on_call_tool,
+                on_set_logging_level=_on_set_logging_level,
+            )
+
+    def _set_log_level(self, ctx: ServerRequestContext[Any, Any], level: LogLevel) -> None:
+        """remember the level a connection asked for, for the log entries its later calls send.
+
+        A connection is known by its initialize parameters. One that has none (a stateless HTTP request is a
+        connection of its own, with no handshake before it) has no later calls to apply a level to, so nothing is kept.
+
+        :param ctx: the SDK's context for the ``logging/setLevel`` request
+        :ptype ctx: mcp.server.context.ServerRequestContext
+        :param level: the level asked for
+        :ptype level: LogLevel
+        :return: nothing
+        :rtype: None
+        """
+        connection = ctx.session.client_params
+        if connection is None:
+            return
+        key = id(connection)
+        if key not in self._log_levels:
+            weakref.finalize(connection, self._forget_log_level, key)
+        self._log_levels = MappingProxyType({**self._log_levels, key: level})
+
+    def _forget_log_level(self, key: int) -> None:
+        """drop a closed connection's level.
+
+        :param key: the connection's key
+        :ptype key: int
+        :return: nothing
+        :rtype: None
+        """
+        self._log_levels = MappingProxyType({held: level for held, level in self._log_levels.items() if held != key})
+
+    def _log_levels_for(self, request: ServerRequestContext[Any, Any]) -> frozenset[LogLevel]:
+        """the log levels a call may send: the protocol's rule, narrowed by the connection's ``logging/setLevel``.
+
+        :param request: the SDK's context for the call
+        :ptype request: mcp.server.context.ServerRequestContext
+        :return: the levels
+        :rtype: frozenset[LogLevel]
+        """
+        # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request, at a level; on
+        # earlier versions every level may be sent, unless the connection asked for a level with logging/setLevel
+        allowed: frozenset[LogLevel] = allowed_log_levels(request.protocol_version, request.meta)
+        connection = request.session.client_params
+        chosen = None if connection is None else self._log_levels.get(id(connection))
+        if chosen is None or request.protocol_version in MODERN_PROTOCOL_VERSIONS:
+            return allowed
+        return allowed & frozenset(_LOG_LEVELS[_LOG_LEVELS.index(chosen) :])
 
     def _current_tools(self) -> dict[str, McpTool]:
         """the tools as the provider answers them now, by name, in its order.
@@ -427,9 +526,7 @@ class McpServer:
         request_id = request.request_id
         meta = request.meta or {}
         progress_token = meta.get("progress_token")
-        # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request,
-        # at a level; on earlier versions every level may be sent
-        allowed_levels = allowed_log_levels(request.protocol_version, request.meta)
+        allowed_levels = self._log_levels_for(request)
         streams = current_request_streams()
 
         async def _send_progress(progress: float, total: float | None, message: str | None) -> None:

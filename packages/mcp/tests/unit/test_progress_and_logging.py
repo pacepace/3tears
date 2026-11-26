@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import warnings
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -94,6 +95,18 @@ def _phased_handler(client: _Client) -> Any:
             await ctx.log("info", {"phase": phase})
             with anyio.fail_after(_DELIVERY_DEADLINE_S):
                 await client.saw_log.wait()
+        return "built"
+
+    return build
+
+
+def _two_entries() -> Any:
+    """a handler that logs an info and an error entry, then reports progress."""
+
+    async def build(*, ctx: CallContext) -> str:
+        await ctx.log("info", "routine")
+        await ctx.log("error", "bad")
+        await ctx.report_progress(1)
         return "built"
 
     return build
@@ -182,23 +195,13 @@ class TestDeliveredBeforeTheResult:
 class TestTheLogOptIn:
     """on 2026-07-28 a log entry is sent only when the request asked for its level."""
 
-    @staticmethod
-    def _two_entries() -> Any:
-        async def build(*, ctx: CallContext) -> str:
-            await ctx.log("info", "routine")
-            await ctx.log("error", "bad")
-            await ctx.report_progress(1)
-            return "built"
-
-        return build
-
     @pytest.mark.asyncio
     async def test_a_request_that_did_not_opt_in_gets_progress_and_no_log_entries(
         self,
         loopback_mcp: LoopbackMcp,
     ) -> None:
         client = _Client()
-        async with loopback_mcp(_server(self._two_entries()), json_response=False) as url:
+        async with loopback_mcp(_server(_two_entries()), json_response=False) as url:
             async with _session(url, client, modern=True) as session:
                 result = await session.call_tool("build", {}, progress_callback=client.on_progress)
         assert result.is_error is False
@@ -210,7 +213,7 @@ class TestTheLogOptIn:
         loopback_mcp: LoopbackMcp,
     ) -> None:
         client = _Client()
-        async with loopback_mcp(_server(self._two_entries()), json_response=False) as url:
+        async with loopback_mcp(_server(_two_entries()), json_response=False) as url:
             async with _session(url, client, modern=True) as session:
                 result = await session.call_tool(
                     "build", {}, progress_callback=client.on_progress, meta={LOG_LEVEL_META_KEY: "warning"}
@@ -222,9 +225,110 @@ class TestTheLogOptIn:
     async def test_a_handshake_era_client_gets_every_level(self, loopback_mcp: LoopbackMcp) -> None:
         """before 2026-07-28 the protocol has no per-request opt-in."""
         client = _Client()
-        async with loopback_mcp(_server(self._two_entries()), json_response=False) as url:
+        async with loopback_mcp(_server(_two_entries()), json_response=False) as url:
             async with _session(url, client, modern=False) as session:
                 await session.call_tool("build", {}, progress_callback=client.on_progress)
+        assert client.received == [("log", "info", "routine"), ("log", "error", "bad"), ("progress", 1.0, None, None)]
+
+
+# the SDK's client warns on every set_logging_level that 2026-07-28 deprecates the request; these tests speak the
+# handshake-era protocol, where it is the specification's
+@pytest.mark.filterwarnings("ignore::mcp.shared.exceptions.MCPDeprecationWarning")
+class TestTheLoggingCapability:
+    """on the handshake-era protocols the server declares ``logging`` and serves ``logging/setLevel``."""
+
+    def test_building_the_server_raises_no_deprecation_warning(self) -> None:
+        """serving the handshake-era request is a decision, not a warning on every server built."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _server(_two_entries())
+
+    @pytest.mark.asyncio
+    @_MODES
+    async def test_the_initialize_result_declares_the_logging_capability(
+        self, loopback_mcp: LoopbackMcp, stateless: bool
+    ) -> None:
+        async with loopback_mcp(_server(_two_entries()), stateless=stateless, json_response=False) as url:
+            async with httpx2.AsyncClient() as http, streamable_http_client(url, http_client=http) as (read, write):
+                async with ClientSession(read, write) as session:
+                    initialized = await session.initialize()
+        assert initialized.protocol_version == "2025-11-25"
+        assert initialized.capabilities.logging is not None
+
+    @pytest.mark.asyncio
+    async def test_a_2026_client_is_offered_no_logging_capability(self, loopback_mcp: LoopbackMcp) -> None:
+        """2026-07-28 removed the capability and the request: a client there opts in per request."""
+        async with loopback_mcp(_server(_two_entries()), json_response=False) as url:
+            async with _session(url, _Client(), modern=True) as modern_client:
+                capabilities = modern_client.server_capabilities
+        assert capabilities.logging is None
+        assert capabilities.tools is not None
+
+    @pytest.mark.asyncio
+    async def test_set_level_drops_the_entries_below_the_level_for_the_connections_later_calls(
+        self, loopback_mcp: LoopbackMcp
+    ) -> None:
+        client = _Client()
+        async with loopback_mcp(_server(_two_entries()), stateless=False, json_response=False) as url:
+            async with _session(url, client, modern=False) as session:
+                await session.set_logging_level("warning")
+                result = await session.call_tool("build", {}, progress_callback=client.on_progress)
+        assert result.is_error is False
+        assert client.received == [("log", "error", "bad"), ("progress", 1.0, None, None)]
+
+    @pytest.mark.asyncio
+    async def test_a_later_set_level_replaces_the_earlier_one(self, loopback_mcp: LoopbackMcp) -> None:
+        client = _Client()
+        async with loopback_mcp(_server(_two_entries()), stateless=False, json_response=False) as url:
+            async with _session(url, client, modern=False) as session:
+                await session.set_logging_level("emergency")
+                await session.call_tool("build", {}, progress_callback=client.on_progress)
+                await session.set_logging_level("debug")
+                await session.call_tool("build", {}, progress_callback=client.on_progress)
+        assert client.received == [
+            ("progress", 1.0, None, None),
+            ("log", "info", "routine"),
+            ("log", "error", "bad"),
+            ("progress", 1.0, None, None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_level_set_on_one_connection_leaves_another_at_every_level(self, loopback_mcp: LoopbackMcp) -> None:
+        quiet, other = _Client(), _Client()
+        async with loopback_mcp(_server(_two_entries()), stateless=False, json_response=False) as url:
+            async with _session(url, quiet, modern=False) as first, _session(url, other, modern=False) as second:
+                await first.set_logging_level("critical")
+                await first.call_tool("build", {}, progress_callback=quiet.on_progress)
+                await second.call_tool("build", {}, progress_callback=other.on_progress)
+        assert quiet.received == [("progress", 1.0, None, None)]
+        assert other.received == [
+            ("log", "info", "routine"),
+            ("log", "error", "bad"),
+            ("progress", 1.0, None, None),
+        ]
+
+    @pytest.mark.asyncio
+    @_MODES
+    async def test_with_no_set_level_every_level_is_sent_as_before(
+        self, loopback_mcp: LoopbackMcp, stateless: bool
+    ) -> None:
+        client = _Client()
+        async with loopback_mcp(_server(_two_entries()), stateless=stateless, json_response=False) as url:
+            async with _session(url, client, modern=False) as session:
+                await session.call_tool("build", {}, progress_callback=client.on_progress)
+        assert client.received == [("log", "info", "routine"), ("log", "error", "bad"), ("progress", 1.0, None, None)]
+
+    @pytest.mark.asyncio
+    async def test_in_stateless_mode_set_level_is_answered_and_each_call_is_its_own_connection(
+        self, loopback_mcp: LoopbackMcp
+    ) -> None:
+        """a stateless request is a connection of its own: a level asked for has no later call on it to narrow."""
+        client = _Client()
+        async with loopback_mcp(_server(_two_entries()), stateless=True, json_response=False) as url:
+            async with _session(url, client, modern=False) as session:
+                answered = await session.set_logging_level("critical")
+                await session.call_tool("build", {}, progress_callback=client.on_progress)
+        assert isinstance(answered, mcp_types.EmptyResult)
         assert client.received == [("log", "info", "routine"), ("log", "error", "bad"), ("progress", 1.0, None, None)]
 
 

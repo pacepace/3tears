@@ -45,8 +45,8 @@ bearer identity per message, `tools/list_changed`), and the error model.
 
 ## Decisions taken (inferred; put to the owner in the PR body, not ruled)
 
-None of these is an owner ruling. Each describes the branch as it stands, and the PR body asks the
-owner to rule on each; the last (the logging capability) is the one the README calls open.
+None of these is an owner ruling but the last. Each describes the branch as it stands, and the PR body
+asks the owner to rule on each; the last (the logging capability) is owner-confirmed 2026-11-25.
 
 - [DECISION: the context is found by the parameter's annotation, `CallContext`, not by a parameter
   name | the request was "detected by signature"; a fixed name would collide with tool arguments. An
@@ -74,12 +74,15 @@ owner to rule on each; the last (the logging capability) is the one the README c
   SDK's own `allowed_log_levels` | the SDK's `send_log_message` warns (a `UserWarning`) on every call,
   since 2026-07-28 deprecates the logging capability, while the message itself remains; the gate keeps
   the 2026-07-28 per-request opt-in]
-- [DECISION: the server does not declare the `logging` capability nor serve `logging/setLevel` | the
-  SDK declares it only when an `on_set_logging_level` handler is passed, which it deprecates with a
-  warning; the SDK client accepts `notifications/message` without it. OPEN for the owner: on the
-  handshake-era protocols the specification has a server that sends log entries declare the
-  capability, so a stricter client may drop them. The README states the current behaviour and says
-  the point is open]
+- [DECISION: on the handshake-era protocols the server declares the `logging` capability and serves
+  `logging/setLevel`; after a connection's `setLevel` its later calls send log entries at that level and above,
+  with no `setLevel` every level is sent as before; on 2026-07-28 the capability is not declared | owner-confirmed
+  2026-11-25: the specification has a server that sends log entries on those protocols declare it, so a stricter
+  client may drop them otherwise. Built through the SDK's own `on_set_logging_level` handler (its deprecation
+  warning silenced when the server is built), with `get_capabilities` leaving `logging` out on 2026-07-28. A level
+  is held per connection, keyed by the connection's initialize parameters and dropped with them; a stateless
+  request is a connection of its own, so a level set there narrows no later call. Tests:
+  `packages/mcp/tests/unit/test_progress_and_logging.py` (`TestTheLoggingCapability`)]
 
 ## Chunk 01: the call context (`feat/mcp-call-context`)
 
