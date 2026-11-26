@@ -46,7 +46,7 @@ from threetears.core.collections.schema_backed import (
     schema_field_types,
     stamped_values,
 )
-from threetears.core.ddl.row_epoch import AppendOnlyWriteError, EPOCH_COLUMN, next_epoch, rising_epoch_assignment
+from threetears.core.ddl.row_epoch import AppendOnlyWriteError, EPOCH_COLUMN, rising_epoch_assignment
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
@@ -369,8 +369,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
                 f"{type(self).__name__}.write_row: {self.table_name} is versioned (append-only); its writes append "
                 f"through SchemaBackedCollection, never this upsert"
             )
-        transaction = None if conn is None else CallerTransaction.enclosing(conn)
-        return {**data, EPOCH_COLUMN: next_epoch() if transaction is None else transaction.in_place_epoch()}
+        return {**data, EPOCH_COLUMN: CallerTransaction.stamp_for(conn, self.table_name)}
 
     def write_statement(self, data: dict[str, Any], *, returning: bool = False) -> tuple[str, list[Any]]:
         """the statement writing exactly the columns ``data`` carries, with its parameters.

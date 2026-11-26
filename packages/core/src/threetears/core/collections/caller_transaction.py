@@ -65,6 +65,7 @@ from threetears.core.backends.broker_generation import (
     naming_commit_s_min,
     naming_commit_scopes,
     naming_delta_files,
+    note_statement_stamp,
     reply_generations_since,
 )
 from threetears.core.collections.delta_files import (
@@ -547,6 +548,28 @@ class CallerTransaction:
                 found = scope
                 break
         return found
+
+    @staticmethod
+    def stamp_for(conn: Any, table: str) -> int:
+        """the stamp one write statement of a stamped table (``ROW_STAMPED``) carries: from ``conn``'s transaction when
+        it joins one (:meth:`in_place_epoch`, counted in the commit's ``s_min``), else from the process clock, noted as
+        that one-statement write's own ``s_min`` (``note_statement_stamp``), so the epoch record of its own commit
+        names it and the restore scrub checks its margin. The one draw of every stamped write, the ones sent outside
+        the store's stamped requests too (a keyed update's ``stamped_values``, a declared table's ``write_row``).
+
+        :param conn: the connection the write runs on, or None for the pool
+        :ptype conn: Any
+        :param table: the table written, as its advance names it
+        :ptype table: str
+        :return: the stamp
+        :rtype: int
+        """
+        transaction = None if conn is None else CallerTransaction.enclosing(conn)
+        if transaction is not None:
+            return transaction.in_place_epoch()
+        stamp = next_epoch()
+        note_statement_stamp(table, stamp)
+        return stamp
 
     @staticmethod
     def join(conn: Any, *, writer: str) -> CallerTransaction:

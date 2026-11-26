@@ -413,8 +413,7 @@ def stamped_values(schema: TableSchema, values: Mapping[str, Any], *, conn: Any 
         return dict(values)
     if declared.versions:
         raise AppendOnlyWriteError(f"stamped_values: {schema.name} is versioned (append-only), never updated in place")
-    transaction = None if conn is None else CallerTransaction.enclosing(conn)
-    stamp = next_epoch() if transaction is None else transaction.in_place_epoch()
+    stamp = CallerTransaction.stamp_for(conn, schema.name)
     quoted = quote_identifier(EPOCH_COLUMN)
     return {**values, EPOCH_COLUMN: Fragment(f"GREATEST({quoted} + 1, $1::bigint)", (stamp,))}
 
@@ -3150,7 +3149,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         transaction = None if conn is None else CallerTransaction.enclosing(conn)
         if not self.schema.versioned:
             # stamped: in place, its epoch risen on every write, so no write's turn is needed (in_place_epoch: WHY)
-            return {EPOCH_COLUMN: next_epoch() if transaction is None else transaction.in_place_epoch()}
+            return {EPOCH_COLUMN: CallerTransaction.stamp_for(conn, self.table_name)}
         if transaction is None:
             raise UnstampedWriteError(
                 f"{type(self).__name__}.{writer}: {self.table_name} declares a row epoch, so every write carries its "

@@ -18,24 +18,38 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
 
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
-from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
+from threetears.core.collections.generation import advance_for_write
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
+    STRING_TYPE,
+    Column,
+    TableSchema,
+    collection_for_schema,
+    stamped_values,
+)
 from threetears.core.collections.scope_epochs import scope_epochs_schema
 from threetears.core.ddl.change_notes import MARKS_TABLE, RING_TABLE
 from threetears.core.ddl.row_epoch import (
     BUCKET_COLUMN,
+    EPOCH_COLUMN,
     RESTORE_BUCKETS,
     ROW_STAMPED,
     bucket_epoch_index_name,
     restore_floor,
     row_versions,
 )
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant
 from threetears.core.testing.kv import FakeNatsClient
@@ -338,6 +352,64 @@ async def test_the_scrub_reports_a_record_whose_lowest_stamp_is_below_its_mark_s
 
     assert scrubbed.checked == 3
     assert scrubbed.margin_violations == 1
+
+
+class _Run(BaseEntity):
+    primary_key_field = "run_id"
+
+
+async def test_a_one_statement_stamped_write_s_record_names_its_own_stamp_and_the_scrub_judges_it() -> None:
+    """Flips if the epoch record of a stamped table's write that joined no transaction (one statement, its own commit,
+    stamped from the process clock) names no ``s_min``, or one other than the write's own stamp: the restore scrub
+    could not check its margin. Both stamped draws: the store's stamped upsert and a keyed update's values. An advance
+    after them, with no write of its own, names none."""
+    bus = FakeNatsClient()
+    source = EpochGenerationSource(bus)
+    incarnation = await source.start_log()
+    await source.advance_with_change(_STAMPED_TABLE, [ChangedRow(ids=["CA", "r0"])])  # seq 1: the mark's position
+    registry = CollectionRegistry()
+    store: Any = SqlL3Backend(MagicMock())
+    registry.configure(l3_pool=store)
+    runs = collection_for_schema(_RUNS, entity_class=_Run)(registry, DefaultCoreConfig(), None)
+    sent: list[tuple[Any, ...]] = []
+
+    async def execute(_sql: str, *params: Any) -> str:
+        sent.append(params)
+        return "INSERT 0 1"
+
+    store.execute = execute
+    rows = [ChangedRow(ids=["CA", "r1"])]
+
+    await runs.save_to_store({_SCOPE: "CA", "run_id": "r1", "rows": 1})
+    [params] = sent
+    [upserted] = [value for value in params if isinstance(value, int) and value > 1 << 40]
+    token = await advance_for_write(source, _STAMPED_TABLE, rows, schema=_SCHEMA, tenancy=TENANT_BY_SCHEMA)
+    assert token is not None
+    record = await source.change(_STAMPED_TABLE, token)
+    assert record is not None and record.s_min == upserted, "the upsert's record names its own stamp"
+
+    [updated] = stamped_values(_RUNS, {"rows": 2})[EPOCH_COLUMN].params
+    token = await advance_for_write(source, _STAMPED_TABLE, rows, schema=_SCHEMA, tenancy=TENANT_BY_SCHEMA)
+    assert token is not None
+    record = await source.change(_STAMPED_TABLE, token)
+    assert record is not None and record.s_min == updated, "the keyed update's record names its own stamp"
+
+    token = await advance_for_write(source, _STAMPED_TABLE, rows, schema=_SCHEMA, tenancy=TENANT_BY_SCHEMA)
+    assert token is not None
+    record = await source.change(_STAMPED_TABLE, token)
+    assert record is not None and record.s_min is None, "a stamp is named once, by the advance after its write"
+
+    # a mark whose floor is above both stamps: the scrub judges the two stamped records, and both fall below it
+    now = datetime.now(UTC)
+    pool = _Pool(
+        incarnation, now, [{"log_incarnation": incarnation, "seq": 1, "at": now + timedelta(hours=1), "id": 1}]
+    )
+    pool.own = [_STAMPED_TABLE]
+    keeper = ChangeNoteKeeper(pool, notes_schema=_RING, log=source, scrub_every=timedelta(0))
+    await keeper.run_pass()  # the first pass's scrub takes the head the next one checks up to
+    scrubbed = (await keeper.run_pass()).scrub
+    assert scrubbed.checked == 4
+    assert scrubbed.margin_violations == 2
 
 
 def test_a_versioned_table_declares_its_scope_epoch_index_and_its_restore_declaration() -> None:

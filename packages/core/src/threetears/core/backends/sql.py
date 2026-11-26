@@ -1163,7 +1163,7 @@ class SqlL3Backend:
         if schema is not None:
             _refuse_unstamped_rows(schema, table, (row,))
             # a stamped table's upsert or fenced update says so on its request, with its one stamp
-            with stamping_write(_stamp_of(schema, row.get(EPOCH_COLUMN))):
+            with stamping_write(_stamp_of(schema, row.get(EPOCH_COLUMN)), table=table):
                 return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
 
         if pk is None:
@@ -1255,7 +1255,7 @@ class SqlL3Backend:
             # on the loop, 187 statements a 33,786-row write (the WD2 bench, 2026-11-16). One text a statement size
             texts: dict[int, str] = {}
             # each statement says whether its rows stamp, with the rows' lowest stamp, as it was measured
-            with stamping_write(lowest):
+            with stamping_write(lowest, table=table):
                 for batch in batches:
                     sql, params = (
                         await asyncio.to_thread(
@@ -1343,7 +1343,7 @@ class SqlL3Backend:
         appending: dict[str, bool] = {"append": True} if append and rail else {}
         written = 0
         # each copy says whether its rows stamp, with the rows' lowest stamp, as it was measured
-        with stamping_write(lowest):
+        with stamping_write(lowest, table=table):
             for batch in batches:
                 await conn.copy_records_to_table(table, records=batch, columns=names, **appending)
                 written += len(batch)
@@ -1481,7 +1481,7 @@ class SqlL3Backend:
         # and notes them a row each, as the upsert they replace was noted; named only then, for a door that predates it
         appending: dict[str, bool] = {"append": True} if plan.kind == "append" else {}
         # every request of the write says whether its rows stamp: the hub reads it, never the table's catalog
-        with stamping_write(lowest):
+        with stamping_write(lowest, table=table):
             written: int = await conn.write_arrow_rows(
                 table,
                 planned,
@@ -1662,7 +1662,7 @@ class SqlL3Backend:
                     f"{table} declares a row epoch: a load through the broker stamps its rows with one epoch, named "
                     f"as a constant ({EPOCH_COLUMN!r}), so its request names its stamp; this one reads it from the files"
                 )
-            with stamping_write(_stamp_of(schema, constants.get(EPOCH_COLUMN))):
+            with stamping_write(_stamp_of(schema, constants.get(EPOCH_COLUMN)), table=table):
                 return await self._pool.load_files(
                     table,
                     files,
@@ -1938,7 +1938,7 @@ class SqlL3Backend:
         per_statement = max(1, min(max_rows, schema_sql.MAX_STATEMENT_PARAMS // width))
         names = ", ".join(column.name for column in columns)
         # every marker carries the delete's one stamp, and each statement says so
-        with stamping_write(_stamp_of(schema, epoch)):
+        with stamping_write(_stamp_of(schema, epoch), table=table):
             for start in range(0, len(rows), per_statement):
                 batch = rows[start : start + per_statement]
                 values = ", ".join(
@@ -2010,7 +2010,7 @@ class SqlL3Backend:
                 else {"epoch": epoch, "scope": schema.row_epoch.scope}
             )
             # a versioned table's run markers carry the delete's stamp, and the request says so
-            with stamping_write(_stamp_of(schema, epoch)):
+            with stamping_write(_stamp_of(schema, epoch), table=table):
                 deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
             return int(deleted)
         statements = (
@@ -2465,7 +2465,7 @@ class SqlL3Backend:
         data = dict(row)
         sql = schema_sql.build_ordered_upsert_sql(schema, data)
         params = schema_sql.build_insert_params(schema, data)
-        with stamping_write(_stamp_of(schema, data.get(EPOCH_COLUMN))):
+        with stamping_write(_stamp_of(schema, data.get(EPOCH_COLUMN)), table=table):
             return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:
