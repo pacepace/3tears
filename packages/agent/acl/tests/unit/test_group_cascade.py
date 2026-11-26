@@ -13,8 +13,11 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+
 from threetears.agent.acl import GroupCollection, GroupMemberCollection, RoleAssignmentCollection
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
+from threetears.core.collections.delete_cascade import UnappliedCascadeError
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -187,3 +190,53 @@ async def test_a_failed_membership_advance_still_announces_the_assignments() -> 
 
     (assignment,) = _rows(bus, "role_assignments")
     assert (assignment.generation, assignment.columns) == ("inc:1", {"group_id": f"{group_id}"})
+
+
+class _RaisingPool(_Pool):
+    """answers the cascade's reads; its gone mark of the memberships raises after the statement was sent."""
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        if '"group_members"' in sql:
+            raise ConnectionError("lost after the statement was sent")
+        return await super().execute(sql, *params)
+
+
+async def test_a_membership_mark_that_raised_is_still_announced() -> None:
+    """Flips if the cascade's gone marks are announced only after they return: a statement that raised may still
+    have reached L3, and every pod would keep the deleted group's memberships granting."""
+    group_id = uuid4()
+    members = [{"member_type": "user", "member_id": uuid4(), "id": uuid4()}]
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=_RaisingPool(members, []), l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.set_generation_source(_Source())
+    groups = GroupCollection(registry, _CONFIG, nats_client=bus)
+    GroupMemberCollection(registry, _CONFIG, nats_client=bus)
+    groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError):
+        await groups.delete(("customer", group_id))
+
+    assert [(m.ids, m.columns) for m in _rows(bus, "group_members")] == [
+        (
+            [f"{group_id}", f"{members[0]['id']}"],
+            {"member_type": "user", "member_id": f"{members[0]['member_id']}"},
+        )
+    ]
+
+
+async def test_a_cascade_no_registered_collection_can_announce_is_refused_before_the_delete() -> None:
+    """Flips if a group delete marks grants gone that no collection announces (no pod would hear the revoke), or
+    refuses only after the group itself was marked gone."""
+    assignments = [{"row_scope": "customer", "assignment_id": uuid4()}]
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=_Pool([], assignments), l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.set_generation_source(_Source())
+    groups = GroupCollection(registry, _CONFIG, nats_client=bus)
+    groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(UnappliedCascadeError, match="role_assignments"):
+        await groups.delete(("customer", uuid4()))
+
+    groups.delete_from_store.assert_not_awaited()

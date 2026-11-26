@@ -97,6 +97,14 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/base.py::BaseCollection._advance_l2_generation_key",
             # the L2 write generation: the epoch machinery itself
             f"{_CORE}/collections/base.py::BaseCollection.l2_write_generation",
+            # a stamped row's gone mark in place (one keyed UPDATE): the store half of a stamped collection's delete, as
+            # delete_from_store is. Reached only from the write path (delete_from_store, and
+            # BaseCollection._mark_gone_after_cascades inside delete), whose delete announces the row once it lands
+            f"{_CORE}/collections/declared_table.py::DeclaredTableCollection.mark_gone_in_store",
+            # the foreign-key actions a stamped parent's gone mark takes itself, on its delete's transaction (reached only
+            # from BaseCollection._mark_gone_after_cascades); delete announces every child row it reached
+            # (announce_delete_cascade) once that transaction commits
+            f"{_CORE}/collections/delete_cascade.py::apply_delete_cascade",
             # the schema-backed collection's keyed bulk writes, which name every row they change
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.save_rows",
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.delete_rows",

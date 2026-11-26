@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 from uuid import UUID, uuid4
 
 import pytest
@@ -281,3 +281,28 @@ def test_the_visibility_clause_reads_live_access_rows_alone() -> None:
 
 async def test_a_restore_reads_each_access_tables_16_buckets_since_x() -> None:
     await assert_restore_reads_every_bucket(_SCHEMAS)
+
+
+async def test_a_namespace_revive_whose_statement_raised_is_still_announced() -> None:
+    """Flips if a gone namespace's revive is announced only after its statement returns: one that raised may still have
+    reached L3, and every pod would keep the namespace gone (or the old row) it no longer is."""
+    namespace_id = uuid4()
+
+    def answer(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        # the revive's keyed UPDATE (inside a CTE when it records the row's move between scopes)
+        if 'UPDATE "namespaces"' in sql:
+            raise ConnectionError("lost after the statement was sent")
+        return []
+
+    pool = RecordingPool(answer)
+    namespaces = _collection(NamespaceCollection, pool)
+    namespaces.invalidate_cache_many = AsyncMock()
+    with pytest.raises(ConnectionError):
+        await namespaces.ensure_namespace(
+            namespace_id=namespace_id, name="n", namespace_type="tool", owner_agent_id=None, customer_id=None
+        )
+    # the insert's announcement, then the revive's, each naming the row and its scope
+    assert namespaces.invalidate_cache_many.await_args_list == [
+        call([namespace_id], rows=[{"row_scope": "platform"}]),
+        call([namespace_id], rows=[{"row_scope": "platform"}]),
+    ]
