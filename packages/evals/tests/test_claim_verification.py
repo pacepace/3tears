@@ -461,23 +461,68 @@ async def test_an_abbreviation_between_subject_and_value_ends_no_sentence(shape:
     assert (citation.ref, citation.quote) == (ref, text)
 
 
-async def test_a_key_fact_lines_abbreviated_entity_and_an_abbreviation_in_its_fact_end_no_sentence() -> None:
+async def test_a_key_fact_quoted_without_its_heading_takes_the_abbreviation_rule() -> None:
+    """A subject named inside the fact itself, not in its heading, is held to one sentence as in a passage, and an
+    abbreviation between it and the value ends no sentence there either."""
     key = ReferenceKey(
         core=(
             ReferenceEntity(
                 name="Dr. John Hale",
-                facts=(ReferenceFact(claim="Born in St. Louis in 1931.", source_url="https://example.org/hale"),),
+                facts=(
+                    ReferenceFact(
+                        claim="Dr. John Hale was born in St. Louis in 1931.", source_url="https://example.org/hale"
+                    ),
+                ),
             ),
         )
     )
-    line = "A key fact about Dr. John Hale: Born in St. Louis in 1931."
-    client = _FakeScriptedClient([_batch(_answer(0, _cite("K1", quote=line, subject="Dr. John Hale", value="1931")))])
+    fact = "Dr. John Hale was born in St. Louis in 1931."
+    client = _FakeScriptedClient([_batch(_answer(0, _cite("K1", quote=fact, subject="Dr. John Hale", value="1931")))])
 
     verification = await _verify(client, (_ABBREVIATED_CLAIM,), key=key, documents=())
 
     assert len(client.calls) == 1, "no repair call"
     (citation,) = _grade((_ABBREVIATED_CLAIM,), verification).claims[0].truth_citations
-    assert citation.quote == line
+    assert citation.quote == fact
+
+
+#: A fact of two sentences whose second never names its entity, shown as a key fact about Harrow Tales.
+_TWO_SENTENCE_FACT = "Ida Venn wrote it in 1929. It appeared as a bound volume in 1931."
+
+
+@pytest.mark.parametrize(
+    ("kind", "quote", "subject", "repaired"),
+    [
+        ("key fact", f"A key fact about Harrow Tales: {_TWO_SENTENCE_FACT}", "Harrow Tales", False),
+        ("key fact", _TWO_SENTENCE_FACT, "Ida Venn", True),
+        ("passage", f"Harrow Tales: {_TWO_SENTENCE_FACT}", "Harrow Tales", True),
+    ],
+    ids=["subject-in-the-heading-binds-across", "subject-in-the-fact-keeps-one-sentence", "passage-keeps-one-sentence"],
+)
+async def test_a_key_facts_heading_names_the_subject_of_each_of_its_sentences_and_a_passage_has_none(
+    kind: str, quote: str, subject: str, repaired: bool
+) -> None:
+    """A key fact is about the one entity its heading names, by construction, so a subject quoted from that heading
+    binds to a value in the fact's second sentence, which never names it. A subject named inside the fact, and a
+    passage of the same shape, where a subject may change from one sentence to the next, keep the one-sentence rule."""
+    ref = "S1" if kind == "passage" else "K1"
+    shown = quote if kind == "passage" else _TWO_SENTENCE_FACT
+    client = _FakeScriptedClient(
+        [_batch(_answer(0, _cite(ref, quote=quote, subject=subject, value="1931"))), _repair()]
+    )
+
+    grade = _grade(
+        (_ABBREVIATED_CLAIM,), await _verify(client, (_ABBREVIATED_CLAIM,), **_as_passage_or_key_fact(kind, shown))
+    )
+
+    if repaired:
+        assert len(client.calls) == 2
+        assert f"its subject and value for {ref} stand in different sentences or rows" in client.calls[1]["user"]
+        assert grade.claims[0].verdict == "unverifiable"
+    else:
+        assert len(client.calls) == 1, "no repair call"
+        (citation,) = grade.claims[0].truth_citations
+        assert (citation.quote, grade.claims[0].verdict) == (quote, "supported")
 
 
 @pytest.mark.parametrize("kind", ["passage", "key fact"])
@@ -487,6 +532,9 @@ async def test_a_key_fact_lines_abbreviated_entity_and_an_abbreviation_in_its_fa
         ("The pamphlet appeared in 1931. The bound volume followed in 1932.", "bound volume", "1931", True),
         ("The bound volume appeared in 1931. The pamphlet followed in 1932.", "bound volume", "1932", True),
         ("The bound volume was printed in Leeds. The pamphlet followed in 1932.", "bound volume", "1932", True),
+        ("The bound volume was printed in Ohio. The pamphlet followed in 1932.", "bound volume", "1932", True),
+        ("The bound volume was sold to him. The pamphlet followed in 1932.", "bound volume", "1932", True),
+        ("The bound volume of Acme Inc. was reissued in 1932.", "bound volume", "1932", True),
         ("The bound volume was printed in the U.S. The pamphlet followed in 1932.", "bound volume", "1932", False),
         ("The bound volume was printed in May. The pamphlet followed in 1932.", "bound volume", "1932", False),
     ],
@@ -494,15 +542,19 @@ async def test_a_key_fact_lines_abbreviated_entity_and_an_abbreviation_in_its_fa
         "value-before-subject-parted",
         "subject-before-value-parted",
         "long-word-ends-a-sentence",
+        "four-letter-capitalised-word-ends-a-sentence",
+        "short-lower-case-word-ends-a-sentence",
+        "short-capitalised-word-before-a-lower-case-word-breaks",
         "acronym-ending-a-sentence-reads-as-one",
         "short-capitalised-word-ending-a-sentence-reads-as-one",
     ],
 )
-async def test_a_number_or_a_long_word_still_ends_a_sentence_and_an_abbreviation_shape_never_does(
+async def test_a_number_or_a_long_or_lower_case_word_still_ends_a_sentence_and_an_abbreviation_shape_never_does(
     text: str, subject: str, value: str, repaired: bool, kind: str
 ) -> None:
-    """A full stop after a year or a long word parts two sentences, so a neighbouring value is still asked again, the
-    subject before or after it. The accepted trade-off, since each break costs a repair round: a real sentence that
+    """A full stop after a year, a word of four letters or more, or a lower-case word parts two sentences, so a
+    neighbouring value is still asked again, the subject before or after it; so does one after a short capitalised
+    token before a lower-case word, which no abbreviation shape covers. The accepted trade-off, since each break costs a repair round: a real sentence that
     ends on an abbreviation shape before a capitalised word reads as one sentence with the next, and the neighbour's
     value passes every code check, its binding left to the model as within any sentence."""
     ref = "S1" if kind == "passage" else "K1"
@@ -1676,10 +1728,10 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 
 
 #: The identity of :func:`_verifier` over a client of :data:`_MODEL`, with :data:`_WHOLE` and :data:`_REPAIRS`, from
-#: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
+#: the shipped prompts, schemas, selection, batch, sentence-break and key-heading rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:37ed43c946bb"
+_PINNED_IDENTITY = "scripted/verify|claimverify:9531ffbfd96d"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

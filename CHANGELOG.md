@@ -15,11 +15,20 @@ repeated, the criterion. A full stop now ends no sentence after initials or a do
 token of at most three letters followed by a capitalised word or a digit. A number before a full stop always ends a
 sentence, so "The pamphlet appeared in 1931. The bound volume followed in 1932." still parts the bound volume from
 1931. The rule is English-shaped: case is read in any cased script, but the shapes are how English abbreviates. Its
-known false accept: a real sentence ending on a single letter, an acronym or a short capitalised word before a
+known false accept: a real sentence ending on a single letter, a dotted acronym or a short capitalised word before a
 capitalised word or a digit ("printed in May. The bound volume followed in 1932") reads as one sentence, its binding
-left to the model as within any sentence. `!`, `?`, line breaks and the semicolon rule are unchanged.
+left to the model as within any sentence. Lower-case and longer abbreviations ("vol. 2", "ca. 1500", "Prof. Jane",
+"Sept. 1931"), and a short capitalised one before a lower-case word ("Acme Inc. was"), still end a sentence. `!`, `?`,
+line breaks and the semicolon rule are unchanged.
 
-**Changed:** the rule enters the claim verifier's identity and the web step's, so every claims criterion's fingerprint
+**Fixed:** a key fact of two sentences could not be cited for its second, whose words need not name the entity ("It
+followed in 1932."): the subject, named only in the line's `A key fact about <entity>:` heading, stood in another
+sentence than the value, so the citation was asked again and, repeated, lost the criterion. A key fact is about its one
+entity by construction, so a subject inside that heading now binds to a value anywhere in the fact's line. Which of
+the fact's sentences states the claim's value is the model's to read, as within one sentence. A subject named inside
+the fact, and every passage, keep the one-sentence rule.
+
+**Changed:** both rules enter the claim verifier's identity and the web step's, so every claims criterion's fingerprint
 moves, and grades made before and after this never pool.
 
 **For hosts:** nothing to change; a host re-judging stored cells with a claims criterion gets a new fingerprint.
