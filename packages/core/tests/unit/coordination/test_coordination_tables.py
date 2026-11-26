@@ -22,7 +22,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import L2_ORDER_FLOOR, l2_order_of
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.schema_backed import BIGINT_TYPE, BYTES_TYPE, INT_TYPE, STRING_TYPE
+from threetears.core.collections.schema_backed import BIGINT_TYPE, BOOL_TYPE, BYTES_TYPE, INT_TYPE, STRING_TYPE
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.coordination.migrations import PACKAGE_NAME, register
@@ -35,6 +35,10 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
 from threetears.core.coordination.migrations.v006_drop_write_mark_triggers import drop_write_mark_triggers
 from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
+from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import (
+    STAMPED_TABLES,
+    revocations_carry_their_epoch,
+)
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
@@ -45,6 +49,7 @@ from threetears.core.coordination.tables import (
     table_def_for,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope
+from threetears.core.data.migrations.stamp_tables import bucket_statements
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -227,7 +232,10 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
     async def test_every_declared_table_and_index_is_created(self) -> None:
         store = _RecordingStore()
         await create_coordination_tables(store)  # type: ignore[arg-type]
-        created = " | ".join(store.statements)
+        # a stamped table's restore index is v007's: its bucket is a generated column v001's DDL definition cannot
+        # carry, so v007 adds the bucket, the index and its declaration, to a table v001 just created as to an older one
+        restore = [statement for table in STAMPED_TABLES for statement in bucket_statements(table, yugabyte=False)]
+        created = " | ".join([*store.statements, *restore])
         for schema in COORDINATION_TABLE_SCHEMAS:
             assert f"CREATE TABLE IF NOT EXISTS {schema.name}" in created
             for index in schema.indexes:
@@ -257,6 +265,8 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
                     if column.column_type == BYTES_TYPE
                     else "BIGINT"
                     if column.column_type == BIGINT_TYPE
+                    else "BOOLEAN"
+                    if column.column_type == BOOL_TYPE
                     else "TIMESTAMPTZ"
                 )
                 for column in schema.columns
@@ -296,6 +306,7 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
             4: index_write_marks_by_table,
             5: range_expiry_indexes,
             6: drop_write_mark_triggers,
+            7: revocations_carry_their_epoch,
         }
 
     @pytest.mark.asyncio

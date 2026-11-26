@@ -49,6 +49,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.keyed import read_row
 from threetears.observe import get_logger
 
@@ -165,16 +166,18 @@ async def ensure_platform_builtin_tool_user_role(
     # caller that writes a roles-shaped permissions payload.
     # cache-bypass: a row no tier holds yet, written once at platform bootstrap;
     # a later read by id pulls it through the Collection's tiers.
+    # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
     await pool.execute(
         "INSERT INTO roles ("
         "role_id, name, description, permissions, is_builtin, "
-        "date_created, date_updated"
-        ") VALUES ($1, $2, $3, $4::jsonb, TRUE, $5, $5)",
+        "date_created, date_updated, epoch"
+        ") VALUES ($1, $2, $3, $4::jsonb, TRUE, $5, $5, $6)",
         new_id,
         PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME,
         PLATFORM_BUILTIN_TOOL_USER_ROLE_DESCRIPTION,
         _json.dumps(PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS),
         now,
+        CallerTransaction.stamp_for(None, "roles"),
     )
     # the table carries a write generation: announce the row, in one advance, so a pod following
     # ``roles`` hears the insert rather than finding an advance with no row and dropping the table

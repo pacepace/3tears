@@ -29,7 +29,8 @@ from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Final
 
 from threetears.core.keyed._filters import Const, Fragment, Selected
-from threetears.core.keyed._filters import refuse_append_only, sent_by
+from threetears.core.keyed._filters import refuse_versioned, sent_by, stamped_names
+from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.interfaces.keyed.filters import AnyOf, by_conditions, quote_identifier, quoted_table
 from threetears.core.keyed.page import keyset_page
@@ -166,11 +167,22 @@ async def read_reached(
     if not columns:
         raise ValueError(f"a walk of {table} answers at least one column")
     if depth is not None:
-        # one recursive statement: no live read reaches its levels, so an append-only table is refused there (a
-        # versioned one's every version, a stamped one's gone rows); a walk a level a read is keyed reads, each live
-        refuse_append_only(conn, [table, *(join.table for join in joins or ())], f"a walk of {table} in one statement")
+        # one recursive statement: no newest relation reaches its levels, so a versioned table is refused there (its
+        # every version); a stamped one is guarded in place, each level and each join its live rows alone
+        # (NOT "gone"), so the walk reads no row a delete marked gone. A walk a level a read is keyed reads, each live
+        named = [table, *(join.table for join in joins or ())]
+        refuse_versioned(conn, named, f"a walk of {table} in one statement")
         sql, params = _held_statement(
-            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+            table,
+            start=start,
+            on=on,
+            to=to,
+            columns=columns,
+            by=by,
+            follow=follow,
+            depth=depth,
+            joins=joins,
+            guarded=stamped_names(conn, named),
         )
         return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     if joins:
@@ -300,26 +312,47 @@ def _held_statement(
     follow: Mapping[str, Any] | None,
     depth: int,
     joins: Sequence[Joined],
+    guarded: frozenset[str] = frozenset(),
 ) -> tuple[str, list[Any]]:
     """:func:`_reached_statement`'s statement and binds, its text written once a call shape
     (:data:`_HELD_STATEMENTS`): the first rows' pins are bound first, so a held shape's binds are this call's
-    pins' then the binds held after them.
+    pins' then the binds held after them. The stamped tables it guards are part of the shape: a local copy's walk
+    (no gone flag) and an L3 walk of one table are two texts.
 
     :return: the statement and its binds
     :rtype: tuple[str, list[Any]]
     """
-    key = _statement_key(
+    shape = _statement_key(
         table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
     )
+    key = None if shape is None else (shape, tuple(sorted(guarded)))
     if key is None:
         return _reached_statement(
-            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+            table,
+            start=start,
+            on=on,
+            to=to,
+            columns=columns,
+            by=by,
+            follow=follow,
+            depth=depth,
+            joins=joins,
+            guarded=guarded,
         )
     pinned = by_conditions(start, alias="t")[1]
 
     def write() -> tuple[str, tuple[Any, ...]]:
         sql, params = _reached_statement(
-            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+            table,
+            start=start,
+            on=on,
+            to=to,
+            columns=columns,
+            by=by,
+            follow=follow,
+            depth=depth,
+            joins=joins,
+            guarded=guarded,
         )
         return sql, tuple(params[len(pinned) :])
 
@@ -338,6 +371,7 @@ def _reached_statement(
     follow: Mapping[str, Any] | None,
     depth: int,
     joins: Sequence[Joined],
+    guarded: frozenset[str] = frozenset(),
 ) -> tuple[str, list[Any]]:
     """the walk of :func:`read_reached` capped at ``depth`` levels, and what each reached row joins, as ONE statement::
 
@@ -393,6 +427,11 @@ def _reached_statement(
     params.append(depth)
     walked.append(f"r.{level} < ${len(params)}")
     on_link = [f"t.{quote_identifier(on)} = r.{quote_identifier(to)}", *pinned]
+    if table in guarded:
+        # a stamped L3 table: each level reads its live rows alone, the first and every one after
+        live = f"NOT t.{quote_identifier(GONE_COLUMN)}"
+        first = [*first, live]
+        on_link.append(live)
     recursive = (
         f"WITH RECURSIVE reached({listed}, {level}) AS ("
         f" SELECT {', '.join(f't.{quote_identifier(column)}' for column in read)}, 1"
@@ -407,7 +446,7 @@ def _reached_statement(
     # it hashed from the joined side (every grant of 500 groups scanned for the caller's one, the plan test
     # test_the_typed_set_reads_the_callers_memberships_then_their_groups_grants, 2026-11-15); the reached-CTE this
     # replaced fenced its grants the same way
-    joined, laterals = lateral_joins(joins, params, fenced=True)
+    joined, laterals = lateral_joins(joins, params, fenced=True, guarded=guarded)
     selected = ", ".join([answered, *joined])
     return (
         f"{recursive} SELECT DISTINCT {selected} FROM (SELECT DISTINCT {distinct} FROM reached) AS r{laterals}",

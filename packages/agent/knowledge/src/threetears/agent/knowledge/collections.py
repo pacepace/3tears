@@ -210,7 +210,8 @@ def _active_anchored(datasource_id: UUID | None) -> list[Fragment]:
         # same rbac-read proxy pool: a fresh per-call read, no module state
         where.append(
             Fragment(
-                't."datasource_id" IN ($1, (SELECT origin_datasource_id FROM datasources WHERE id = $1))',
+                # a datasource marked gone (ROW_STAMPED) names no origin
+                't."datasource_id" IN ($1, (SELECT origin_datasource_id FROM datasources WHERE id = $1 AND NOT gone))',
                 (datasource_id,),
             )
         )

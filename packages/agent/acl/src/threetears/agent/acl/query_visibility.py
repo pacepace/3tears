@@ -220,6 +220,7 @@ def _member_reaches_caller(alias: str, edges_left: int, param_offset: int, custo
                     SELECT 1
                       FROM group_members {child}
                      WHERE {child}.group_id = {alias}.member_id
+                       AND NOT {child}.gone
                        AND {nested}
                 ))))"""
 
@@ -299,11 +300,12 @@ def caller_visible_customer_clause(
     fragment = f"""EXISTS (
         SELECT 1
           FROM role_assignments ra
-          JOIN roles vis_role ON vis_role.role_id = ra.role_id
-          JOIN group_members gm ON gm.group_id = ra.group_id
-          JOIN groups vis_group ON vis_group.group_id = ra.group_id
-          LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-         WHERE {_caller_membership_predicate(param_offset, customer_id_column)}
+          JOIN roles vis_role ON vis_role.role_id = ra.role_id AND NOT vis_role.gone
+          JOIN group_members gm ON gm.group_id = ra.group_id AND NOT gm.gone
+          JOIN groups vis_group ON vis_group.group_id = ra.group_id AND NOT vis_group.gone
+          LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id AND NOT ns.gone
+         WHERE NOT ra.gone
+           AND {_caller_membership_predicate(param_offset, customer_id_column)}
            AND {_customer_wall("vis_group", customer_id_column)}
            AND {_customer_wall("vis_role", customer_id_column)}
            AND (

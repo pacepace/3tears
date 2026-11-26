@@ -124,6 +124,39 @@ drops only marks older than the newest mark before the log's oldest record. Neve
 **Added:** `threetears.core.data.migrations.ring_cutover.drop_ring`, the outage-window cutover's step. It drops every
 ring trigger, note function and ring table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps
 the marks table. It is not wired until the ring retires.
+### core, agent-acl, mcp, datasources: 3tears' own switched-on tables carry their epoch (ROW_STAMPED)
+
+**Changed (append-only L3, decision 3):** the ten tables 3tears declares that are switched on, whose change-note ring
+was their only restore path, are declared `row_epoch=ROW_STAMPED` (one row a key, its last write's epoch, a delete a
+gone mark in place): `coordination_revocations`; `namespaces`, `groups`, `group_members`, `roles`, `role_assignments`;
+`mcp_tool_grants`; `datasources`, `datasource_tables`, `table_templates`. Stamped, not versioned, each: written in place,
+or written once and deleted, by no writer that takes a scope's turn (`ScopeEpochs`); one row a key either way.
+
+**Added:** `threetears.core.data.migrations.stamp_tables` stamps a table an earlier migration created: the epoch added
+nullable, the gone flag, the epoch backfilled a page of keys a keyed `UPDATE` (`keyset_pages`, then `update_keyed`;
+never a whole-table statement), `NOT NULL`, the stored `epoch_bucket`, its `(epoch_bucket ASC, epoch)` index (`SPLIT
+AT` on YugabyteDB) and its `COMMENT ON INDEX` declaration. Idempotent, never truncating, for the outage-window cutover.
+Migrations: coordination v007, mcp v003 (always attached), agent_acl v006. The hub owns the DDL of the datasource
+tables, and of the access tables in its database: its migration stamps them with
+`threetears.datasources.stamp_tables.STAMPED_TABLES` and agent_acl v006's `STAMPED_TABLES`. Also
+`TableSchema.bucket_hash_kind`, and `threetears.core.testing.stamped_tables` (what each stamped table's tests hold it
+to).
+
+**Changed:** a stamped table's delete is a gone mark everywhere: `SchemaBackedCollection.delete_from_store` (one keyed
+`UPDATE`, its epoch risen), the datasource tables' own deletes, a revoke of grants (`delete_by_group_and_scope`), the
+revocation list's expiry sweep. Every raw write stamps (the builtin role, a namespace's and a grant's ensure; keyed
+updates through `stamped_values`). A namespace or grant ensured again after its delete is made live in place, its gone
+row still holding the key. The raw reads of these tables read live rows alone (the visibility clause, the grants' cold
+fill, knowledge's origin read).
+
+**Changed:** a stamped parent's delete runs no foreign-key action in the database, so 3tears takes each declared one
+itself (`delete_cascade.apply_delete_cascade`, refused before the gone mark when a child has no collection here): a
+`CASCADE` marks the child rows gone, a `SET NULL` sets the column NULL by key, its epoch risen. A group's delete marks
+its memberships and grants gone.
+
+**Changed:** a walk in one statement (`read_reached(depth=)`) and a ranked read joining in one statement guard a stamped
+table in place (`NOT "gone"` on each level and each join) instead of refusing it: the visible-customer walk reads the
+stamped access tables. A link chain still refuses one.
 
 ### core: a copy follower keeps a versioned table one row a logical key
 

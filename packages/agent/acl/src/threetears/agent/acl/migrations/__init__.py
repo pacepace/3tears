@@ -17,6 +17,9 @@ version history:
 - v004 creates the indexes the access tables' other keyed methods use (3tears v0.95.0).
 - v005 adds ``role_assignments.customer_id``, the grant's customer, nullable and unchecked (the expand step;
   ``RoleAssignmentCollection.backfill_customers`` fills the older grants) (3tears v0.95.0).
+- v006 makes the five tables ``ROW_STAMPED``: each one's epoch (backfilled a page of keys a statement), gone flag, stored
+  restore bucket, ``(epoch_bucket, epoch)`` index and declaration, so a restore of a lost change log reads them a
+  bucket at a time and the change-note ring can be retired (3tears v0.95.0).
 
 ``agent_tools_platform`` ALTERs ``namespaces``; a deployment that runs
 both registers it with ``depends_on=("agent_acl",)``.
@@ -36,6 +39,7 @@ from threetears.agent.acl.migrations.v002_reader_indexes import create_acl_reade
 from threetears.agent.acl.migrations.v003_namespace_reader_indexes import create_acl_namespace_reader_indexes
 from threetears.agent.acl.migrations.v004_keyed_method_indexes import create_acl_keyed_method_indexes
 from threetears.agent.acl.migrations.v005_assignment_customer import add_assignment_customer
+from threetears.agent.acl.migrations.v006_access_tables_carry_their_epoch import access_tables_carry_their_epoch
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_acl"
@@ -56,6 +60,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(create_acl_namespace_reader_indexes)
     pkg.version(4)(create_acl_keyed_method_indexes)
     pkg.version(5)(add_assignment_customer)
+    pkg.version(6)(access_tables_carry_their_epoch)
     # the five access tables are switched on: each carries the write-mark trigger from this run
     pkg.mark_write_generation(
         GroupCollection.schema,
@@ -71,6 +76,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "ACL_TABLES_DDL",
     "PACKAGE_NAME",
+    "access_tables_carry_their_epoch",
     "create_acl_tables",
     "register",
 ]

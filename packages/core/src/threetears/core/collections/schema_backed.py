@@ -2011,18 +2011,27 @@ class TableSchema:
         """
         pk = self.primary_key
         keys = (pk,) if isinstance(pk, str) else tuple(pk)
-        by_name = {column.name: column for column in self.columns}
-        hashes = []
-        for key in keys:
-            column = by_name.get(key)
-            kind = None if column is None else _BUCKET_HASH_KINDS.get(column.column_type)
-            if kind is None:
-                raise ValueError(
-                    f"TableSchema(name={self.name!r}): ROW_STAMPED key column {key!r} is of no type a restore bucket "
-                    f"can hash ({sorted(_BUCKET_HASH_KINDS)})"
-                )
-            hashes.append(key_hash_sql(quote_identifier(key), kind))
-        return bucket_sql(tuple(hashes))
+        return bucket_sql(tuple(key_hash_sql(quote_identifier(key), self.bucket_hash_kind(key)) for key in keys))
+
+    def bucket_hash_kind(self, key: str) -> str:
+        """the kind of hash (:func:`~threetears.core.ddl.row_epoch.key_hash_sql`) a stamped table's key column feeds
+        its restore bucket: what its bucket is made of, and what a migration that stamps the table later names it by
+        (``threetears.core.data.migrations.stamp_tables.stamping_table_of``).
+
+        :param key: a key column
+        :ptype key: str
+        :return: the kind (``uuid``, ``text``, ...)
+        :rtype: str
+        :raises ValueError: when the column is not declared, or its type has no hash a bucket can be made of
+        """
+        column = next((column for column in self.columns if column.name == key), None)
+        kind = None if column is None else _BUCKET_HASH_KINDS.get(column.column_type)
+        if kind is None:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): ROW_STAMPED key column {key!r} is of no type a restore bucket "
+                f"can hash ({sorted(_BUCKET_HASH_KINDS)})"
+            )
+        return kind
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
@@ -5669,17 +5678,40 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete one row from L3 by primary key via the :class:`DurableStore` seam.
 
+        **A stamped table** (``ROW_STAMPED``) is never deleted from: the key's row is marked gone in place, its epoch
+        risen past a fresh stamp (the store's ``mark_gone``, one keyed ``UPDATE``), so a restore of a lost change log
+        hears the delete (append-only L3, decision 2). WHY here and not in the store's ``delete``: the store refuses a
+        real ``DELETE`` of a stamped table outright (``_refuse_versioned_delete``), and the collection is the one place
+        that knows its delete is a gone mark; a delete outside a transaction is its own statement, stamped from the
+        process clock (``CallerTransaction.stamp_for``).
+
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk)
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
+        :raises ValueError: when the table is stamped and its store cannot mark a key gone
         """
         self._refuse_unfiled("delete_from_store")
         store = self._durable_store()
         if store is None:
             return
         pk_values = self.normalize_pk(entity_id)
+        if self.schema.stamps_epoch and not self.schema.versioned:
+            if not isinstance(store, GoneMarkingStore):
+                raise ValueError(
+                    f"{type(self).__name__}.delete_from_store: {self.table_name} is stamped, and its store cannot "
+                    f"mark a key gone"
+                )
+            await store.mark_gone(
+                self.schema.name,
+                [tuple(pk_values)],
+                epoch=CallerTransaction.stamp_for(None, self.table_name),
+                scope=None,
+                max_rows=1,
+                conn=None,
+            )
+            return
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         await store.delete(self.schema.name, pk)
 

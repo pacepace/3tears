@@ -426,7 +426,10 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             )
             bound = list(carried)
         else:
-            if not updated:
+            # a stamped table's stamp (its epoch and gone flag, _stamped_row) rides every write and updates nothing of
+            # the row's own: a row carrying no other column to update is refused as it was before the stamp
+            stamp = (EPOCH_COLUMN, GONE_COLUMN) if self._rises_epoch() else ()
+            if not [name for name in updated if name not in stamp]:
                 raise KeyError(f"{table}: a write of an existing row must carry a column to update")
             assignments = ", ".join(
                 f"{name} = GREATEST({name} + 1, {render_param(self._column(name), index)})"
