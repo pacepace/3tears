@@ -950,6 +950,8 @@ class FakeChangeLog:
         self._incarnation = ""
         self._continues: tuple[str, int | None] | None = None
         self._restoring: str | None = None
+        #: the cleanup floor the owner published, and the incarnation it was published for
+        self._floor: tuple[str, int] | None = None
         self._entries: list[ChangeLogEntry] = []
         self._next_seq = 1
         self._max_bytes: int | None = None
@@ -1021,6 +1023,7 @@ class FakeChangeLog:
             self._present = True
             self._continues = continues
             self._restoring = restoring
+            self._floor = None
             self._incarnation = incarnation or f"fake-{uuid7()}"
             self._max_bytes = max_bytes
             self._max_age = max_age
@@ -1052,6 +1055,7 @@ class FakeChangeLog:
             covered_from=None if self._continues is None else self._continues[1],
             max_age=self._max_age,
             restoring=self._restoring,
+            cleanup_floor=self._floor[1] if self._floor is not None and self._floor[0] == self._incarnation else None,
         )
 
     async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState:
@@ -1065,6 +1069,20 @@ class FakeChangeLog:
         self._present_or_raise()
         self._continues = continues
         self._restoring = None
+        state = await self.state()
+        assert state is not None
+        return state
+
+    async def label_cleanup_floor(self, floor: int) -> ChangeLogState:
+        """publish the restore window's cleanup floor F for the log's current incarnation.
+
+        :param floor: F
+        :ptype floor: int
+        :return: what it holds after
+        :rtype: ChangeLogState
+        """
+        self._present_or_raise()
+        self._floor = (self._incarnation, floor)
         state = await self.state()
         assert state is not None
         return state

@@ -30,6 +30,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.log_keeper import LogKeeper
+from threetears.core.collections.quiet_cleanup import log_window_floor
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -47,6 +48,7 @@ from threetears.core.ddl.row_epoch import (
     RESTORE_BUCKETS,
     ROW_STAMPED,
     bucket_epoch_index_name,
+    cleanup_floor,
     restore_floor,
 )
 from threetears.core.config import DefaultCoreConfig
@@ -57,7 +59,7 @@ from threetears.core.tenancy import TENANT_BY_SCHEMA, tenant_column, value_tenan
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.enforcement.no_whole_reads.schema import collect_schema
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
-from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationSource
+from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource
 from threetears.nats import set_default_namespace
 
 from packages.core.tests.unit.collections.restore_pool import (
@@ -513,3 +515,41 @@ async def test_a_restore_reads_back_each_moved_row_for_the_tenant_it_left() -> N
         assert 't."table_name" = $1' in query and 't."scope" = $2' in query and 't."epoch" >= $3' in query, query
         assert args[0] == _MOVING_TABLE and args[2] == floor, args
         assert _MOVING_FROM not in query and _MOVING_EPOCH not in query, "the row's last move is not what is read"
+
+
+async def test_the_owner_publishes_the_cleanup_floor_a_pod_reads_in_the_log_s_state() -> None:
+    """Flips if the log's owner does not publish the window's cleanup floor F at its mark, publishes it again where it
+    did not move, or if a pod's reader (no read by sequence: ``ChangeLog.at``) cannot take F from the log's state: a pod's
+    quiet-time cleanup would then remove nothing. A log whose owner published none (an older hub) tells a pod no floor."""
+    bus = FakeNatsClient()
+    source = EpochGenerationSource(bus)
+    incarnation = await source.start_log()
+    pod = EpochGenerationReader(bus)
+    s_min = (int(datetime.now(UTC).timestamp() * 1000) - 60_000) << 15
+    await source.advance_with_change(_TABLE, [ChangedRow(ids=["CA", "r1", "ann"])], s_min=s_min)
+    log = bus.change_log(EPOCH_CHANGES_BUCKET)
+    log.granted_reads = ()
+    assert await log_window_floor(pod) is None, "no owner published a floor: an older hub's log"
+    log.granted_reads = None
+
+    pool = _Pool(incarnation, datetime.now(UTC), [])
+    keeper = _keeper(pool, source, mark_every=timedelta(microseconds=1))
+    assert (await keeper.run_pass()).marked
+
+    log.granted_reads = ()  # the pod's grant: no read by sequence
+    state = await pod.log_state()
+    assert state is not None and state.cleanup_floor == cleanup_floor(s_min), state
+    assert await log_window_floor(pod) == cleanup_floor(s_min)
+    log.granted_reads = None
+    assert await log_window_floor(source) == cleanup_floor(s_min), "the owner's own F, read by sequence"
+
+    updates: list[int] = []
+    publish = log.label_cleanup_floor
+
+    async def counted(floor: int) -> Any:
+        updates.append(floor)
+        return await publish(floor)
+
+    log.label_cleanup_floor = counted  # type: ignore[method-assign]
+    assert (await keeper.run_pass()).marked
+    assert updates == [], "F did not move: no stream update"

@@ -33,9 +33,10 @@ _OWNER_ONLY: Final = {
     ): "runs only under keeps_log=True, the hub's keeper; a keeper beside the log scrubs by changes_after",
     (
         "core/src/threetears/core/collections/quiet_cleanup.py",
-        "log_window_floor",
-    ): "the hub's broker's own bound on the cleanup floor (aibots.hub.broker.proxy), over the log it writes; no pod "
-    "calls it, a pod's QuietCleanup is handed its floor",
+        "held_window_floor",
+    ): "the window's floor read by sequence, only over a ChangeLogWindow (the hub's EpochGenerationSource): the hub's "
+    "broker's bound and its own cleanup (log_window_floor), and its keeper publishing F (LogKeeper._publish_floor, "
+    "keeps_log=True only); a pod's reader is no ChangeLogWindow and takes the published F from the log's state",
 }
 
 #: methods that read the log by sequence whatever their receiver

@@ -114,10 +114,12 @@ from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 
 __all__ = [
+    "ChangeLogStateReading",
     "ChangeLogWindow",
     "CleanupPass",
     "LoadGate",
     "QuietCleanup",
+    "held_window_floor",
     "log_window_floor",
 ]
 
@@ -160,9 +162,19 @@ _PAUSES = counter(
 
 
 @runtime_checkable
+class ChangeLogStateReading(Protocol):
+    """what :func:`log_window_floor` reads of a change log it may not read by sequence (a pod's
+    ``EpochGenerationReader``): its state, whose ``cleanup_floor`` is F as the log's owner published it."""
+
+    async def log_state(self) -> Any:
+        """the log's state (``cleanup_floor`` among it), or None when absent."""
+
+
+@runtime_checkable
 class ChangeLogWindow(Protocol):
-    """what :func:`log_window_floor` reads of the change log: an ``EpochGenerationSource`` satisfies it. The hub's
-    broker reads the same window through it, to bound the floor a cleanup delete names (``CLEANUP_FLOOR_FIELD``)."""
+    """what :func:`log_window_floor` reads of the change log by sequence: an ``EpochGenerationSource`` (the log's
+    owner, the hub) satisfies it. The hub's broker reads the same window through it, to bound the floor a cleanup delete
+    names (``CLEANUP_FLOOR_FIELD``)."""
 
     async def log_state(self) -> Any:
         """the log's state (``first_seq``, ``last_seq``), or None when absent."""
@@ -171,21 +183,44 @@ class ChangeLogWindow(Protocol):
         """the record at ``seq`` (its ``s_min``), or None."""
 
 
-async def log_window_floor(log_reader: ChangeLogWindow) -> int | None:
-    """the restore window's floor F: :func:`~threetears.core.ddl.row_epoch.cleanup_floor` of the lowest stamp of the
-    oldest record the change log holds. None when that cannot be known (no log, an empty one, or an oldest record that
-    names no stamp): cleanup then removes nothing.
+async def held_window_floor(log_reader: ChangeLogWindow, state: Any) -> int | None:
+    """F of the window ``state`` names: :func:`~threetears.core.ddl.row_epoch.cleanup_floor` of the lowest stamp of the
+    oldest record it holds, read by sequence. None for no log, an empty one, or an oldest record that names no stamp.
 
-    :param log_reader: the change log (an ``EpochGenerationSource``)
+    :param log_reader: the change log, read by sequence
     :ptype log_reader: ChangeLogWindow
+    :param state: its state, as just read (``first_seq``, ``last_seq``), or None
+    :ptype state: Any
     :return: the floor, or None
     :rtype: int | None
     """
-    state = await log_reader.log_state()
     held = state is not None and state.last_seq >= state.first_seq
     oldest = await log_reader.epoch_at(state.first_seq) if held else None
     s_min = None if oldest is None else oldest.s_min
     return None if s_min is None else cleanup_floor(int(s_min))
+
+
+async def log_window_floor(log_reader: ChangeLogWindow | ChangeLogStateReading) -> int | None:
+    """the restore window's floor F: :func:`~threetears.core.ddl.row_epoch.cleanup_floor` of the lowest stamp of the
+    oldest record the change log holds. None when that cannot be known (no log, an empty one, or an oldest record that
+    names no stamp): cleanup then removes nothing.
+
+    A reader of the log by sequence (:class:`ChangeLogWindow`: the hub) reads it there. Any other reader (a pod, whose
+    grant has no read by sequence: ``ChangeLog.at``) takes the F the log's owner published in the log's state
+    (``ChangeLogState.cleanup_floor``, written by its keeper at each mark where F moved, so at most one mark old), and
+    None where no owner published one (an older hub). Either way the hub's broker refuses a cleanup delete whose floor
+    is above its own live bound (this function over its log, by sequence).
+
+    :param log_reader: the change log (an ``EpochGenerationSource``, or a pod's ``EpochGenerationReader``)
+    :ptype log_reader: ChangeLogWindow | ChangeLogStateReading
+    :return: the floor, or None
+    :rtype: int | None
+    """
+    state = await log_reader.log_state()
+    if isinstance(log_reader, ChangeLogWindow):
+        return await held_window_floor(log_reader, state)
+    published = None if state is None else state.cleanup_floor
+    return None if published is None else int(published)
 
 
 #: how long the change log must stay silent before a gate fed by it (:meth:`LoadGate.from_change_log`) finds nothing

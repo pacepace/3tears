@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from threetears.nats.kv_watch import KvKeyUpdate
 
 __all__ = [
+    "CHANGE_LOG_CLEANUP_FLOOR_METADATA",
     "CHANGE_LOG_CONTINUES_METADATA",
     "CHANGE_LOG_COVERED_FROM_METADATA",
     "CHANGE_LOG_INCARNATION_METADATA",
@@ -26,6 +27,8 @@ __all__ = [
     "ChangeLogEntry",
     "ChangeLogLike",
     "ChangeLogState",
+    "cleanup_floor_metadata",
+    "published_cleanup_floor",
 ]
 
 #: the metadata key a change log's stream carries its incarnation under
@@ -41,6 +44,39 @@ CHANGE_LOG_COVERED_FROM_METADATA: Final = "threetears_covered_from"
 #: restore's last append: the continuation (:data:`CHANGE_LOG_CONTINUES_METADATA`) is written only then, so a
 #: follower never carries its mark over to a log that does not yet hold everything the notes name
 CHANGE_LOG_RESTORING_METADATA: Final = "threetears_restoring"
+
+#: the metadata key the log's owner (the hub's keeper) publishes the restore window's cleanup floor F under, as
+#: ``<incarnation>:<F>``: what a reader that may not read the log by sequence (a pod) learns F from, in the same
+#: ``STREAM.INFO`` it already reads the log's state with. A value naming another incarnation is not this log's floor,
+#: and a log whose owner publishes none (an older hub) has none: that reader's quiet-time cleanup then removes nothing
+CHANGE_LOG_CLEANUP_FLOOR_METADATA: Final = "threetears_cleanup_floor"
+
+
+def published_cleanup_floor(value: str | None, incarnation: str) -> int | None:
+    """the floor a log's metadata publishes (:data:`CHANGE_LOG_CLEANUP_FLOOR_METADATA`) for ``incarnation``.
+
+    :param value: the metadata's value, or ``None`` when absent
+    :ptype value: str | None
+    :param incarnation: the log's incarnation
+    :ptype incarnation: str
+    :return: F, or ``None`` when absent, malformed, or published for another incarnation
+    :rtype: int | None
+    """
+    named, _, floor = (value or "").rpartition(":")
+    return int(floor) if named == incarnation and floor.isdigit() else None
+
+
+def cleanup_floor_metadata(floor: int, incarnation: str) -> str:
+    """the metadata value publishing ``floor`` for ``incarnation`` (:data:`CHANGE_LOG_CLEANUP_FLOOR_METADATA`).
+
+    :param floor: F
+    :ptype floor: int
+    :param incarnation: the log's incarnation
+    :ptype incarnation: str
+    :return: ``<incarnation>:<F>``
+    :rtype: str
+    """
+    return f"{incarnation}:{floor}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +96,9 @@ class ChangeLogState:
     :ivar max_age: how long the log keeps a record, as declared; ``None`` when unbounded or not said
     :ivar restoring: for a log whose restore has not finished, the incarnation of the lost log it is being
         restored from; ``None`` otherwise. Such a log continues nothing yet
+    :ivar cleanup_floor: the restore window's cleanup floor F as the log's owner last published it for this
+        incarnation (:data:`CHANGE_LOG_CLEANUP_FLOOR_METADATA`), at most one keeper mark old; ``None`` when it
+        published none
     """
 
     first_seq: int
@@ -71,6 +110,7 @@ class ChangeLogState:
     covered_from: int | None = None
     max_age: timedelta | None = None
     restoring: str | None = None
+    cleanup_floor: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +147,8 @@ class ChangeLogLike(Protocol):
     async def state(self) -> ChangeLogState | None: ...
 
     async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState: ...
+
+    async def label_cleanup_floor(self, floor: int) -> ChangeLogState: ...
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int: ...
 
