@@ -129,7 +129,11 @@ class TestKeyMovingFailures:
         assert recorded_as(a)
         # refused before any answer: nothing billed, so a's reservation was released
         assert (a.spent, a.reserved) == (Decimal(0), Decimal(0))
-        assert b.active and b.spent > 0
+        assert b.spent > 0
+        # a key forbidden for this model alone still serves the pool's other models, so it stays active
+        # and this model's later calls skip it; every other refusal leaves the key unable to serve at all
+        forbidden_for_one_model = recorded is fx.ANTHROPIC_PERMISSION_403
+        assert (a.active, b.active) == ((True, False) if forbidden_for_one_model else (False, True))
 
     async def test_every_key_is_tried_at_most_once(self) -> None:
         pool = make_pool(spec("a"), spec("b"))

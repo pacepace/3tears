@@ -5,6 +5,11 @@ starts on, held in the shared store so every process sharing the pool starts on 
 active key moves only when it can't serve -- exhausted, revoked, forbidden, tripped or low on room --
 and the move is recorded once, so later calls don't rediscover a dead key (KP-D).
 
+**A key forbidden for one model doesn't move the active key** (owner, 2026-11-26). The active key is
+shared by every model the pool serves, so it is decided from whole-key states only. The forbid is
+recorded, and each call for that model skips the key, serving on the next eligible one, while calls
+for other models stay on it.
+
 **A rate limit is not a key state** (owner, 2026-11-26). It never moves the active key and is never
 recorded: the call is retried on the same key, by the provider's SDK where it retries one (the pool
 only stops it retrying what is the key's, :meth:`KeyPool.refuses_retry`), and by the pool where it
@@ -316,7 +321,8 @@ class KeyPoolLease:
 
         A key-moving verdict (exhausted, revoked, forbidden) is recorded first: the key's state (its
         account's every key, for an account-scoped one), and a move of the active key if it can no
-        longer serve. A rate limit, an oversized request and a failure that isn't the key's record
+        longer serve any model. A forbid for one model moves nothing; later calls for that model skip
+        the key. A rate limit, an oversized request and a failure that isn't the key's record
         nothing. Then the reservation is settled at its full amount when the provider may have billed
         the attempt, and released when it can't have (KP-E4).
 
@@ -622,9 +628,10 @@ class KeyPool:
     ) -> KeyPoolLease:
         """Reserve ``amount`` for one call on the key it should run on.
 
-        The call starts on the active key. A key the call has tried, or whose room the reservation
-        doesn't fit, is skipped for this call only; a key that can't serve at all moves the active key
-        first (KP-D2, D3). When no key can serve, it raises, before any network call.
+        The call starts on the active key. A key the call has tried, a key forbidden for ``model_id``
+        alone, or a key whose room the reservation doesn't fit, is skipped for this call only; a key that
+        can't serve any model moves the active key first (KP-D2, D3). When no key can serve, it raises,
+        before any network call.
 
         :param model_id: the model the call is for; a forbid for that model counts. ``None`` counts only
             the key's own states. The breaker read is the key's credential breaker alone, never a
@@ -655,7 +662,7 @@ class KeyPool:
             now = self._clock_now()
             view = await self._ready(now)
             view = await self._roll_over_if_due(view, now)
-            view = await self._keep_active_eligible(view, model_id, now)
+            view = await self._keep_active_eligible(view, now)
             blocks = self._all_blocks(view.doc, model_id, now)
             label = self._policy.serving_key(self._candidates(blocks), _active(view.doc), set(tried) | skipped)
             if label is None:
@@ -664,7 +671,7 @@ class KeyPool:
             if lease is not None:
                 return lease
             skipped.add(label)
-            await self._refused_for_room(self._by_label[label], model_id, now)
+            await self._refused_for_room(self._by_label[label], now)
 
     async def reserve(self, amount: Decimal, *, deadline: datetime | None = None) -> KeyPoolLease:
         """Reserve ``amount`` on the active key, for a caller that isn't a chat model (KP-E6).
@@ -754,7 +761,7 @@ class KeyPool:
                 generation.update(_cleared_state())
             return False
 
-        await self._commit(now, None, clear, reset=label)
+        await self._commit(now, clear, reset=label)
         logger.info(
             "key pool %r: an operator reset key %r",
             self._name,
@@ -773,6 +780,9 @@ class KeyPool:
 
     async def _record_verdict(self, key: _Key, model_id: str | None, verdict: Verdict) -> None:
         """Record a key-moving verdict on its keys, and move the active key if it can't serve.
+
+        A forbid for one model moves nothing: the active key is decided from whole-key states only, and
+        later calls for that model skip the key.
 
         A key this makes exhausted, revoked or forbidden -- the states that need an operator -- is
         logged at WARNING when no move off it follows (the last key that could serve, or a key that
@@ -804,7 +814,7 @@ class KeyPool:
                     changed.append(target.label)
             return False
 
-        view = await self._commit(now, model_id, record)
+        view = await self._commit(now, record)
         reason = _VERDICT_REASON[verdict.kind]
         if reason not in _WARNING_REASONS:
             return
@@ -835,21 +845,27 @@ class KeyPool:
             doc["period"] = period
             return True
 
-        return await self._commit(now, None, roll_over)
+        return await self._commit(now, roll_over)
 
-    async def _keep_active_eligible(self, view: _View, model_id: str | None, now: datetime) -> _View:
+    async def _keep_active_eligible(self, view: _View, now: datetime) -> _View:
         """Move the active key when the policy says to, from the cached record: no store call when it stays."""
         current = _active(view.doc)
-        target, _ = self._target(view.doc, model_id, now, restart=False)
+        target, _ = self._target(view.doc, now, restart=False)
         if target is None or target == current:
             return view
-        return await self._commit(now, model_id, _no_change)
+        return await self._commit(now, _no_change)
 
-    def _target(
-        self, doc: dict[str, Any], model_id: str | None, now: datetime, *, restart: bool
-    ) -> tuple[str | None, MoveReason]:
-        """The key the policy would hold active in ``doc``, and why it would move there."""
-        blocks = self._all_blocks(doc, model_id, now)
+    def _target(self, doc: dict[str, Any], now: datetime, *, restart: bool) -> tuple[str | None, MoveReason]:
+        """The key the policy would hold active in ``doc``, and why it would move there.
+
+        Decided from the keys' whole-key states alone, never one model's forbid (owner, 2026-11-26).
+        The active key is shared by every model the pool serves: were a key forbidden for one model to
+        move it, the next call for another model would pull it back, and the pool would pay a move's
+        snapshot and write, its log line and its count, on every call that alternates between them. A
+        key forbidden for the calling model is skipped for that call instead, as a key too small for it
+        is (KP-D3).
+        """
+        blocks = self._all_blocks(doc, None, now)
         active = _active(doc)
         current = None if restart or active not in self._by_label else active
         target = self._policy.active_key(self._candidates(blocks), current)
@@ -931,7 +947,7 @@ class KeyPool:
             record=lambda verdict: self._record_verdict(key, model_id, verdict),
         )
 
-    async def _refused_for_room(self, key: _Key, model_id: str | None, now: datetime) -> None:
+    async def _refused_for_room(self, key: _Key, now: datetime) -> None:
         """A reservation didn't fit on ``key``: skip it for this call, or, if its settled room is below
         ``min_headroom``, mark it low and move off it (KP-D3). Open reservations never mark it low."""
         self._notify(lambda observer: observer.on_room_refusal(self._name, key.label))
@@ -945,7 +961,7 @@ class KeyPool:
             self._writable_generation(doc, key)["low_room"] = period
             return False
 
-        await self._commit(now, model_id, mark_low)
+        await self._commit(now, mark_low)
 
     async def _sweep_if_due(self, now: datetime) -> None:
         """Settle expired reservations on the pool's accounts, at most once per ``sweep_interval``."""
@@ -1036,7 +1052,7 @@ class KeyPool:
                 doc["period"] = period
             return False
 
-        written = await self._commit(now, None, register)
+        written = await self._commit(now, register)
         for key in self._keys:
             number = self._generation_number(written.doc, key)
             if number is None:
@@ -1045,7 +1061,7 @@ class KeyPool:
                 )
             self._generation[key.label] = number
 
-    async def _commit(self, now: datetime, model_id: str | None, edit: _Edit, *, reset: str | None = None) -> _View:
+    async def _commit(self, now: datetime, edit: _Edit, *, reset: str | None = None) -> _View:
         """Apply ``edit`` to the record, let the policy settle the active key, and compare-and-set it.
 
         On a conflict the winner's document is adopted and the edit applied to it again, so a loser
@@ -1057,10 +1073,10 @@ class KeyPool:
         view = self._require_view()
         rooms: dict[str, Decimal] | None = None
         for _ in range(_MAX_CAS_ROUNDS):
-            doc, before, target, reason = self._applied(view.doc, edit, model_id, now, rooms)
+            doc, before, target, reason = self._applied(view.doc, edit, now, rooms)
             if target is not None and target != before and rooms is None:
                 rooms = await self._rooms(now)
-                doc, before, target, reason = self._applied(view.doc, edit, model_id, now, rooms)
+                doc, before, target, reason = self._applied(view.doc, edit, now, rooms)
             if target is not None:
                 doc["active"] = target
                 if target == reset:
@@ -1091,7 +1107,6 @@ class KeyPool:
         self,
         base: dict[str, Any],
         edit: _Edit,
-        model_id: str | None,
         now: datetime,
         rooms: dict[str, Decimal] | None,
     ) -> tuple[dict[str, Any], str | None, str | None, MoveReason]:
@@ -1101,7 +1116,7 @@ class KeyPool:
         restart = edit(doc)
         if rooms is not None:
             self._mark_rooms(doc, rooms, now)
-        target, reason = self._target(doc, model_id, now, restart=restart)
+        target, reason = self._target(doc, now, restart=restart)
         return doc, _active(doc), target, reason
 
     def _mark_rooms(self, doc: dict[str, Any], rooms: dict[str, Decimal], now: datetime) -> None:

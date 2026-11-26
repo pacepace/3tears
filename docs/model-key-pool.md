@@ -258,7 +258,9 @@ Each `KeyStatus`:
 | `forbidden_models` | models the key is forbidden for, when it is forbidden per model |
 
 `state` describes the key as a whole. A key forbidden for one model reads `ok` and lists that model in
-`forbidden_models`.
+`forbidden_models`. Such a key doesn't move the active key, which every model the pool serves shares: calls for that
+model skip it and run on the next key that can serve, and calls for other models stay on it. Were it to move, a pool
+serving both models would move back and forth on every alternation.
 
 The sweep that settles orphans runs on the next call, at most once a minute, so a crashed process's reservations sit
 in `reserved` until then.
@@ -270,7 +272,7 @@ in `reserved` until then.
 | `ok` | the key can serve | | nothing |
 | `exhausted` | the provider says the credit, spend limit or quota is used up, for the key or its whole account; or a rate limit asked a wait past `rate_limit_exhaustion_wait` | the reset the provider named passes (an OpenRouter budget's `resets_at`, a long wait's end), else the period rolls over; or the label gets a new secret, or an operator resets it | add credit or raise the provider's spend limit, then reset the key |
 | `revoked` | the provider no longer accepts the key (401) | the label gets a new secret, or an operator resets it | replace the key; reset only if the revocation was a mistake that's now undone |
-| `forbidden` | the key may not use the model, or any model (403) | the label gets a new secret, or an operator resets it | grant the key access at the provider, then reset it |
+| `forbidden` | the key may not use any model. Forbidden for one model (a 403, as providers send it), the key stays `ok`, lists the model in `forbidden_models`, and is skipped by that model's calls without moving the active key | the label gets a new secret, or an operator resets it | grant the key access at the provider, then reset it |
 | `tripped` | the key's circuit breaker is open in this process, after repeated failures | the breaker closes | usually a provider outage; wait. Breaker state is per process and never stored |
 | `no_room` | the key's budget less its settled spend is below `min_headroom`. Open reservations don't count: a key full of in-flight calls is skipped call by call and stays `ok` | the period rolls over, or an operator resets it | the key has spent its budget: raise the budget in configuration, redeploy, then reset the key |
 
@@ -340,10 +342,10 @@ labels and reason as structured fields too.
 
 | Level | Line | When |
 |---|---|---|
-| WARNING | `key pool 'chat' moved its active key from 'primary' to 'overflow': exhausted` | a move off a key that won't serve again this period without an operator: `exhausted`, `revoked`, `forbidden` |
+| WARNING | `key pool 'chat' moved its active key from 'primary' to 'overflow': exhausted` | a move off a key that won't serve again this period without an operator: `exhausted`, `revoked`, `forbidden` for every model |
 | INFO | the same line, ending `tripped` or `low_room` | a move off a key that will come back on its own. A rate limit moves nothing and logs no move |
 | INFO | the same line, ending `pull_back`, `period_rollover`, `not_configured` or `operator_reset` | a move back to a preferred key, the period's restart on the most-preferred key, a move off a stored active key this process doesn't configure, or a move to a key an operator reset |
-| WARNING | a line naming the key and its new state | a key becomes unusable (`exhausted`, `revoked`, `forbidden`) with no key to move to, so no move line is logged |
+| WARNING | a line naming the key and its new state | a key becomes unusable (`exhausted`, `revoked`, `forbidden`) with no move off it: there is no key to move to, it wasn't active, or it is forbidden for one model only, which never moves the active key |
 | ERROR | `key pool 'chat': no key in pool 'chat' can serve … (3 more not logged in the last 60 s)` | a `NoKeyAvailableError`; at most one line per pool per minute, counting the ones it skipped |
 | ERROR | `key pool 'chat': the store's reserve failed (KvError); the call fails closed` | a store failure, with the cause attached |
 | WARNING | `key pool 'chat': settled 2 orphaned reservation(s) on key 'primary' at their full amount` | the sweep found reservations a crashed call never closed, or a call still running past `reservation_margin` |

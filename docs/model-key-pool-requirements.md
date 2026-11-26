@@ -183,13 +183,22 @@ Every requirement must be testable without a network (KP-L1).
 - **KP-D1.** A pool has one active key per pool name, held in the store. Each process caches it and refreshes it
   whenever the store reports a change, or within 5 s otherwise. Selecting a key doesn't read every key's state
   on every call.
-- **KP-D2.** A call starts on the active key. The active key **moves** only when it becomes ineligible:
-  - its state turns `exhausted`, `revoked` or `forbidden` (for this model); a rate limit never moves it
+- **KP-D2.** A call starts on the active key. The active key **moves** only when it becomes ineligible for every
+  model, judged on whole-key states alone:
+  - its state turns `exhausted`, `revoked` or `forbidden` for every model; a rate limit never moves it
     (amended 2026-11-26);
   - its breaker is OPEN;
   - its settled room falls below `min_headroom` (default 1% of its budget). Open reservations are pessimistic
     estimates that settle within the call, so they never mark a key low for the period; a call they crowd off a key
     skips it, as in KP-D3 (amended 2026-11-26).
+
+  A key `forbidden` for one model only is recorded, and every call for that model **skips** it, as in KP-D3, using
+  the next eligible key without moving the active key. Calls for other models stay on it. The active key is shared
+  by every model the pool serves: if one model's forbid moved it, the next call for another model would pull it
+  back (KP-D5), so a pool serving both would move on every alternation, each move costing a room snapshot, a record
+  write, a log line and a count, and breaking KP-G6's success path. With equal priorities it would instead move every
+  model's traffic onto the next key's budget. *Amended 2026-11-26 (owner: a per-model forbid skips for the call and
+  never moves or pulls back the active key).*
 - **KP-D3.** A call whose reservation doesn't fit on a key whose settled room is still above `min_headroom` **skips**
   that key for this call only. The active key stays put, so one large call doesn't strand the room that small
   calls can still use. A call the provider refuses as larger than the key may spend at all (OpenRouter's
@@ -201,6 +210,8 @@ Every requirement must be testable without a network (KP-L1).
   - With **distinct priorities**, the pool pulls traffic back to the most-preferred eligible key as soon as it
     sees that key eligible again: a period rollover, an exhaustion's named reset passing, its breaker closing, an
     operator reset, or a fingerprint change (amended 2026-11-26: a rate limit holds nothing to pass). Priority means "use B only while A can't serve."
+    Eligibility here is the key's whole-key state, as in KP-D2: a forbid for one model never moved the key, so it
+    never pulls one back (amended 2026-11-26).
   - With **equal priorities**, which is the default, the pool doesn't pull back. It stays on the current key
     until that key is forced off, then moves on in order.
   - A **period rollover** always resets the active key to the most-preferred key (the first configured key when
@@ -277,12 +288,14 @@ Every requirement must be testable without a network (KP-L1).
 - **KP-G5.** If the store is unreachable, the call fails closed: a typed `KeyPoolStoreError` carrying the cause,
   logged and counted. The pool doesn't fall back to unbudgeted calls.
 - **KP-G6.** The success path costs at most two store operations per call: reserve and settle. Other operations
-  happen only on moves, state changes and sweeps.
+  happen only on moves, state changes and sweeps. A call that skips a key forbidden for its model is on the success
+  path: the skip reads the cached record and writes nothing (amended 2026-11-26).
 
 ### H. Failover inside one call
 
 - **KP-H1.** On a key-moving verdict (KP-C2: `exhausted`, `revoked`, `forbidden`), the pool records the state,
-  moves the active key if the failed key was the active one, and retries the call on the next eligible key,
+  moves the active key if the failed key was the active one and can no longer serve any model (a forbid for one
+  model moves nothing, KP-D2), and retries the call on the next eligible key,
   transparently to the caller. An `oversized` verdict retries on the next key and records nothing.
 - **KP-H2.** Each key is tried at most once per call. A key skipped for room (KP-D3), or refused as `oversized`,
   counts as tried. Retries of a rate limit on the same key (KP-H4) are not tries of another key. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).* It
