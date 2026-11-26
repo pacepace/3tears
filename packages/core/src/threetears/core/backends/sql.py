@@ -77,8 +77,6 @@ from threetears.core.ddl.change_notes import (
     NOTE_WHOLE_SETTING,
     WHOLE_COPY_ROWS,
     note_reach_text,
-    prefix_write_mark_sql,
-    prefix_write_restore_sql,
 )
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.row_epoch import (
@@ -2422,15 +2420,13 @@ class SqlL3Backend:
         array when that column has an array form, else one statement a prefix. A state's gone runs, ``(state,
         run_id)``, are one statement however many rows they hold.
 
-        The delete is noted as ONE whole-table change note of the table naming the prefixes (the note a load from
-        files leaves, :mod:`threetears.core.ddl.change_notes`), never a note a row: the statements are marked whole
-        before (:func:`~threetears.core.ddl.change_notes.prefix_write_mark_sql`) and the marks put back after
-        (:func:`~threetears.core.ddl.change_notes.prefix_write_restore_sql`), so the transaction's other writes are
-        noted as they would have been. Two statements more, whatever the rows.
+        A versioned table's runs deleted are their run markers, stamped at the delete's epoch: a restore, the
+        writers' backstop and a keys-unknown page read each one back by its key (:mod:`~threetears.core.collections
+        .epoch_reads`), so nothing else marks the transaction (until 0.95 its statements were marked whole for the
+        change-note ring, two statements more and a no-row delete to fire its trigger).
 
-        On the L3 rail a pod may not set those marks (the broker refuses ``set_config``), so the broker runs the
-        delete itself: the connection's ``delete_prefixes`` (the ``l3.tx.delete_prefixes`` request), whose commit
-        the broker then records by the prefixes.
+        On the L3 rail the broker runs the delete itself: the connection's ``delete_prefixes`` (the
+        ``l3.tx.delete_prefixes`` request), whose commit the broker then records by the prefixes.
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
@@ -2484,31 +2480,11 @@ class SqlL3Backend:
         )
         if not statements:
             return 0
-        reach = note_reach_text(prefixes=prefixes)
-        prior = await self._fetchrow(
-            prefix_write_mark_sql(), NOTE_WHOLE_SETTING, NOTE_REACH_SETTING, reach, table, conn=conn
-        )
-        assert prior is not None  # narrow: a SELECT of no FROM answers one row
         deleted = 0
         # a versioned table's run markers carry the delete's stamp, and their scopes go to the transaction
         with stamped_send(conn, _stamp_of(schema, epoch), touched):
             for sql, args in statements:
                 deleted += parse_rowcount(await self._execute(sql, *args, conn=conn))
-        if versioned:
-            # the run markers deleted no row of the table, so its whole-write trigger has not fired: a statement of no
-            # row fires it, the one note naming the prefixes today's delete left (until the ring retires, chunk 7)
-            assert schema is not None  # noqa: S101 -- narrowed by versioned
-            await self._execute(schema_sql.build_no_row_delete_sql(schema), conn=conn)
-        await self._execute(
-            prefix_write_restore_sql(),
-            NOTE_WHOLE_SETTING,
-            prior["whole"] or "",
-            NOTE_REACH_SETTING,
-            prior["reach"] or "",
-            prior["guard"],
-            prior["noted"] or "",
-            conn=conn,
-        )
         _logger.debug(
             "key-prefix delete",
             extra={

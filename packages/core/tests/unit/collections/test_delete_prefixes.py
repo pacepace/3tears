@@ -6,8 +6,8 @@ The contract this pins (reports' gone LSF runs, 2026-11-17: 23 runs dropped row 
 - ``delete_prefixes`` deletes a group of prefixes that differ only in their last column in ONE key-led ``DELETE``,
   reads no row, and answers the rows the database deleted; the statements are the same however many rows the
   prefixes hold;
-- the delete is marked whole for the change notes (one note naming the prefixes), and the marks it replaced are put
-  back right after, so the transaction's other writes are noted as before;
+- the delete sets nothing on the transaction (no ``set_config``, no other statement): the change-note ring that the
+  prefix marks were for is retired (append-only L3 chunk 7);
 - when the caller's transaction ends, the table is settled by the prefixes: each derived cache that takes a partition
   (a copy follower) is told each prefix, and the generation advances once, its epoch naming the prefixes;
 - a prefix that does not lead the key, a write outside a caller's transaction, and a keyed write of the same table in
@@ -35,7 +35,6 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -55,8 +54,6 @@ RUNS = TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
-_GUARD = "threetears.noted_whole_4242"
-
 
 class _Run(BaseEntity):
     primary_key_field = "geo"
@@ -74,16 +71,13 @@ class _Conn:
         self.held = dict(held or {})
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.fetched: list[tuple[str, tuple[Any, ...]]] = []
-        #: what the mark statement found set before it
-        self.prior: dict[str, Any] = {"whole": None, "reach": None, "noted": None, "guard": _GUARD}
 
     def transaction(self, **options: Any) -> Any:
         return _NoTransaction()
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any]:
         self.fetched.append((sql, params))
-        assert "set_config" in sql, f"a prefix delete reads no row: {sql!r}"
-        return dict(self.prior)
+        raise AssertionError(f"a prefix delete reads no row: {sql!r}")
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         raise AssertionError(f"a prefix delete reads no row: {sql!r}")
@@ -180,9 +174,7 @@ async def test_a_group_of_prefixes_is_one_key_led_delete_and_nothing_is_read_bac
         ("DELETE FROM lsf_runs WHERE state = $1 AND run_id = ANY($2::bigint[])", ("PA", [1, 2])),
         ("DELETE FROM lsf_runs WHERE state = ANY($1::text[])", (["OH"],)),
     ]
-    # the one row read is the marks' own answer, never a row of the table
-    [(mark, _)] = conn.fetched
-    assert "lsf_runs" not in mark
+    assert conn.fetched == [], "nothing read back, not even a mark"
 
 
 async def test_the_statements_are_the_same_however_many_rows_the_prefixes_hold() -> None:
@@ -196,18 +188,16 @@ async def test_the_statements_are_the_same_however_many_rows_the_prefixes_hold()
     assert statements[0] == statements[1]
 
 
-async def test_the_delete_is_noted_whole_by_its_prefixes_and_the_marks_it_replaced_are_put_back() -> None:
+async def test_the_delete_sets_no_mark_on_its_transaction() -> None:
+    """Flips if a prefix delete still marks its transaction whole for the change notes (``prefix_write_mark_sql`` and
+    its restore, two statements more): the ring they were for is retired, and the epoch is settled by the prefixes."""
     collection, _ = _runs()
     conn = _Conn({("PA", 1): 4})
-    conn.prior = {"whole": "1", "reach": None, "noted": None, "guard": _GUARD}
     async with CallerTransaction(conn):
         await collection.delete_prefixes([{"state": "PA", "run_id": 1}], conn=conn)
-    [(_, marked)] = conn.fetched
-    assert marked == (NOTE_WHOLE_SETTING, NOTE_REACH_SETTING, '{"prefixes":[{"state":"PA","run_id":"1"}]}', "lsf_runs")
-    restore, restored = conn.executed[-1]
-    assert restore.startswith("SELECT set_config")
-    # an earlier whole mark of the transaction stays; the reach and the table's guard go back to unset
-    assert restored == (NOTE_WHOLE_SETTING, "1", NOTE_REACH_SETTING, "", _GUARD, "")
+    assert conn.fetched == []
+    assert [sql for sql, _ in conn.executed if "set_config" in sql] == []
+    assert conn.executed and all(sql.startswith("DELETE FROM lsf_runs") for sql, _ in conn.executed), conn.executed
 
 
 async def test_the_table_is_settled_by_its_prefixes_once_the_transaction_ends() -> None:
