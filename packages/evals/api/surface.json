@@ -1088,8 +1088,8 @@
     },
     "threetears.evals.schema.ModelListing": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ModelListing(provider: str, listed: bool | None, detail: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",

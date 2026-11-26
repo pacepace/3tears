@@ -426,9 +426,11 @@ LaunchableKind(
 The report writer's entry takes the same as an argument (`launchable_report_writer_kind(..., candidate_role="analyst")`)
 when your `models` factory builds the writer on your factory's analyst client; the judge kind declares its own. When
 your candidate goes somewhere your factory does not build, answer for it instead: a factory of your own may offer
-`async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from `threetears.evals.schema`),
-answering for `role=None` with the list of the provider your candidates go to, and `None` for a model whose provider
-keeps no list it reads. A factory without `model_listing` is not checked. A long-lived process is not priced from its first
+`async model_listing(model, *, role) -> ModelListing | None`, the port `ModelListingReader` declares
+(`threetears.evals.kernel.host`; `ModelListing` from `threetears.evals.schema`; both host-contract), answering for
+`role=None` with the list of the provider your candidates go to, and `None` for a model whose provider keeps no list
+it reads. The engine finds it by `isinstance(factory, ModelListingReader)`, so defining the method is all it takes; a
+factory without it is still a `CompletionClients`, and its models are not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
