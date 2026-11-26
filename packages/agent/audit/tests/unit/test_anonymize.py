@@ -399,6 +399,23 @@ class TestDeclaredExtensions:
         assert anonymize_details(details, event_type="rbac.assignment.move") == details
         assert all(is_classified_detail_key(key, event_type="rbac.assignment.move") for key in details)
 
+    @pytest.mark.parametrize("event_type", ["tool_pod.delete", "datasource_export.withdraw"])
+    def test_a_pods_export_counts_are_kept_wherever_they_are_published(self, event_type: str) -> None:
+        """the hub counts the exports a pod's removal deleted and the ones left for their UNLOAD to end."""
+        details = {"pod_id": str(uuid7()), "exports_deleted": 3, "exports_deferred": 1}
+
+        assert anonymize_details(details, event_type=event_type) == details
+        assert all(is_classified_detail_key(key, event_type=event_type) for key in details)
+
+    @pytest.mark.parametrize("event_type", ["datasource.export.delete", "datasource.export.clear"])
+    def test_an_export_deletes_deferred_flag_is_kept_for_the_export_family_alone(self, event_type: str) -> None:
+        """``deferred`` is the hub's boolean for a delete that waits on an UNLOAD still writing."""
+        details = {"versions_deleted": 2, "deferred": True}
+
+        assert anonymize_details(details, event_type=event_type) == details
+        assert is_classified_detail_key("deferred", event_type=event_type)
+        assert not is_classified_detail_key("deferred", event_type=_PLAIN_EVENT)
+
     @pytest.mark.parametrize("event_type", ["security.exploit.approval.approved", "security.exploit.approval.denied"])
     def test_the_approver_of_a_paused_tool_call_keeps_their_id(self, event_type: str) -> None:
         """``decided_by`` is the deciding user's uuid on the hub's approval events, and erasure never changes an id."""
