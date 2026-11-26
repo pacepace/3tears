@@ -1554,8 +1554,16 @@ class _KeysetStatement:
             skip = self._pinned_lead()
             inside.append(self._past(len(self._values), skip))
             params += list(cursor)[skip:]
+        # the page's own order cuts its keys, the order its cursor steps in: the key's alone skipped keys of a read
+        # paging in another (newest_relation's order)
         relation = newest_relation(
-            newest.table, newest.read_as, within=inside, limit=str(limit), counted=True, flagged=True
+            newest.table,
+            newest.read_as,
+            within=inside,
+            limit=str(limit),
+            counted=True,
+            flagged=True,
+            order=self._key,
         )
         kept = " AND ".join([quote_identifier(NEWEST_LIVE), *outside])
         return (
