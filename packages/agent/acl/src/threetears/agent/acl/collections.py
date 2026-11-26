@@ -1498,8 +1498,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # automation passes ``'auto:agent-yaml'``.
             Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
-        # every index the acl migrations create on the table (v001 its keys, v002 and v004 its readers; v008 left each
-        # whole), declared as the DDL creates it, so a keyed read on YugabyteDB names the one that serves it
+        # every index the acl migrations create on the table (v001 its keys, v002, v004 and v009 its readers; v008 left
+        # each whole; v009 replaced v004's role and scope-type indexes with the hub's v163 ones, names and all), declared as the DDL creates it, so a keyed read on YugabyteDB names the one that serves it
         # (keys.serving_index) among all of them. WHY all, never some: an index left out is one the hint can never
         # name, so a read it serves best is sent to a worse one that is declared -- a grant's natural-key read (ensure,
         # grant_winner) hinted to (group_id, scope_type), every grant of the group's scope read and filtered, rather
@@ -1523,13 +1523,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 where="scope_type = 'type_customer'",
             ),
             Index(
-                "idx_role_assignments_role",
+                "role_assignments_page_by_role_scope_type",
                 "role_id",
+                "scope_type",
                 "assignment_id",
                 purpose="packages/core/src/threetears/core/collections/delete_cascade.py::_live_children",
                 plan_test="packages/agent/acl/tests/integration/test_index_plans.py::test_restricted_delete_count",
             ),
-            Index("idx_role_assignments_scope_type", "scope_type", "assignment_id"),
+            Index("role_assignments_page_by_scope_type", "scope_type", "assignment_id"),
             Index(
                 "uq_role_assignments_namespace_grant",
                 "group_id",
@@ -1771,8 +1772,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return result
 
     async def list_by_role(self, role_id: UUID) -> list[RoleAssignmentEntity]:
-        """every assignment of ``role_id``, both partitions, through ``idx_role_assignments_role`` (role_id,
-        assignment_id): who a role's change reaches.
+        """every assignment of ``role_id``, both partitions, through ``role_assignments_page_by_role_scope_type``
+        (role_id, scope_type, assignment_id): who a role's change reaches.
 
         :param role_id: the role
         :ptype role_id: UUID
@@ -1791,7 +1792,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return result
 
     async def count_by_role(self, role_id: UUID) -> int:
-        """how many assignments name ``role_id``, counted through ``idx_role_assignments_role``.
+        """how many assignments name ``role_id``, counted through ``role_assignments_page_by_role_scope_type``.
 
         :param role_id: the role
         :ptype role_id: UUID
@@ -1858,7 +1859,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return result
 
     async def list_by_scope_type(self, scope_type: ScopeType) -> list[RoleAssignmentEntity]:
-        """every assignment of one scope type, through ``idx_role_assignments_scope_type`` (scope_type,
+        """every assignment of one scope type, through ``role_assignments_page_by_scope_type`` (scope_type,
         assignment_id): the ``subtree`` and ``all`` grants a reverse access query weighs against any namespace.
 
         :param scope_type: the scope type

@@ -26,6 +26,9 @@ version history:
   (3tears v0.95.0).
 - v008 makes the group and role name indexes hold live rows only (``... AND NOT gone``): a deleted (gone) group or role
   no longer holds its name, so a re-create by the same name makes a new row (3tears v0.95.0).
+- v009 replaces v004's ``idx_role_assignments_role`` and ``idx_role_assignments_scope_type`` with the hub's v163
+  ``role_assignments_page_by_role_scope_type`` and ``role_assignments_page_by_scope_type`` (range-sharded on
+  YugabyteDB), so the indexes 3tears hints to are the ones a hub schema holds (3tears v0.95.0).
 
 ``agent_tools_platform`` ALTERs ``namespaces``; a deployment that runs
 both registers it with ``depends_on=("agent_acl",)``.
@@ -48,6 +51,7 @@ from threetears.agent.acl.migrations.v005_assignment_customer import add_assignm
 from threetears.agent.acl.migrations.v006_access_tables_carry_their_epoch import access_tables_carry_their_epoch
 from threetears.agent.acl.migrations.v007_namespaces_keyed_by_id import namespaces_keyed_by_id
 from threetears.agent.acl.migrations.v008_names_hold_live_rows_only import names_hold_live_rows_only
+from threetears.agent.acl.migrations.v009_grant_indexes_take_the_hub_s_shape import grant_indexes_take_the_hub_s_shape
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
 PACKAGE_NAME = "agent_acl"
@@ -71,6 +75,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(6)(access_tables_carry_their_epoch)
     pkg.version(7)(namespaces_keyed_by_id)
     pkg.version(8)(names_hold_live_rows_only)
+    pkg.version(9)(grant_indexes_take_the_hub_s_shape)
     # the five access tables are switched on: each carries the write-mark trigger from this run
     pkg.mark_write_generation(
         GroupCollection.schema,

@@ -34,6 +34,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, bucket_epoch_index_name, next_epoch
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.keyed import read_by
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.interfaces.keyed import (
     AnyOf,
@@ -813,6 +814,34 @@ async def test_assignments_scope_namespace(conn: asyncpg.Connection) -> None:
     assert plan.rows_scanned == granted, json.dumps(plan.plan)[:2500]
 
 
+async def test_assignments_scope_namespace_set(conn: asyncpg.Connection) -> None:
+    """Flips if the grants on a set of namespaces in both partitions, the namespace index's guard stated (the hub's
+    outside grants: ``scope_namespace_id = ANY(...)``, ``scope_type = 'namespace'``), stop reading
+    idx_role_assignments_scope_namespace, or read more rows than the namespaces' grants. On YugabyteDB the read is
+    hinted: binding no set, it was hinted to the scope-type index, every namespace grant read and filtered."""
+    namespaces = await _seed_assignments(conn)
+    named = namespaces[3:6]
+    _, recorder = _recorded(acl.RoleAssignmentCollection, conn)
+    found = await read_by(
+        recorder,
+        "role_assignments",
+        by={
+            "scope_namespace_id": AnyOf(named, cast="uuid"),
+            "scope_type": "namespace",
+            "row_scope": AnyOf(("platform", "customer"), cast=None),
+        },
+        where=[Fragment('t."scope_namespace_id" IS NOT NULL')],
+        columns=("row_scope", "assignment_id", "scope_namespace_id", "group_id", "role_id"),
+    )
+    granted = await conn.fetchval(
+        "SELECT count(*) FROM role_assignments WHERE scope_namespace_id = ANY($1::uuid[])", named
+    )
+    (plan,) = recorder.plans
+    assert granted and len(found) == granted, (granted, len(found))
+    assert plan_uses_index(plan, "idx_role_assignments_scope_namespace"), json.dumps(plan.plan)[:2500]
+    assert plan.rows_scanned == granted, json.dumps(plan.plan)[:2500]
+
+
 async def test_assignments_scope_type_customer(conn: asyncpg.Connection) -> None:
     """Flips if a customer's type_customer grants of one type stop reading idx_role_assignments_scope_type_customer."""
     await _seed_assignments(conn)
@@ -822,18 +851,20 @@ async def test_assignments_scope_type_customer(conn: asyncpg.Connection) -> None
 
 
 async def test_assignments_role(conn: asyncpg.Connection) -> None:
-    """Flips if a role's assignments, listed or counted, stop reading idx_role_assignments_role."""
+    """Flips if a role's assignments, listed or counted, stop reading role_assignments_page_by_role_scope_type (acl
+    v009, the hub's v163 index)."""
     await _seed_assignments(conn)
     role = await conn.fetchval("SELECT role_id FROM roles LIMIT 1")
     assignments, recorder = _recorded(acl.RoleAssignmentCollection, conn)
     await assignments.list_by_role(role)
     await assignments.count_by_role(role)
     for plan in recorder.plans:
-        assert plan_uses_index(plan, "idx_role_assignments_role"), plan.plan
+        assert plan_uses_index(plan, "role_assignments_page_by_role_scope_type"), plan.plan
 
 
 async def test_assignments_scope_type(conn: asyncpg.Connection) -> None:
-    """Flips if every grant of one scope type stops reading idx_role_assignments_scope_type."""
+    """Flips if every grant of one scope type stops reading role_assignments_page_by_scope_type (acl v009, the hub's
+    v163 index)."""
     await _seed_assignments(conn)
     # the rare scope a reverse access query weighs against every namespace: a handful of platform grants
     await conn.execute("UPDATE role_assignments SET scope_type = 'type_customer' WHERE scope_type = 'all'")
@@ -849,7 +880,7 @@ async def test_assignments_scope_type(conn: asyncpg.Connection) -> None:
     plan = recorder.plans[0]
     # PostgreSQL reads the scope-type index; YugabyteDB reads the all grants' own partial unique index (WHERE
     # scope_type = 'all'), which holds them alone. Either way the read finds exactly the scope's rows
-    keyed = plan_uses_index(plan, "idx_role_assignments_scope_type") or _scans_partial(
+    keyed = plan_uses_index(plan, "role_assignments_page_by_scope_type") or _scans_partial(
         plan.plan, "uq_role_assignments_all_grant"
     )
     assert keyed and plan.rows_scanned == len(found) == 5, json.dumps(plan.plan)[:2500]
@@ -965,7 +996,8 @@ async def test_namespaces_tool_provider_pod(conn: asyncpg.Connection) -> None:
 
 async def test_restricted_delete_count(conn: asyncpg.Connection) -> None:
     """Flips if a role's delete, counting the live grants that still name it (role_assignments.role_id ON DELETE
-    RESTRICT, run by 3tears for a gone mark: refuse_restricted_delete), stops reading idx_role_assignments_role."""
+    RESTRICT, run by 3tears for a gone mark: refuse_restricted_delete), stops reading
+    role_assignments_page_by_role_scope_type."""
     await _seed_assignments(conn)
     role = await conn.fetchval("SELECT role_id FROM roles ORDER BY role_id LIMIT 1")
     roles, recorder = _recorded(acl.RoleCollection, conn)
@@ -973,7 +1005,7 @@ async def test_restricted_delete_count(conn: asyncpg.Connection) -> None:
         await refuse_restricted_delete(roles, [role])
     assert recorder.plans, "the count sent no statement"
     for plan in recorder.plans:
-        assert plan_uses_index(plan, "idx_role_assignments_role"), _outline(plan.plan)
+        assert plan_uses_index(plan, "role_assignments_page_by_role_scope_type"), _outline(plan.plan)
 
 
 async def test_revive_gone_grant(conn: asyncpg.Connection) -> None:
