@@ -270,8 +270,9 @@ def test_the_root_extras_walk_finds_a_module_named_past_the_base_install():
 
 
 #: A probe's preamble: makes every import root named in ``sys.argv[1]`` (a JSON list) unimportable, as an install
-#: without the extras that provide them is, and defines ``importable(root)``: whether a public root imports, and, when
-#: it does not, the root it could not import, which must be one of the blocked ones.
+#: without the extras that provide them is, and defines ``importable(root)``: whether a public root imports and serves
+#: every name in its ``__all__`` (a lazy root fails on the first name read, not at import, so import alone proves
+#: nothing), and, when it does not, the root it could not import, which must be one of the blocked ones.
 _WITHOUT_ROOTS = """
 import importlib, json, sys
 
@@ -295,7 +296,9 @@ sys.meta_path.insert(0, _Absent())
 
 def importable(root):
     try:
-        importlib.import_module(root)
+        module = importlib.import_module(root)
+        for name in getattr(module, "__all__", ()):
+            getattr(module, name)
     except ModuleNotFoundError as missing:
         assert missing.name is not None and _blocked(missing.name), f"{root} failed on {missing.name}, not a blocked root"
         return False
