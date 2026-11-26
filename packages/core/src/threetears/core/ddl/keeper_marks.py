@@ -5,8 +5,8 @@ the versioned and stamped tables from X = (T - M) << 15 (:func:`~threetears.core
 labels the new log as covering every record after P (:mod:`threetears.core.collections.table_restore`). The newest mark
 also names the log the keeper last knew (:mod:`threetears.core.collections.log_keeper`).
 
-The table keeps its name from the change-note ring it outlived (the cutover's ``ring_cutover.drop_ring`` keeps it), so
-a database cut over keeps every mark its window needs.
+The table keeps its name from the change-note ring it outlived (the cutover's ``ring_cutover.drop_ring_on`` keeps
+it), so a database cut over keeps every mark its window needs.
 """
 
 from __future__ import annotations

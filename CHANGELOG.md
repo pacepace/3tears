@@ -164,7 +164,7 @@ restore cannot read back (no epoch) on ``threetears_change_notes_missing_total{t
 ``switched_tables_not_noted``; ``give_noted_tables_their_note_trigger`` and ``switched_tables_without_notes``;
 ``switch_off``'s note triggers and function (it drops the write-mark trigger alone); the census's
 ``unnoted_switched_tables`` and ``find_unnoted_switched_tables``; the no-whole-reads ``ring_empty`` and ``restore`` kinds;
-``docs/writing-to-l3-on-yugabytedb.md``. ``ring_cutover.drop_ring`` stays: the cutover's step.
+``docs/writing-to-l3-on-yugabytedb.md``. ``ring_cutover.drop_ring_on`` stays: the cutover's step.
 
 **Held:** ``REFUSE_TABLES_WITHOUT_EPOCH`` stays ``False`` (``work/0950-stamp-own-tables`` has not landed); its TODO test
 fails until it does.
@@ -212,9 +212,9 @@ oldest record needed, before a restore read the tables from it. `ChangeNoteKeepe
 drops only marks older than the newest mark before the log's oldest record. Never by age. Counted in
 `threetears_change_log_marks_dropped_total`.
 
-**Added:** `threetears.core.data.migrations.ring_cutover.drop_ring`, the outage-window cutover's step. It drops every
-ring trigger, note function and ring table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps
-the marks table. It is not wired until the ring retires.
+**Added:** `threetears.core.data.migrations.ring_cutover.drop_ring_on`, the cutover's step, run on the boot
+migration's own session (the hub's v193, identity-core's start). It drops every ring trigger, note function and ring
+table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps the marks table.
 ### core, agent-acl, mcp, datasources: 3tears' own switched-on tables carry their epoch (ROW_STAMPED)
 
 **Changed (append-only L3, decision 3):** the ten tables 3tears declares that are switched on, whose change-note ring

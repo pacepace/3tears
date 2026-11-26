@@ -111,7 +111,6 @@ __all__ = [
     "note_load_answer",
     "note_advanced_generation",
     "CleanupMixedWriteError",
-    "CleanupWriteNotDeleteError",
     "cleanup_delete_floor",
     "cleanup_deleting",
     "cleanup_mix_refusal",
@@ -570,7 +569,7 @@ def cleanup_mix_refusal(*, cleanup: bool, writes: bool, cleaned: bool, wrote: bo
     return None
 
 
-class CleanupWriteNotDeleteError(ValueError):
+class _CleanupWriteNotDeleteError(ValueError):
     """a request marked quiet-time cleanup's writes anything but a delete (:func:`cleanup_write_refusal`)."""
 
 
@@ -613,11 +612,11 @@ def refuse_cleanup_non_delete(verbs: Iterable[str]) -> None:
     :ptype verbs: Iterable[str]
     :return: nothing
     :rtype: None
-    :raises CleanupWriteNotDeleteError: when the marked request writes otherwise
+    :raises _CleanupWriteNotDeleteError: when the marked request writes otherwise
     """
     refusal = cleanup_write_refusal(cleanup=_CLEANUP_FLOOR.get() is not None, verbs=verbs)
     if refusal is not None:
-        raise CleanupWriteNotDeleteError(refusal)
+        raise _CleanupWriteNotDeleteError(refusal)
 
 
 #: each connection a transaction is open on in this context that is told of every request sent on it, before it is

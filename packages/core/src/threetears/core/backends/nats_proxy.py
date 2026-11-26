@@ -1792,7 +1792,7 @@ class NatsProxyL3Backend:
         :ptype customer_scope: UUID | None
         :return: the request payload
         :rtype: dict[str, Any]
-        :raises CleanupWriteNotDeleteError: for a request marked cleanup's that writes by anything but a delete
+        :raises ValueError: for a request marked cleanup's that writes by anything but a delete
         """
         # a request marked cleanup's only deletes, refused here before it is built and sent (cleanup_write_refusal)
         refuse_cleanup_non_delete(_statement_verbs(query))
@@ -2393,7 +2393,7 @@ class _ProxyConnection:
         :return: nothing
         :rtype: None
         :raises CleanupMixedWriteError: when the transaction refuses it (``cleanup_mix_refusal``)
-        :raises CleanupWriteNotDeleteError: when it is marked cleanup's and writes by anything but a delete
+        :raises ValueError: when it is marked cleanup's and writes by anything but a delete
             (``cleanup_write_refusal``)
         """
         door = subject.rpartition(".")[2]

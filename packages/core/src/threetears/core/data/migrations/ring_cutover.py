@@ -6,7 +6,7 @@ ring (the hub's platform database; identity-core's), then the new release starts
 an older release still running would find its note function gone and fail its write, which is the outage the window
 accepts, never a silent miss.
 
-What :func:`drop_ring` takes down, under the database's DDL lock, in this order:
+What :func:`drop_ring_on` takes down, under the database's DDL lock, in this order:
 
 1. every change-note trigger on every table of the database (the ring's three trigger names and the older truncate
    trigger's), by ``DROP TRIGGER IF EXISTS``, a schema and then a table at a time from the catalog;
@@ -20,27 +20,27 @@ What it keeps: the keeper's marks table (:data:`~threetears.core.ddl.keeper_mark
 still marks the log's position, and a restore from the tables reads X from a mark (``table_restore``).
 
 Idempotent: a second run finds nothing and drops nothing. Each step is said at WARNING with what it dropped, and the
-answer (:class:`RingDropped`) names it for the cutover script's own log.
+answer (:class:`RingDropped`) names it for the caller's own log.
 
-Two ways in. :func:`drop_ring` takes a pool and acquires a connection of its own, for a cutover script that holds
-nothing. :func:`drop_ring_on` runs on a session the caller already holds, for a boot migration: the run holds the DDL
-lock on its one connection, and a second connection would wait for that lock forever (the run waiting on itself). On
-the held session the lock is re-entrant, so the step takes it again at once and gives back only its own hold.
+One way in. :func:`drop_ring_on` runs on a session the caller already holds, for a boot migration (the hub's v193;
+identity-core's start): the run holds the DDL lock on its one connection, and a second connection would wait for that
+lock forever (the run waiting on itself). On the held session the lock is re-entrant, so the step takes it again at
+once and gives back only its own hold.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Final
 
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.keeper_marks import MARKS_TABLE
-from threetears.core.ddl.session import ConnectionSession, MigrationSession
+from threetears.core.ddl.session import MigrationSession
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
-__all__ = ["RING_TABLES", "RingDropped", "drop_ring", "drop_ring_on"]
+__all__ = ["RING_TABLES", "RingDropped", "drop_ring_on"]
 
 log = get_logger(__name__)
 
@@ -110,7 +110,7 @@ ORDER BY 1
 
 @dataclass(frozen=True)
 class RingDropped:
-    """what :func:`drop_ring` took down.
+    """what :func:`drop_ring_on` took down.
 
     :ivar triggers: ``schema.table: trigger`` for each trigger dropped
     :ivar functions: ``schema.function(args)`` for each function dropped
@@ -122,34 +122,13 @@ class RingDropped:
     tables: tuple[str, ...] = field(default=())
 
 
-async def drop_ring(pool: Any, *, policy: DdlLockPolicy | None = None) -> RingDropped:
-    """take the change-note ring down in the pool's database: its triggers, its functions and its tables (not its
-    marks), under the database's DDL lock, on a connection acquired for it. The outage-window cutover's step; run while
-    nothing writes.
-
-    For a caller that holds nothing. A caller already holding the DDL lock on a connection (a boot migration) uses
-    :func:`drop_ring_on` with that connection's session instead: a connection from the pool would wait for the held
-    lock forever.
-
-    :param pool: the database's pool (an ``asyncpg.Pool``), allowed DDL
-    :ptype pool: Any
-    :param policy: how long to wait for the DDL lock; the default waits until it is free
-    :ptype policy: DdlLockPolicy | None
-    :return: what was dropped; nothing on a second run
-    :rtype: RingDropped
-    """
-    async with pool.acquire() as conn:
-        dropped = await drop_ring_on(ConnectionSession(conn), policy=policy)
-    return dropped
-
-
 async def drop_ring_on(session: MigrationSession, *, policy: DdlLockPolicy | None = None) -> RingDropped:
     """take the change-note ring down on a session the caller holds: its triggers, its functions and its tables (not
     its marks), every statement on that one session, under the database's DDL lock.
 
-    The boot-migration form of :func:`drop_ring`. A session that already holds the DDL lock takes it again at once
-    (a session-level lock is re-entrant) and gives back only this step's hold, so the caller still holds it after.
-    A session that does not hold it waits for it under ``policy``, as :func:`drop_ring` does.
+    The boot migration's step. A session that already holds the DDL lock takes it again at once (a session-level
+    lock is re-entrant) and gives back only this step's hold, so the caller still holds it after. A session that does
+    not hold it waits for it under ``policy``.
 
     :param session: one database session: a :class:`~threetears.core.ddl.session.ConnectionSession` over the held
         connection, or a :class:`~threetears.core.data.store.DataStore` (a migration body's store, which holds the run's
