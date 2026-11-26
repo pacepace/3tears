@@ -689,6 +689,50 @@ async def test_a_rewrite_of_a_versioned_table_as_python_rows_is_a_copy_that_appe
     assert _fresh(sent.column(EPOCH_COLUMN)[0].as_py())
 
 
+#: the key's first version's creation, which a writer of its new version carries forward
+_FIRST_CREATED = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+
+
+async def test_a_versioned_tables_new_version_keeps_the_date_created_its_row_carries_as_python_rows() -> None:
+    """Flips if an append stamps every row's ``date_created`` anew: a versioned table's write has no conflict clause to
+    keep the immutable column, so the key's creation would move with each version. A row carrying none is new: the
+    write's time."""
+    hub = _Hub(write_arrow=True)
+    rows = [
+        {"office_key": "sn_NC1", "geo_id": "00001", "votes": 1, "date_created": _FIRST_CREATED},
+        {"office_key": "sn_NC1", "geo_id": "00002", "votes": 2, "date_created": None},
+    ]
+    await _on_rail(hub, lambda collection, conn: collection.save_rows(rows, conn=conn))
+    [(_envelope, sent, _size)] = hub.arrow_requests()
+    by_key = dict(zip(sent.column("geo_id").to_pylist(), sent.column("date_created").to_pylist(), strict=True))
+    [updated] = set(sent.column("date_updated").to_pylist())
+    # a row's times go to the copy as their text
+    assert by_key == {"00001": _FIRST_CREATED.isoformat(), "00002": updated}
+
+
+async def test_a_versioned_tables_new_version_keeps_the_date_created_its_row_carries_as_arrow() -> None:
+    """:func:`test_a_versioned_tables_new_version_keeps_the_date_created_its_row_carries_as_python_rows` through the
+    Arrow write door: the carried times kept, a null stamped with the write's time, no Python value a row."""
+    hub = _Hub(write_arrow=True)
+    rows = _table(2).append_column("date_created", pa.array([_FIRST_CREATED, None], pa.timestamp("ms", tz="UTC")))
+    await _on_rail(hub, lambda collection, conn: collection.save_arrow(rows, conn=conn))
+    [(_envelope, sent, _size)] = hub.arrow_requests()
+    assert sent.schema.field("date_created").type == pa.timestamp("us", tz="UTC")
+    by_key = dict(zip(sent.column("geo_id").to_pylist(), sent.column("date_created").to_pylist(), strict=True))
+    [updated] = set(sent.column("date_updated").to_pylist())
+    assert by_key == {"00001": _FIRST_CREATED, "00000": updated}
+
+
+async def test_an_upsert_of_a_table_keeping_no_versions_still_stamps_date_created_with_the_writes_time() -> None:
+    """the carried creation is a versioned append's alone: an upsert's conflict clause keeps a held row's, and a new
+    row is the write's time whatever it carries."""
+    hub = _Hub(write_arrow=True)
+    rows = _table(1).append_column("date_created", pa.array([_FIRST_CREATED], pa.timestamp("ms", tz="UTC")))
+    await _saved(hub, rows)
+    [(_envelope, sent, _size)] = hub.arrow_requests()
+    assert sent.column("date_created").to_pylist() == sent.column("date_updated").to_pylist()
+
+
 async def test_an_arrow_delete_of_a_versioned_table_appends_a_gone_marker_a_key_at_a_newer_epoch() -> None:
     hub = _Hub(write_arrow=True)
     keys = pa.table({"office_key": ["sn_NC1", "sn_NC1"], "geo_id": ["00001", "00002"]})

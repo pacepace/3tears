@@ -4,7 +4,7 @@ A table switched on before 0.95 may still carry the write-mark trigger. A table 
 ``write_generation`` must lose it, or every write keeps queueing marks for a table nothing follows. :func:`switch_off`
 drops it, ``IF EXISTS``: safe to run twice, and on a table already dropped. The change-note triggers and functions a
 table carried until the ring retired are the cutover's to drop (:func:`~threetears.core.data.migrations.ring_cutover.
-drop_ring`), never a switch's.
+drop_ring_on`), never a switch's.
 
 Runs on the caller's session, bound to the table's schema and holding the database-wide DDL lock (a migration run's,
 or a data upgrade's); it takes no lock of its own.

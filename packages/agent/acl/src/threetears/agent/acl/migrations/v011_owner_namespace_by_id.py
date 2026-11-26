@@ -40,7 +40,7 @@ from threetears.core.keyed import Fragment, KeyBatch, update_keyed
 from threetears.core.keyset import keyset_pages
 from threetears.observe import get_logger
 
-__all__ = ["ADD_OWNER_ID_SQL", "OWNER_ID_OF_NAME", "backfill_owner_namespace_ids", "owner_namespace_by_id"]
+__all__ = ["ADD_OWNER_ID_SQL", "backfill_owner_namespace_ids", "owner_namespace_by_id"]
 
 log = get_logger(__name__)
 
@@ -49,7 +49,7 @@ ADD_OWNER_ID_SQL: Final[str] = "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS 
 
 #: the owner's id, from its name: one row of that name, a live one before a gone one (a name unique among live rows
 #: alone may also be held by gone rows), through the name's index. NULL where no row carries it (FROZEN)
-OWNER_ID_OF_NAME: Final[str] = (
+_OWNER_ID_OF_NAME: Final[str] = (
     "(SELECT o.namespace_id FROM namespaces o WHERE o.name = $1 ORDER BY o.gone, o.namespace_id LIMIT 1)"
 )
 
@@ -82,7 +82,7 @@ def _owners_of_page(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[Any]]:
 async def backfill_owner_namespace_ids(conn: Any, *, page: int = BACKFILL_PAGE) -> int:
     """set ``owner_namespace_id`` on every live row that names an owner and holds no id, a page of keys at a time in key
     order (:func:`~threetears.core.keyset.keyset_pages`, ``table=`` so a page reads live rows): each page one keyed
-    ``UPDATE`` per owner it names, the id read by name in the statement (:data:`OWNER_ID_OF_NAME`). A row already
+    ``UPDATE`` per owner it names, the id read by name in the statement (:data:`_OWNER_ID_OF_NAME`). A row already
     holding one is left, so a re-run writes nothing.
 
     No cache is touched: a migration runs in the outage window, before any process reads the table.
@@ -105,7 +105,7 @@ async def backfill_owner_namespace_ids(conn: Any, *, page: int = BACKFILL_PAGE) 
     ):
         for owner, keys in _owners_of_page(rows).items():
             batch = KeyBatch(("namespace_id",), [keys], casts=("uuid",))
-            values = {"owner_namespace_id": Fragment(OWNER_ID_OF_NAME, (owner,))}
+            values = {"owner_namespace_id": Fragment(_OWNER_ID_OF_NAME, (owner,))}
             written += (await update_keyed(conn, "namespaces", values=values, keys=batch)).count
     return written
 

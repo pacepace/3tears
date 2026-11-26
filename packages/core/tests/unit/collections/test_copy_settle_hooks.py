@@ -15,6 +15,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
+from prometheus_client import REGISTRY
 
 from packages.core.tests.unit.collections import copy_hooks
 from threetears.core.collections.copy_follower import FollowedTable
@@ -388,6 +389,55 @@ async def test_a_whole_settle_of_100k_rows_keeps_its_budget(store: SharedArrowSt
             await backend.close()
     problem = budget_problem(f"a whole settle of {rows.num_rows} rows", min(took), min(baseline))
     assert problem is None, problem
+
+
+def _let_go_rows(table: str) -> float:
+    return REGISTRY.get_sample_value("shared_copy_let_go_rows_total", {"table": table}) or 0.0
+
+
+class TestLetGoCounted:
+    """the copy counts what its hooks let go, by table (``shared_copy_let_go_rows_total``, :attr:`SharedCopyBackend.
+    let_go`), so a product reads it with no wrapper of its own (reports' ``CountedCopyBackend``, gone)."""
+
+    async def test_each_change_adds_what_it_let_go_to_the_count_and_the_metric(self, store: SharedArrowStore) -> None:
+        """Flips with no count: the backend's ``let_go`` stays empty and the metric does not move."""
+        gone = (("VA", "G", 3), ("VA", "G", 4))
+        backend = await _backend(store, [("results", SCHEMA, BY_STATE)], hooks=copy_hooks.LetsGo("results", _KEY, gone))
+        try:
+            assert backend.let_go == {}
+            before = _let_go_rows("results")
+            rows = pa.concat_tables([_rows(state, 10) for state in _STATES])
+            await backend.apply([ChangePage(ROWS, "results", rows)])
+            assert backend.let_go == {"results": 2}
+            # the same rows again: written back, then let go again
+            await backend.apply([ChangePage(ROWS, "results", _rows("VA", 10))])
+            assert backend.let_go == {"results": 4}
+            assert _let_go_rows("results") == before + 4
+        finally:
+            await backend.close()
+
+    async def test_a_whole_settle_adds_what_it_let_go(self, store: SharedArrowStore) -> None:
+        """Flips with the whole settle's let-go uncounted (reports counted it by wrapping ``settle_whole``)."""
+        totals = PartRule(copy_hooks.TOTALS, ("state",))
+        backend = await _backend(
+            store,
+            [("results", SCHEMA, BY_STATE), (copy_hooks.TOTALS, copy_hooks.TOTALS_SCHEMA, totals)],
+            hooks=copy_hooks.WholeTotals(),
+        )
+        try:
+            backend.defer_hooks_until_whole()
+            rows = pa.concat_tables(
+                [_rows(state, 4, votes=2) for state in _STATES] + [_rows("VA", 3, votes=0, start=10)]
+            )
+            await backend.apply([ChangePage(ROWS, "results", rows)], whole={"results"})
+            assert backend.let_go == {}
+            before = _let_go_rows("results")
+            settled = await backend.settle_whole()
+            assert settled is not None and settled.let_go is not None
+            assert backend.let_go == {"results": 3}
+            assert _let_go_rows("results") == before + 3
+        finally:
+            await backend.close()
 
 
 class TestMergeSeesRunTimes:
