@@ -328,6 +328,7 @@ async def read_keyed_arrow(
     row_cap: int | None = None,
     columns: Sequence[str | Selected] | None = None,
     where: Sequence[Fragment] = (),
+    with_gone: bool = False,
 ) -> list[Any]:
     """:func:`read_keyed`, each statement's answer one Arrow table: the same statements, the rows never Python
     objects (the rail's proxy parses its reply off the interpreter lock).
@@ -351,20 +352,26 @@ async def read_keyed_arrow(
     :ptype columns: Sequence[str | Selected] | None
     :param where: filters beside the key, as :func:`read_keyed` takes them
     :ptype where: Sequence[Fragment]
+    :param with_gone: read the table as stored, as ``copy_keyed(with_gone=True)`` does: a versioned table's every
+        version and gone marker, a stamped one's gone rows too. Quiet-time cleanup alone, which reads the versions it
+        removes (:mod:`~threetears.core.collections.quiet_cleanup`); every other read sees live rows alone
+    :ptype with_gone: bool
     :return: one ``pyarrow.Table`` a statement, in the order read
     :rtype: list[pyarrow.Table]
     :raises ValueError: as :func:`read_keyed`
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     binder = binder_for(conn, keys)
-    newest = newest_of(conn, table)
+    # a versioned table's newest live versions (the statement's newest form), a stamped one's live rows alone; as
+    # stored for a read of the versions themselves
+    newest = None if with_gone else newest_of(conn, table)
     statement = keyed_read_statement(
         table,
         list(types) if columns is None else columns,
         keys,
         by or {},
         None,
-        live_only(conn, table, where),
+        tuple(where) if with_gone else live_only(conn, table, where),
         binder,
         newest,
     )

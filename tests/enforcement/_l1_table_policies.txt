@@ -32,6 +32,7 @@ packages/channels/src/threetears/channels/presence/l1_cache.py:presence_rooms KE
 packages/conversations/src/threetears/conversations/collection.py:conversations EVICTABLE
 packages/conversations/src/threetears/conversations/folder_collection.py:folders EVICTABLE
 packages/core/src/threetears/core/collections/base.py:_ABSENT_MARKER_TABLE EVICTABLE
+packages/core/src/threetears/core/collections/cleanup_progress.py:CLEANUP_PROGRESS_TABLE EVICTABLE
 packages/core/src/threetears/core/collections/flush.py:write_buffer KEEP
 packages/core/src/threetears/core/collections/run_markers.py:RUN_MARKERS_TABLE EVICTABLE
 packages/core/src/threetears/core/collections/scan_cache.py:_DEPS_TABLE KEEP

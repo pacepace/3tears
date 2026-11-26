@@ -231,7 +231,8 @@ log = get_logger(__name__)
 #: reply (a reset, a failed load's settle, a key-prefix delete settled after its transaction)
 _NO_REPLY: Final = object()
 
-#: the restore read a versioned table's ``(scope, epoch)`` index serves, and the plan test proving it does
+#: the restore read a versioned table's ``(scope, epoch, key...)`` index serves by its ``(scope, epoch)`` lead, and the
+#: plan test proving it does (the index's own plan_test)
 _RESTORE_READ: Final = "packages/core/src/threetears/core/collections/table_restore.py::_scope_versions"
 _RESTORE_PLAN_TEST: Final = (
     "packages/core/tests/integration/test_table_restore_plans_live.py::"
@@ -243,6 +244,15 @@ _STAMPED_RESTORE_READ: Final = "packages/core/src/threetears/core/collections/ta
 _STAMPED_RESTORE_PLAN_TEST: Final = (
     "packages/core/tests/integration/test_table_restore_plans_live.py::"
     "test_a_restore_reads_a_stamped_table_a_bucket_at_a_time_on_its_own_tablet"
+)
+
+
+#: the cleanup read a versioned table's ``(scope, epoch, key...)`` index serves, and the plan test proving it does (the
+#: index names the restore's as its plan_test: one string a declaration; this one proves cleanup's read)
+_CLEANUP_READ: Final = "packages/core/src/threetears/core/collections/quiet_cleanup.py::QuietCleanup._candidates"
+_CLEANUP_PLAN_TEST: Final = (
+    "packages/core/tests/integration/test_quiet_cleanup_plans_live.py::"
+    "test_cleanup_pages_a_scope_through_the_scope_epoch_index"
 )
 
 
@@ -1707,8 +1717,10 @@ class TableSchema:
 
     def _declare_row_epoch(self) -> None:
         """give a table that declares a row epoch its epoch column where not declared, and a versioned one its
-        ``(scope, epoch)`` index; refuse what cannot hold beside it. The index is what a restore of a lost change log
-        reads the table by, a scope at a time (:mod:`~threetears.core.collections.table_restore`).
+        ``(scope, epoch, key...)`` index; refuse what cannot hold beside it. Two reads use the index, a scope at a
+        time: a restore of a lost change log reads its ``(scope, epoch)`` lead
+        (:mod:`~threetears.core.collections.table_restore`), and quiet-time cleanup pages a scope's versions by the whole
+        of it (:mod:`~threetears.core.collections.quiet_cleanup`).
 
         The column is ``BIGINT NOT NULL`` with no default: a write that bypasses 3tears and leaves it out is refused by
         the database. On a versioned table it is part of the stored key, so it is immutable (never in an upsert's
@@ -1775,18 +1787,28 @@ class TableSchema:
                 )
         name = scope_epoch_index_name(self.name)
         if not any(index.name == name for index in self.indexes):
-            # WHY the scope leads, hashed on YugabyteDB (its default for a first column): the epochs rise, so an index
-            # led by them sends every insert to the last tablet; led by the scope, the rising end spreads across scopes,
-            # and a restore reads one scope's versions since X as one range (design-append-only-l3.md, decision 3)
-            restore = Index(
+            # ONE index serves both reads (no second index a write keeps up). WHY the scope leads, hashed on
+            # YugabyteDB (its default for a first column): the epochs rise, so an index led by them sends every insert
+            # to the last tablet; led by the scope, the rising end spreads across scopes, and a restore reads one
+            # scope's versions since X as one range of the (scope, epoch) lead (design-append-only-l3.md, decision 3).
+            # WHY the key after the epoch: cleanup pages a scope's versions in (epoch, key) order, and one write
+            # statement stamps all its rows alike (a load from files, tens of thousands in one scope), so only the key
+            # orders a page inside one epoch without sorting the whole of it. The plan tests: the restore's
+            # (_RESTORE_PLAN_TEST, named here) and cleanup's (_CLEANUP_PLAN_TEST), each asking for this index
+            keyed = tuple(column for column in ((pk,) if isinstance(pk, str) else tuple(pk)) if column != scope)
+            versions_index = Index(
                 name,
                 scope,
                 EPOCH_COLUMN,
-                purpose=_RESTORE_READ,
+                *keyed,
+                purpose=(_RESTORE_READ, _CLEANUP_READ),
                 plan_test=_RESTORE_PLAN_TEST,
-                reason="a lost change log is rebuilt from each scope's versions since the keeper's mark",
+                reason=(
+                    "a lost change log is rebuilt from each scope's versions since the keeper's mark, and cleanup pages "
+                    "a scope's versions by (epoch, key), the key ordering one write's many rows"
+                ),
             )
-            object.__setattr__(self, "indexes", (*self.indexes, restore))
+            object.__setattr__(self, "indexes", (*self.indexes, versions_index))
 
     def _declare_stamped_gone(self) -> None:
         """give a stamped table its "gone" flag: a delete of a key updates its row in place, the flag set and the epoch

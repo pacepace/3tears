@@ -43,11 +43,12 @@ log record carries its commit's lowest stamp (``s_min``, ``EpochChange.s_min``),
   the first key column stays hashed and ``epoch DESC`` is the last range column (:func:`versioned_primary_key_sql`), so
   every version of a key sits together in one tablet, newest first. On Postgres a primary key takes no sort order; its
   B-tree is read backwards for ``ORDER BY epoch DESC`` and stops at the first entry just the same. The declaration names
-  the scope a restore reads "what changed since epoch X" by, and its ``(scope, epoch)`` index answers that read (the
-  scope hashed on YugabyteDB, so the rising end of the epochs spreads across scopes;
-  :mod:`~threetears.core.collections.table_restore`). The index carries the restore's declaration as its comment
-  (:func:`restore_declaration`), so the keeper that restores a lost log finds every versioned table, and how to read
-  it, from the catalog alone: it runs in the hub, which imports no consumer's table classes.
+  the scope a restore reads "what changed since epoch X" by, and its ``(scope, epoch, key...)`` index answers that
+  read by its ``(scope, epoch)`` lead (the scope hashed on YugabyteDB, so the rising end of the epochs spreads across
+  scopes; :mod:`~threetears.core.collections.table_restore`) and is what quiet-time cleanup pages a scope by (append-only
+  chunk 6, :mod:`~threetears.core.collections.quiet_cleanup`). The index carries the restore's declaration as its
+  comment (:func:`restore_declaration`), so the keeper that restores a lost log finds every versioned table, and how to
+  read it, from the catalog alone: it runs in the hub, which imports no consumer's table classes.
 - **Stamped** (:data:`ROW_STAMPED`), the small tables updated in place (``lsf_runs``, ``state_fingerprints``): one row a
   key, carrying its last write's epoch. A restore reads "what changed since epoch X" from them by a ``(bucket, epoch)``
   index (:func:`bucket_epoch_index_name`): the bucket a stored column the database derives from the key's hash
@@ -101,6 +102,7 @@ __all__ = [
     "TransactionTooOldError",
     "UnstampedWriteError",
     "UntouchedScopesError",
+    "cleanup_floor",
     "epoch_wall_ms",
     "next_epoch",
     "RESTORE_BUCKETS",
@@ -584,6 +586,30 @@ def epoch_wall_ms(epoch: int) -> int:
     :rtype: int
     """
     return epoch >> _LOGICAL_BITS
+
+
+def cleanup_floor(s_min: int) -> int:
+    """the lowest epoch quiet-time cleanup keeps, given the lowest stamp (``s_min``) of the oldest record the change log
+    holds: ``(wall(s_min) - 2M) << 15``. Every version, "gone" marker and run marker at or above it is one a restore
+    could read; cleanup removes only what lies below (:mod:`~threetears.core.collections.quiet_cleanup`).
+
+    WHY two margins (append-only chunk 6, ``design-append-only-l3.md`` decision 5): a restore from a keeper's mark P,
+    taken at T, reads ``epoch >= (T - M) << 15`` (:data:`_RESTORE_MARGIN_MS`). A mark worth restoring from names a
+    position the log still holds, so it was taken after the log's oldest record was appended, and that record's commit
+    stamped ``s_min`` at most S (inside M) behind its append on the writer's clock: T >= wall(s_min) - M, so the restore
+    reads from at or above ``wall(s_min) - 2M``. A mark older than the log's oldest record restores nothing a follower
+    can still use: one that far behind is already behind (``record_lost``) and reloads. Keeping 20 minutes more of
+    versions costs nothing a reader sees.
+
+    :param s_min: the oldest held record's lowest stamp
+    :ptype s_min: int
+    :return: the floor
+    :rtype: int
+    :raises ValueError: when ``s_min`` is no epoch
+    """
+    if not 0 <= s_min <= _MAX_EPOCH:
+        raise ValueError(f"an epoch is a positive BIGINT; got {s_min}")
+    return max(0, epoch_wall_ms(s_min) - 2 * _RESTORE_MARGIN_MS) << _LOGICAL_BITS
 
 
 def wall_clock_ms() -> int:

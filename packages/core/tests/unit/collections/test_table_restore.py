@@ -341,10 +341,13 @@ async def test_the_scrub_reports_a_record_whose_lowest_stamp_is_below_its_mark_s
 
 
 def test_a_versioned_table_declares_its_scope_epoch_index_and_its_restore_declaration() -> None:
-    """Flips if a versioned table's DDL lacks the (scope, epoch) index a restore reads it by, or the comment the keeper
-    finds it by in the catalog, or the scope epochs table lacks its last_epoch index."""
+    """Flips if a versioned table's DDL lacks the index led by (scope, epoch) a restore reads it by (its one
+    (scope, epoch, key...) index, which cleanup pages by), or the comment the keeper finds it by in the catalog, or the
+    scope epochs table lacks its last_epoch index."""
     statements = _RESULTS.create_statements(yugabyte=True)
-    assert any(f"{_TABLE}_scope_epoch ON" in each and f"({_SCOPE}, epoch)" in each for each in statements), statements
+    assert any(
+        f"{_TABLE}_scope_epoch ON" in each and f"({_SCOPE}, epoch, run_id, candidate)" in each for each in statements
+    ), statements
     declared = json.loads(_declaration())
     assert declared["scope"] == _SCOPE and declared["epochs"] == _EPOCHS and declared["scope_prefix"] == "state:"
     assert declared["keys"] == [_SCOPE, "run_id", "candidate"] and declared["tenancy"] == "schema"
