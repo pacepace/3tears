@@ -265,10 +265,11 @@ async def test_the_floor_lies_below_every_restore_from_a_mark_the_log_still_hold
     [
         _Log(None, None),
         _Log(_State(first_seq=1, last_seq=0), None),
+        _Log(_State(first_seq=0, last_seq=0), None),
         _Log(_State(first_seq=3, last_seq=9), _Record(None)),
         _Log(_State(first_seq=3, last_seq=9), None),
     ],
-    ids=["no-log", "empty-log", "unstamped-oldest", "oldest-gone"],
+    ids=["no-log", "empty-log", "never-written-log", "unstamped-oldest", "oldest-gone"],
 )
 async def test_an_unknown_window_removes_nothing(log: _Log, world: _World) -> None:
     _result(world.conn, ("o1", "a"), "NC", _at(1))
@@ -278,6 +279,14 @@ async def test_an_unknown_window_removes_nothing(log: _Log, world: _World) -> No
     swept = await world.cleanup(None).clean()
     assert (swept.removed, swept.floor) == (0, None)
     assert world.rows("cl_results") == before
+
+
+async def test_a_never_written_log_asks_for_no_record() -> None:
+    # a stream nothing was ever published to reports first_seq=0, last_seq=0; NATS answers a read of sequence 0 with
+    # a 400, so the floor must not ask for it (a hub starting on a fresh change log failed to start on that read)
+    log = _Log(_State(first_seq=0, last_seq=0), _Record(1))
+    assert await log_window_floor(log) is None
+    assert log.asked == []
 
 
 async def test_cleanup_never_touches_a_version_at_or_above_the_floor(world: _World) -> None:

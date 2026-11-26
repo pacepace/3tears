@@ -194,7 +194,9 @@ async def held_window_floor(log_reader: ChangeLogWindow, state: Any) -> int | No
     :return: the floor, or None
     :rtype: int | None
     """
-    held = state is not None and state.last_seq >= state.first_seq
+    # a stream never written reports first_seq=0, last_seq=0, and NATS refuses a read of sequence 0 (400): sequences
+    # start at 1, so a window holds a record only from first_seq 1 up
+    held = state is not None and state.first_seq >= 1 and state.last_seq >= state.first_seq
     oldest = await log_reader.epoch_at(state.first_seq) if held else None
     s_min = None if oldest is None else oldest.s_min
     return None if s_min is None else cleanup_floor(int(s_min))
