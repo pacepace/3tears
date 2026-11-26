@@ -21,7 +21,7 @@ dependencies = [
     # anthropic structured-output builder imports `anthropic.transform_schema`
     # (0.116 is the floor that ships it) to pre-transform the json-schema
     # before it is bound as a verbatim `output_config`.
-    # 1.12 is the release the key pool's 429-unretried mode is verified against: it hands the SDK
+    # 1.12 is the release the key pool's unretried-key-errors rule is verified against: it hands the SDK
     # client an `anthropic.Middleware` (providers/anthropic.py, providers/_langchain_anthropic_internals.py).
     "anthropic>=1.12",
     # direct dependency, not just transitive-via-langchain: the openrouter /
@@ -33,7 +33,7 @@ dependencies = [
     "langchain-anthropic>=1.4",
     "langchain-openai>=1.1",
     # imported directly, not just transitive-via-langchain-openai: the key pool's classifier reads the
-    # SDK's error types, and the 429-unretried mode builds its default HTTP clients
+    # SDK's error types, and the unretried-key-errors rule builds its default HTTP clients
     # (`openai.DefaultHttpxClient`). 3.26 is the release both are verified against.
     "openai>=3.26",
     # imported directly on the base install path: the key pool's classifier reads httpx's transport errors and
@@ -46,7 +46,7 @@ dependencies = [
     # ChatStreamChunk, and _declare_reasoning_budget its ChatRequestReasoning), so declared directly
     # rather than trusted to arrive transitively
     "openrouter>=0.9.2,<1.0",
-    "uuid-utils",  # uuid7 message ids for a pooled CLI call (claude_cli_pool.LentClient)
+    "uuid-utils",  # uuid7 ids: a pooled CLI call's messages (claude_cli_pool), the key pool's reservations
 ]
 
 [project.optional-dependencies]

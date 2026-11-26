@@ -107,9 +107,9 @@ The pool's own settings, all keyword arguments to `KeyPool`:
 | Setting | Default | Meaning |
 |---|---|---|
 | `anchor_day` | `1` | the day of the month each billing period starts on, 1 to 28, at 00:00 UTC |
-| `min_headroom` | `Decimal("0.01")` | the fraction of a key's budget below which the pool moves off the key |
+| `min_headroom` | `Decimal("0.01")` | the fraction of a key's budget below which the pool moves off the key. It is read from settled spend alone, so a burst of open reservations never marks a key low |
 | `rate_limit_exhaustion_wait` | 120 s | the longest wait a rate limit may ask for and still be one. A rate limit whose `retry-after` (or reset header) is further off counts as exhaustion until then: the call moves to the next key instead of waiting. See [Rate limits](#rate-limits) |
-| `reservation_margin` | 10 min | how long past a call's deadline its reservation is kept before it counts as orphaned. A pooled model's call has no deadline, so this runs from when the call started |
+| `reservation_margin` | 10 min | how long past a call's deadline its reservation is kept before it counts as orphaned. A pooled model's call has no deadline, so this runs from when the call started: a pooled call still running after it, such as a long stream, is settled by the sweep at its full reservation and logged and counted as an orphan. Its own settle then corrects the spend, but the orphan line and count stay. Raise the margin above your longest call |
 | `refresh_interval` | 5 s | how stale this process's copy of the pool's record may get before a call reads the store again |
 | `sweep_interval` | 1 min | how often, at most, the pool settles orphaned reservations |
 | `observer` | `None` | receives the pool's events, such as a [`KeyPoolMetrics`](#metrics). The pool counts them in `pool.counters` either way |
@@ -149,7 +149,8 @@ model is refused earlier, by `create_chat_model`.
 
 A caller with its own transport, such as a batch client, reserves with `await pool.reserve(amount)` and closes the
 lease it gets back itself, reading a failure with `pool.classify(exc)`. A rate limit that caller retries on the same
-key; `await pool.wait_to_retry(verdict, retries)` waits and says whether to, for a provider whose SDK doesn't retry.
+key; `await pool.wait_to_retry(verdict, retries, label=lease.label)` waits and says whether to, for a provider whose
+SDK doesn't retry.
 
 ## Rate limits
 
@@ -172,7 +173,8 @@ A rate limit never moves the active key, and the pool records nothing about it: 
   stays a rate limit.
 - **OpenRouter.** Its SDK never retries a 429, so the pool retries the call on the same key, twice, each after the
   `retry-after` (or `X-RateLimit-Reset`) the provider gave, or a short backoff when it gave none. No wait is longer
-  than `rate_limit_exhaustion_wait`. These retries are not failovers.
+  than `rate_limit_exhaustion_wait`. These retries are not failovers. Each one logs an INFO line naming the key, the
+  retry and the wait ([Log lines](#log-lines)), so a slow call's waits are on record; nothing else is.
 
 After those retries, the provider's rate-limit error reaches the caller unchanged, its reservation released.
 
@@ -270,7 +272,7 @@ in `reserved` until then.
 | `revoked` | the provider no longer accepts the key (401) | the label gets a new secret, or an operator resets it | replace the key; reset only if the revocation was a mistake that's now undone |
 | `forbidden` | the key may not use the model, or any model (403) | the label gets a new secret, or an operator resets it | grant the key access at the provider, then reset it |
 | `tripped` | the key's circuit breaker is open in this process, after repeated failures | the breaker closes | usually a provider outage; wait. Breaker state is per process and never stored |
-| `no_room` | the key's remaining budget is below `min_headroom` | the period rolls over, or an operator resets it | if the budget is too small, raise it in configuration, redeploy, then reset the key |
+| `no_room` | the key's budget less its settled spend is below `min_headroom`. Open reservations don't count: a key full of in-flight calls is skipped call by call and stays `ok` | the period rolls over, or an operator resets it | the key has spent its budget: raise the budget in configuration, redeploy, then reset the key |
 
 `exhausted`, `revoked` and `forbidden` live in the store, so a state one process learns, every process sees. A rate
 limit is no state at all ([Rate limits](#rate-limits)). A call too large for a key that still has room above
@@ -321,7 +323,9 @@ when no key is known to come back, such as every key revoked.
 
 For an `exhausted` key the earliest time is the reset the provider named, or else the pool's next period boundary,
 when the pool clears the state. The boundary is not a promise from the provider: a used-up prepaid credit stays used
-up until someone adds credit.
+up until someone adds credit. A `no room` key comes back at the period boundary when the call is larger than its
+budget less its settled spend; when only other calls' open reservations kept the call off it, it comes back as they
+settle, and the error names no time for it.
 
 Each key is tried at most once per call. A rate limit never raises `NoKeyAvailableError`: it is retried on the same
 key, then the provider's own error reaches the caller ([Rate limits](#rate-limits)). Once a stream has handed the
@@ -342,7 +346,8 @@ labels and reason as structured fields too.
 | WARNING | a line naming the key and its new state | a key becomes unusable (`exhausted`, `revoked`, `forbidden`) with no key to move to, so no move line is logged |
 | ERROR | `key pool 'chat': no key in pool 'chat' can serve … (3 more not logged in the last 60 s)` | a `NoKeyAvailableError`; at most one line per pool per minute, counting the ones it skipped |
 | ERROR | `key pool 'chat': the store's reserve failed (KvError); the call fails closed` | a store failure, with the cause attached |
-| WARNING | `key pool 'chat': settled 2 orphaned reservation(s) on key 'primary' at their full amount` | the sweep found reservations a crashed call never closed |
+| WARNING | `key pool 'chat': settled 2 orphaned reservation(s) on key 'primary' at their full amount` | the sweep found reservations a crashed call never closed, or a call still running past `reservation_margin` |
+| INFO | `key pool 'chat': key 'primary' was rate limited; retry 1 of 2 on the same key in 17.0 s` | the pool is about to wait out a rate limit its provider's SDK doesn't retry (OpenRouter's), then retry on the same key |
 | WARNING | `key pool 'chat': the call on key 'primary' was served but its settlement failed; …` | logged by `threetears.models.pooled`: the answer was returned, and the reservation settles at its full amount when it expires |
 | WARNING | `key pool 'chat': key 'primary' was last configured with a budget of 500 USD; this process configures 400` | processes disagree about a budget |
 | INFO | `key pool 'chat': key 'primary' holds a new secret; it starts from fresh state and zero spend this period` | a label's secret changed |

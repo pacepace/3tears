@@ -36,7 +36,7 @@ the winner's active key (KP-D4). Its layout::
                 "period": "2026-11",    # the period it was exhausted in
                 "until": null           # when the provider said it resets; null: the period's end
               },
-              "low_room": null,         # the period its room fell below min_headroom in, or null
+              "low_room": null,         # the period its settled room fell below min_headroom in, or null
               "forbidden": ["*"]        # "*" for every model, else model ids
             }
           }
@@ -63,6 +63,13 @@ never reset each other's spend.
 <period>``, so a new period starts at zero with no rollover job, and a reservation settles into the
 period it was made in (KP-F1, F2).
 
+**Low room is settled room.** A key is marked low, until its period ends, when its budget less its
+settled spend falls below ``min_headroom``. Open reservations don't count: they are pessimistic
+estimates (a call's whole ``max_tokens`` at the output rate) that settle low within the call, and a
+burst of them can fill a key that has plenty left. Settled spend only grows within a period, so a
+mark made from it stays true for the period; a reservation that doesn't fit on a key above the mark
+skips that key for the one call (KP-D3).
+
 **Store failures** (KP-G5). A store call that raises anything its contract doesn't name is raised as
 :class:`~threetears.models.key_pool.store.KeyPoolStoreError` with the cause chained, logged at ERROR
 and counted, and the call fails closed. The contract is per operation, stated by builtin base as the
@@ -70,7 +77,9 @@ store Protocol states it: ``ValueError`` for an invalid argument or a reused res
 settle, release, sweep, compare-and-set), and ``LookupError`` for a settle or release of a reservation
 the account doesn't hold. A bare ``KeyError``, ``IndexError`` or ``LookupError`` is not that contract --
 a store's not-found is its own subclass -- so it is a store's bug, and fails closed as a storage failure
-rather than passing as "not found". A read or a snapshot has no error in its contract at all.
+rather than passing as "not found". A read or a snapshot has no error in its contract at all. A
+record the pool can't read -- another layout, a field that doesn't parse -- fails the same way, since
+the pool decodes what a store call returns inside that call's boundary.
 """
 
 from __future__ import annotations
@@ -537,7 +546,7 @@ class KeyPool:
             status, headers, body, now=self._clock_now(), exhaustion_wait=self._exhaustion_wait
         )
 
-    async def wait_to_retry(self, verdict: Verdict, retries: int) -> bool:
+    async def wait_to_retry(self, verdict: Verdict, retries: int, *, label: str) -> bool:
         """Wait out a rate limit the provider's SDK doesn't retry; whether to retry the call on the same key.
 
         A rate limit means retry (owner, 2026-11-26). Where the provider's SDK retries one itself, it
@@ -545,18 +554,23 @@ class KeyPool:
         to two times, each after the provider's ``retry-after`` (never more than
         ``rate_limit_exhaustion_wait``), or a short backoff when it named none; then this returns
         ``False`` and the rate limit reaches the caller. A retry is not a failover, and nothing about
-        the key changes.
+        the key changes: each is one INFO line, so a slow call's wait is on record, and no state, move
+        or metric.
 
         :param verdict: the verdict on the failed attempt; anything but a rate limit returns ``False``
         :ptype verdict: Verdict
         :param retries: how many times the call has already been retried this way
         :ptype retries: int
+        :param label: the key the attempt ran on, which the retry runs on again
+        :ptype label: str
         :return: ``True``, after the wait, to run the call again on the same key
         :rtype: bool
-        :raises ValueError: when ``retries`` is negative
+        :raises ValueError: when ``retries`` is negative, or the pool has no key labelled ``label``
         """
         if retries < 0:
             raise ValueError(f"retries must not be negative, got {retries}")
+        if label not in self._by_label:
+            raise ValueError(f"key pool {self._name!r} has no key labelled {label!r}; its keys: {self.labels}")
         if (
             verdict.kind is not VerdictKind.RATE_LIMITED
             or self._classifier.sdk_retries_rate_limits
@@ -567,7 +581,18 @@ class KeyPool:
             pause = (verdict.until - self._clock_now()).total_seconds()
         else:
             pause = _RATE_LIMIT_BACKOFF_SECONDS * 2**retries
-        await self._sleep(min(max(pause, 0.0), self._exhaustion_wait.total_seconds()))
+        wait = min(max(pause, 0.0), self._exhaustion_wait.total_seconds())
+        retry = retries + 1
+        logger.info(
+            "key pool %r: key %r was rate limited; retry %d of %d on the same key in %.1f s",
+            self._name,
+            label,
+            retry,
+            _RATE_LIMIT_RETRIES,
+            wait,
+            extra={"extra_data": {"pool": self._name, "label": label, "retry": retry, "wait_seconds": wait}},
+        )
+        await self._sleep(wait)
         return True
 
     def record_failover(self, reason: MoveReason) -> None:
@@ -601,8 +626,9 @@ class KeyPool:
         doesn't fit, is skipped for this call only; a key that can't serve at all moves the active key
         first (KP-D2, D3). When no key can serve, it raises, before any network call.
 
-        :param model_id: the model the call is for; its per-model states (forbidden, the per-model
-            breaker) count. ``None`` counts only the key's own
+        :param model_id: the model the call is for; a forbid for that model counts. ``None`` counts only
+            the key's own states. The breaker read is the key's credential breaker alone, never a
+            model's rate-limit breaker
         :ptype model_id: str | None
         :param amount: the money to reserve: the call's estimate (``reservation_estimate``)
         :ptype amount: Decimal
@@ -633,7 +659,7 @@ class KeyPool:
             blocks = self._all_blocks(view.doc, model_id, now)
             label = self._policy.serving_key(self._candidates(blocks), _active(view.doc), set(tried) | skipped)
             if label is None:
-                raise await self._no_key_available(view, model_id, blocks, tried, skipped, now)
+                raise await self._no_key_available(view, model_id, amount, blocks, skipped, now)
             lease = await self._reserve_on(self._by_label[label], model_id, amount, now, deadline)
             if lease is not None:
                 return lease
@@ -681,9 +707,10 @@ class KeyPool:
         keys: list[KeyStatus] = []
         for key in self._keys:
             blocks = self._blocks(view.doc, key, None, now)
-            spent, reserved, remaining = _money_of(snapshots[self._account(key, period)], key.spec.budget)
+            snapshot = snapshots[self._account(key, period)]
+            spent, reserved, remaining = _money_of(snapshot, key.spec.budget)
             state, until = (blocks[0].state, blocks[0].until) if blocks else (KeyState.OK, None)
-            if not blocks and remaining < self._headroom(key):
+            if not blocks and _settled_room(snapshot, key.spec.budget) < self._headroom(key):
                 state, until = KeyState.NO_ROOM, rollover
             generation = self._generation_of(view.doc, key) or {}
             keys.append(
@@ -740,9 +767,9 @@ class KeyPool:
     async def _close(self, account: str, reservation: str, cost: Decimal | None) -> None:
         """Settle a lease's reservation at ``cost``, or release it when ``cost`` is ``None``."""
         if cost is None:
-            await self._call("release", _CLOSE_CONTRACT, lambda: self._store.release(account, reservation))
+            await self._call("release", _CLOSE_CONTRACT, lambda: self._store.release(account, reservation), _as_is)
         else:
-            await self._call("settle", _CLOSE_CONTRACT, lambda: self._store.settle(account, reservation, cost))
+            await self._call("settle", _CLOSE_CONTRACT, lambda: self._store.settle(account, reservation, cost), _as_is)
 
     async def _record_verdict(self, key: _Key, model_id: str | None, verdict: Verdict) -> None:
         """Record a key-moving verdict on its keys, and move the active key if it can't serve.
@@ -886,6 +913,7 @@ class KeyPool:
             "reserve",
             _RESERVE_CONTRACT,
             lambda: self._store.reserve(account, reservation, amount, key.spec.budget, expires_at),
+            _as_is,
         )
         if not held:
             return None
@@ -904,14 +932,13 @@ class KeyPool:
         )
 
     async def _refused_for_room(self, key: _Key, model_id: str | None, now: datetime) -> None:
-        """A reservation didn't fit on ``key``: skip it for this call, or, if its room is below
-        ``min_headroom``, mark it low and move off it (KP-D3)."""
+        """A reservation didn't fit on ``key``: skip it for this call, or, if its settled room is below
+        ``min_headroom``, mark it low and move off it (KP-D3). Open reservations never mark it low."""
         self._notify(lambda observer: observer.on_room_refusal(self._name, key.label))
         period = period_id(now, self._anchor_day)
         account = self._account(key, period)
-        snapshot = await self._call("snapshot", _NO_CONTRACT, lambda: self._store.snapshot([account]))
-        _, _, remaining = _money_of(snapshot[account], key.spec.budget)
-        if remaining >= self._headroom(key):
+        snapshot = await self._call("snapshot", _NO_CONTRACT, lambda: self._store.snapshot([account]), _as_is)
+        if _settled_room(snapshot[account], key.spec.budget) >= self._headroom(key):
             return
 
         def mark_low(doc: dict[str, Any]) -> bool:
@@ -929,7 +956,7 @@ class KeyPool:
         periods = (period_id(now, self._anchor_day), period_id(start - timedelta(microseconds=1), self._anchor_day))
         accounts = {self._account(key, period): key.label for key in self._keys for period in periods}
         swept = await self._call(
-            "sweep_expired", _RESERVE_CONTRACT, lambda: self._store.sweep_expired(list(accounts), now)
+            "sweep_expired", _RESERVE_CONTRACT, lambda: self._store.sweep_expired(list(accounts), now), _as_is
         )
         for account, reservations in swept.items():
             label = accounts.get(account)
@@ -956,8 +983,13 @@ class KeyPool:
         return self._require_view()
 
     async def _read(self, now: datetime) -> _View:
-        version, doc = await self._call("read_record", _NO_CONTRACT, lambda: self._store.read_record(self._record_name))
-        self._view = _View(version, _checked_doc(doc), now)
+        def decode(result: tuple[int, dict[str, Any] | None]) -> _View:
+            version, doc = result
+            return _View(version, _checked_doc(doc), now)
+
+        self._view = await self._call(
+            "read_record", _NO_CONTRACT, lambda: self._store.read_record(self._record_name), decode
+        )
         return self._view
 
     async def _register(self, now: datetime) -> None:
@@ -1006,16 +1038,21 @@ class KeyPool:
 
         written = await self._commit(now, None, register)
         for key in self._keys:
-            self._generation[key.label] = self._generation_number(written.doc, key)
+            number = self._generation_number(written.doc, key)
+            if number is None:
+                raise self._store_failure(
+                    "compare_and_set_record", f"its record lost key {key.label!r} as it registered it", None
+                )
+            self._generation[key.label] = number
 
     async def _commit(self, now: datetime, model_id: str | None, edit: _Edit, *, reset: str | None = None) -> _View:
         """Apply ``edit`` to the record, let the policy settle the active key, and compare-and-set it.
 
         On a conflict the winner's document is adopted and the edit applied to it again, so a loser
         moving the same key from the same place finds it already moved and writes nothing (KP-D4). A
-        move first reads every key's room, so it never lands on a key below ``min_headroom``; that read
-        also refreshes each key's low-room mark. A move onto ``reset``, the key an operator just reset,
-        is that reset's doing, and carries its reason.
+        move first reads every key's settled room, so it never lands on a key below ``min_headroom``;
+        that read also refreshes each key's low-room mark. A move onto ``reset``, the key an operator
+        just reset, is that reset's doing, and carries its reason.
         """
         view = self._require_view()
         rooms: dict[str, Decimal] | None = None
@@ -1030,26 +1067,24 @@ class KeyPool:
                     reason = MoveReason.OPERATOR_RESET
             if doc == view.doc:
                 return view
-            written, version, current = await self._call(
+
+            def decode(result: tuple[bool, int, dict[str, Any] | None]) -> tuple[bool, _View]:
+                written, version, current = result
+                return written, _View(version, _checked_doc(current), now)
+
+            written, view = await self._call(
                 "compare_and_set_record",
                 _RESERVE_CONTRACT,
                 lambda: self._store.compare_and_set_record(self._record_name, view.version, doc),
+                decode,
             )
-            view = _View(version, _checked_doc(current), now)
             self._view = view
             if written:
                 if before is not None and target is not None and target != before:
                     self._moved(before, target, reason)
                 return view
-        self._notify(lambda observer: observer.on_store_failure(self._name, "compare_and_set_record"))
-        logger.error(
-            "key pool %r: lost %d compare-and-set rounds on its record; the call fails closed",
-            self._name,
-            _MAX_CAS_ROUNDS,
-            extra={"extra_data": {"pool": self._name, "operation": "compare_and_set_record"}},
-        )
-        raise KeyPoolStoreError(
-            f"key pool {self._name!r}: lost {_MAX_CAS_ROUNDS} compare-and-set rounds on its record; the call fails closed"
+        raise self._store_failure(
+            "compare_and_set_record", f"lost {_MAX_CAS_ROUNDS} compare-and-set rounds on its record", None
         )
 
     def _applied(
@@ -1101,12 +1136,13 @@ class KeyPool:
         generations = doc.get("keys", {}).get(key.label, {}).get("generations", {})
         return next((g for g in generations.values() if g.get("fingerprint") == key.fingerprint), None)
 
-    def _generation_number(self, doc: dict[str, Any], key: _Key) -> int:
+    def _generation_number(self, doc: dict[str, Any], key: _Key) -> int | None:
+        """The number of the record's generation for ``key``'s secret, ``None`` when the record holds none."""
         generations = doc.get("keys", {}).get(key.label, {}).get("generations", {})
         for number, generation in generations.items():
             if generation.get("fingerprint") == key.fingerprint:
                 return int(number)
-        raise KeyPoolStoreError(f"key pool {self._name!r}: its record lost key {key.label!r} as it registered it")
+        return None
 
     def _writable_generation(self, doc: dict[str, Any], key: _Key) -> dict[str, Any]:
         """The record's state for ``key``'s secret, added as a new generation when the label has none
@@ -1138,12 +1174,13 @@ class KeyPool:
     async def _snapshots(self, now: datetime) -> dict[str, AccountSnapshot]:
         period = period_id(now, self._anchor_day)
         accounts = [self._account(key, period) for key in self._keys]
-        return await self._call("snapshot", _NO_CONTRACT, lambda: self._store.snapshot(accounts))
+        return await self._call("snapshot", _NO_CONTRACT, lambda: self._store.snapshot(accounts), _as_is)
 
     async def _rooms(self, now: datetime) -> dict[str, Decimal]:
+        """Every key's settled room: what its low-room mark is decided from."""
         period = period_id(now, self._anchor_day)
         snapshots = await self._snapshots(now)
-        return {key.label: _money_of(snapshots[self._account(key, period)], key.spec.budget)[2] for key in self._keys}
+        return {key.label: _settled_room(snapshots[self._account(key, period)], key.spec.budget) for key in self._keys}
 
     # -- failure ---------------------------------------------------------------------------------
 
@@ -1151,12 +1188,16 @@ class KeyPool:
         self,
         view: _View,
         model_id: str | None,
+        amount: Decimal,
         blocks: dict[str, list[_Block]],
-        tried: Set[str],
         skipped: Set[str],
         now: datetime,
     ) -> NoKeyAvailableError:
-        """The error for a call no key can serve, logged (deduplicated) and counted (KP-I1, I2)."""
+        """The error for a call no key can serve, logged (deduplicated) and counted (KP-I1, I2).
+
+        A key skipped for room comes back at the period's end when the call is larger than its settled
+        room; when only open reservations kept the call off it, it comes back as they settle, a time
+        nobody knows, so it names none."""
         snapshots = await self._snapshots(now)
         period = period_id(now, self._anchor_day)
         _, rollover = period_bounds(now, self._anchor_day)
@@ -1165,13 +1206,15 @@ class KeyPool:
         returns: list[datetime] = []
         for key in self._keys:
             reasons = blocks[key.label]
-            spent, reserved, remaining = _money_of(snapshots[self._account(key, period)], key.spec.budget)
+            snapshot = snapshots[self._account(key, period)]
+            spent, reserved, remaining = _money_of(snapshot, key.spec.budget)
             if reasons:
                 state, until = reasons[0].state, reasons[0].until
                 ends = [block.until for block in reasons]
                 back = max(end for end in ends if end is not None) if all(end is not None for end in ends) else None
             elif key.label in skipped:
-                state, until, back = KeyState.NO_ROOM, rollover, rollover
+                state = KeyState.NO_ROOM
+                until = back = rollover if amount > _settled_room(snapshot, key.spec.budget) else None
             else:
                 state, until, back = KeyState.TRIED, None, None
             if back is not None:
@@ -1227,29 +1270,57 @@ class KeyPool:
             },
         )
 
-    async def _call[T](
-        self, operation: str, contract: tuple[type[Exception], ...], call: Callable[[], Awaitable[T]]
-    ) -> T:
-        """Run one store call, failing closed on anything its contract doesn't name (KP-G5)."""
+    async def _call[T, R](
+        self,
+        operation: str,
+        contract: tuple[type[Exception], ...],
+        call: Callable[[], Awaitable[T]],
+        decode: Callable[[T], R],
+    ) -> R:
+        """Run one store call and decode its result, failing closed on anything its contract doesn't name
+        (KP-G5).
+
+        Decoding is inside the boundary: a result the pool can't read -- a record in another layout, a
+        field that doesn't parse -- is a store failure like any other, logged at ERROR and counted. No
+        decoding failure is the contract's, so none passes through as one.
+        """
         try:
-            return await call()
+            result = await call()
         except Exception as exc:
             if isinstance(exc, contract) and type(exc) not in _BARE_LOOKUPS:
                 raise
-            self._notify(lambda observer: observer.on_store_failure(self._name, operation))
-            logger.error(
-                "key pool %r: the store's %s failed (%s); the call fails closed",
-                self._name,
-                operation,
-                type(exc).__name__,
-                exc_info=exc,
-                extra={"extra_data": {"pool": self._name, "operation": operation, "exc_type": type(exc).__name__}},
-            )
-            if isinstance(exc, KeyPoolStoreError):
-                raise
-            raise KeyPoolStoreError(
-                f"key pool {self._name!r}: the store's {operation} failed ({type(exc).__name__}); the call fails closed"
-            ) from exc
+            what = f"the store's {operation} failed ({type(exc).__name__})"
+            raise self._store_failure(operation, what, exc) from exc
+        try:
+            return decode(result)
+        except Exception as exc:
+            # the pool's own refusal names what it couldn't read; any other error is named by its type
+            # alone, since its text may quote the record, and a record holds fingerprints
+            detail = str(exc) if isinstance(exc, KeyPoolStoreError) else type(exc).__name__
+            what = f"the store's {operation} returned what it can't read: {detail}"
+            raise self._store_failure(operation, what, exc) from exc
+
+    def _store_failure(self, operation: str, what: str, cause: Exception | None) -> KeyPoolStoreError:
+        """Count and log a store failure at ERROR; the error that fails the call closed.
+
+        The one path every store failure takes, so the ERROR line and the store-failure count an
+        operator alerts on never miss one.
+        """
+        self._notify(lambda observer: observer.on_store_failure(self._name, operation))
+        logger.error(
+            "key pool %r: %s; the call fails closed",
+            self._name,
+            what,
+            exc_info=cause,
+            extra={
+                "extra_data": {
+                    "pool": self._name,
+                    "operation": operation,
+                    "exc_type": type(cause).__name__ if cause is not None else None,
+                }
+            },
+        )
+        return KeyPoolStoreError(f"key pool {self._name!r}: {what}; the call fails closed")
 
     def _notify(self, event: Callable[[KeyPoolObserver], None]) -> None:
         event(self._counters)
@@ -1337,6 +1408,11 @@ def _no_change(doc: dict[str, Any]) -> bool:
     return False
 
 
+def _as_is[T](result: T) -> T:
+    """A store call's result, needing no decoding."""
+    return result
+
+
 def _cleared_state() -> dict[str, Any]:
     return {"revoked": False, "exhausted": None, "low_room": None, "forbidden": []}
 
@@ -1358,10 +1434,80 @@ def _money_of(snapshot: AccountSnapshot, budget: Decimal) -> tuple[Decimal, Deci
     return spent, reserved, max(budget - spent - reserved, Decimal(0))
 
 
+def _settled_room(snapshot: AccountSnapshot, budget: Decimal) -> Decimal:
+    """The budget less settled spend: room before open reservations, which only grows smaller within a
+    period, so a low-room mark decided from it stays true until the period ends."""
+    return max(budget - snapshot["spent"], Decimal(0))
+
+
 def _checked_doc(doc: dict[str, Any] | None) -> dict[str, Any]:
-    """The record as stored, or a new one; a record in another layout is refused, not overwritten."""
+    """The record as stored, or a new one; a record in another layout, or with a field this layout
+    can't read, is refused, not overwritten.
+
+    Every field the pool later reads is checked here, so a malformed one fails the read that brought
+    it in, inside the store boundary, rather than whichever later call first parses it. The messages
+    name the label and the field, never a value: a generation's fingerprint is one.
+    """
     if doc is None:
         return {"layout": _LAYOUT, "period": None, "active": None, "keys": {}}
-    if doc.get("layout") != _LAYOUT or not isinstance(doc.get("keys"), dict):
-        raise KeyPoolStoreError(f"a key pool record in layout {doc.get('layout')!r} can't be read by layout {_LAYOUT}")
+    if not isinstance(doc, dict) or doc.get("layout") != _LAYOUT or not isinstance(doc.get("keys"), dict):
+        layout = doc.get("layout") if isinstance(doc, dict) else None
+        raise KeyPoolStoreError(f"a key pool record in layout {layout!r} can't be read by layout {_LAYOUT}")
+    _require(_optional_str(doc.get("period")) and _optional_str(doc.get("active")), "its period or active key")
+    for label, entry in doc["keys"].items():
+        _check_entry(str(label), entry)
     return doc
+
+
+def _check_entry(label: str, entry: Any) -> None:
+    """One key's entry in the record: its budget and its generations."""
+    _require(isinstance(entry, dict) and isinstance(entry.get("generations"), dict), f"key {label!r}")
+    budget = entry.get("budget")
+    _require(budget is None or (isinstance(budget, str) and _parses_as_money(budget)), f"key {label!r}'s budget")
+    for number, generation in entry["generations"].items():
+        _require(isinstance(number, str) and number.isdigit(), f"key {label!r}'s generation numbers")
+        _require(
+            isinstance(generation, dict)
+            and isinstance(generation.get("fingerprint"), str)
+            and isinstance(generation.get("revoked"), bool)
+            and _optional_str(generation.get("low_room"))
+            and isinstance(generation.get("forbidden"), list)
+            and all(isinstance(scope, str) for scope in generation["forbidden"]),
+            f"key {label!r}'s generation {number}",
+        )
+        exhausted = generation.get("exhausted")
+        _require(
+            exhausted is None
+            or (
+                isinstance(exhausted, dict)
+                and _optional_str(exhausted.get("period"))
+                and (exhausted.get("until") is None or _parses_as_aware_time(exhausted.get("until")))
+            ),
+            f"key {label!r}'s generation {number} exhaustion",
+        )
+
+
+def _require(ok: bool, what: str) -> None:
+    if not ok:
+        raise KeyPoolStoreError(f"a key pool record's {what} can't be read by layout {_LAYOUT}")
+
+
+def _optional_str(value: Any) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _parses_as_money(value: str) -> bool:
+    try:
+        return Decimal(value).is_finite()
+    except ArithmeticError:  # NOSILENT: decimal.InvalidOperation, not a number; the record is refused
+        return False
+
+
+def _parses_as_aware_time(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:  # NOSILENT: not an ISO time; the record is refused
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None

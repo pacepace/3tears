@@ -817,7 +817,10 @@ def create_openrouter_chat(
     # that builds an OpenRouter model, and a class that moved fails this call, not the package import.
     declare_served_provider()
     _declare_reasoning_budget()
-    # The SDK never retries a 4xx, so the rule asks nothing of this model.
+    # The SDK never retries a 4xx, so the rule asks nothing of this model. The key pool rests on the
+    # same fact: its OpenRouter classifier reports `sdk_retries_rate_limits = False` (key_pool/classify.py),
+    # so the pool retries a rate limit itself. A model built here that retried 429s would need that flag
+    # flipped too, or the SDK and the pool would both retry.
     del unretried_key_errors
 
     # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards

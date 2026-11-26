@@ -14,7 +14,9 @@ that names a ``langchain-anthropic`` member with a leading underscore: it overri
 the ``middleware`` argument, and a ``Middleware`` subclass passing both the sync and the async
 client's validation when it implements ``handle`` and ``handle_async``). A release that renames
 ``_client_params`` fails ``tests/unit/models/test_key_errors_unretried.py``, which drives a quota
-429 through a model built here and counts the requests.
+429 through a model built here and counts the requests. The override is recorded, with that version,
+in ``tests/enforcement/_underscore_exemptions.txt``: the underscore gate's shape J reports a src class
+that overrides or ``super()``-reads a third-party private member, which ruff's SLF001 can't see.
 """
 
 from __future__ import annotations

@@ -550,7 +550,9 @@ class _Call:
                 await lease.settle(meter.cost(lease.amount))
             else:
                 await lease.fail(verdict)
-            if stream_started or not await self._pool.wait_to_retry(verdict, self._rate_limit_retries):
+            if stream_started or not await self._pool.wait_to_retry(
+                verdict, self._rate_limit_retries, label=lease.label
+            ):
                 return False
             # a rate limit the provider's SDK doesn't retry: again on the same key, which the pool
             # neither tried off nor moved

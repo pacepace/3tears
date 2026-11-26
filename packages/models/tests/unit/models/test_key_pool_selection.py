@@ -18,6 +18,7 @@ from threetears.models.key_pool import (
     KeyPool,
     KeyPoolLease,
     KeySpec,
+    KeyState,
     MoveReason,
     NoKeyAvailableError,
     Secret,
@@ -267,6 +268,36 @@ class TestSkipVersusMove:
         assert await serve(pool) == "b"
         assert store.calls == ["reserve", "settle"]
 
+    async def test_open_reservations_never_mark_a_key_low(self) -> None:
+        """A burst of in-flight reservations leaves less than ``min_headroom`` for a moment; the key
+        is skipped for the call they crowd out, and serves again once they settle low."""
+        pool = make_pool(spec("a", "10"))
+        held = [await pool.acquire(MODEL, Decimal("2.45")) for _ in range(4)]
+        held.append(await pool.acquire(MODEL, Decimal("0.15")))  # $0.05 left, below the $0.10 headroom
+        with pytest.raises(NoKeyAvailableError) as caught:
+            await pool.acquire(MODEL, Decimal("0.06"))
+        assert caught.value.earliest is None  # back as the open reservations settle, a time nobody knows
+        assert (await pool.status()).keys[0].state is KeyState.OK
+        for lease in held:
+            await lease.settle(Decimal("0.02"))
+        assert await serve(pool) == "a"
+        assert pool.counters.room_refusals == {"a": 1}
+        assert not pool.counters.moves
+
+    async def test_the_last_eligible_key_crowded_by_open_reservations_serves_again(self) -> None:
+        pool = make_pool(spec("a", "10"), spec("b", "10"))
+        lease = await pool.acquire(MODEL, Decimal("9.95"))
+        await lease.settle(Decimal("9.95"))
+        assert await serve(pool, amount="0.06") == "b"  # a is low on settled spend: moved off for good
+        held = [await pool.acquire(MODEL, Decimal("4.95")) for _ in range(2)]  # $0.04 of b left
+        with pytest.raises(NoKeyAvailableError):
+            await pool.acquire(MODEL, Decimal("0.05"))
+        for open_lease in held:
+            await open_lease.settle(Decimal("0.5"))
+        assert [await serve(pool) for _ in range(2)] == ["b", "b"]
+        states = {key.label: key.state for key in (await pool.status()).keys}
+        assert states == {"a": KeyState.NO_ROOM, "b": KeyState.OK}
+
     async def test_a_move_never_lands_on_a_key_with_no_room(self) -> None:
         pool = make_pool(spec("a", "10"), spec("b", "10"), spec("c", "10"))
         # drain b while a stays active: this call has already tried a
@@ -331,7 +362,10 @@ class TestPoolSideRateLimitRetries:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
         pool = _openrouter_pool(clock, sleep)
-        answers = [await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(seconds=17)), n) for n in range(3)]
+        answers = [
+            await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(seconds=17)), n, label="only")
+            for n in range(3)
+        ]
         assert answers == [True, True, False]
         assert sleep.waits == [17.0, 17.0]
 
@@ -339,41 +373,67 @@ class TestPoolSideRateLimitRetries:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
         pool = _openrouter_pool(clock, sleep)
-        assert [await pool.wait_to_retry(rate_limited(), n) for n in range(2)] == [True, True]
+        assert [await pool.wait_to_retry(rate_limited(), n, label="only") for n in range(2)] == [True, True]
         assert sleep.waits == [0.5, 1.0]
 
     async def test_a_wait_never_passes_the_exhaustion_threshold(self) -> None:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
         pool = _openrouter_pool(clock, sleep, rate_limit_exhaustion_wait=timedelta(seconds=40))
-        assert await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(minutes=5)), 0)
+        assert await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(minutes=5)), 0, label="only")
         assert sleep.waits == [40.0]
 
     async def test_a_wait_already_over_is_no_wait(self) -> None:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
         pool = _openrouter_pool(clock, sleep)
-        assert await pool.wait_to_retry(rate_limited(until=clock.now - timedelta(seconds=3)), 0)
+        assert await pool.wait_to_retry(rate_limited(until=clock.now - timedelta(seconds=3)), 0, label="only")
         assert sleep.waits == [0.0]
 
     @pytest.mark.parametrize("verdict", [exhausted(), revoked(), forbidden(), oversized()])
     async def test_only_a_rate_limit_is_retried(self, verdict: object) -> None:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
-        assert not await _openrouter_pool(clock, sleep).wait_to_retry(verdict, 0)  # type: ignore[arg-type]
+        assert not await _openrouter_pool(clock, sleep).wait_to_retry(verdict, 0, label="only")  # type: ignore[arg-type]
         assert sleep.waits == []
 
     async def test_a_provider_whose_sdk_retries_rate_limits_gets_no_more_from_the_pool(self) -> None:
         clock = ManualClock()
         sleep = RecordingSleep(clock)
         pool = make_pool(spec("a"), clock=clock, sleep=sleep)  # anthropic
-        assert not await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(seconds=1)), 0)
+        assert not await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(seconds=1)), 0, label="a")
         assert sleep.waits == []
+
+    async def test_each_retry_logs_one_info_line_naming_the_key_retry_and_wait(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        clock = ManualClock()
+        pool = _openrouter_pool(clock, RecordingSleep(clock))
+        for n in range(3):
+            await pool.wait_to_retry(rate_limited(until=clock.now + timedelta(seconds=17)), n, label="only")
+        logged = lines(caplog, logging.INFO, "rate limited")
+        assert [line.getMessage() for line in logged] == [
+            "key pool 'or-pool': key 'only' was rate limited; retry 1 of 2 on the same key in 17.0 s",
+            "key pool 'or-pool': key 'only' was rate limited; retry 2 of 2 on the same key in 17.0 s",
+        ]
+        assert logged[0].extra_data == {  # type: ignore[attr-defined]
+            "pool": "or-pool",
+            "label": "only",
+            "retry": 1,
+            "wait_seconds": 17.0,
+        }
+        assert not pool.counters.moves and not pool.counters.failovers
+
+    async def test_an_unknown_label_is_refused(self) -> None:
+        clock = ManualClock()
+        with pytest.raises(ValueError, match="no key labelled"):
+            await _openrouter_pool(clock, RecordingSleep(clock)).wait_to_retry(rate_limited(), 0, label="other")
 
     async def test_a_negative_retry_count_is_refused(self) -> None:
         clock = ManualClock()
         with pytest.raises(ValueError, match="retries"):
-            await _openrouter_pool(clock, RecordingSleep(clock)).wait_to_retry(rate_limited(), -1)
+            await _openrouter_pool(clock, RecordingSleep(clock)).wait_to_retry(rate_limited(), -1, label="only")
 
     @pytest.mark.parametrize("wait", [timedelta(0), timedelta(seconds=-1)])
     def test_the_exhaustion_threshold_must_be_positive(self, wait: timedelta) -> None:

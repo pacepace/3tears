@@ -50,11 +50,15 @@ _DEPENDENCY_FLOORS = (
             "uuid-utils",
         ),
         rationale=(
-            "the floor recorded 2026-10-17, plus openai and httpx (model key pool, 2026-11-26). The key pool's "
-            "classifiers read each provider SDK's error types and httpx's responses and transport errors on the "
-            "base install path, and the 429-unretried hook builds openai's default HTTP client, so both are "
-            "imported directly rather than trusted to arrive through langchain-openai and anthropic. Both "
-            "already do arrive through them, so declaring them adds nothing to an install"
+            "every name is imported on the base install path, so none is trusted to arrive transitively: "
+            "langchain-core and pydantic are the chat-model surface the package is; each of the three "
+            "providers is its langchain binding plus the SDK it imports directly (anthropic for "
+            "transform_schema and its client middleware, openai for its error types and default HTTP "
+            "client, openrouter for the result types the factory extends); httpx's transport errors and "
+            "headers are read by the key pool's classifiers; jsonschema checks a structured-output schema "
+            "before it is sent; uuid-utils mints uuid7 ids for the CLI pool's messages and the key pool's "
+            "reservations; and three dependency-free family leaves carry the media contracts, logging, and "
+            "the tool input schema. Nothing optional (the CLI subscription, prometheus) is on it"
         ),
     ),
     DependencyFloor(
