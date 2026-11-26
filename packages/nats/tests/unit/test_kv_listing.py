@@ -7,6 +7,7 @@ refused ``STREAM.INFO``, and a key's read failing for a reason other than the ke
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -50,6 +51,30 @@ async def test_keys_past_the_servers_subject_cap_are_read_from_the_next_page() -
 
     assert keys == names
     assert stream.infos == [(f"$KV.{_BUCKET}.>", 0), (f"$KV.{_BUCKET}.>", SERVER_SUBJECTS_CAP)]
+
+
+# parity-exempt: a ListedStream recording how many tasks are alive at each key's read
+class _TaskCounted(ListedStream):
+    def __init__(self, stream: str, latest: list[tuple[str, bytes, dict[str, str] | None]]) -> None:
+        super().__init__(stream, latest)
+        self.alive: list[int] = []
+
+    async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
+        self.alive.append(len(asyncio.all_tasks()))
+        return await super().get_last_msg(stream, subject, direct=direct)
+
+
+async def test_a_listing_keeps_a_bounded_number_of_tasks_however_many_keys() -> None:
+    """Flips if a listing makes a task a key (every one made in one turn of the loop before the first read is sent:
+    100,003 keys held the loop 1.6 s), rather than a fixed set of readers each reading its share."""
+    names = [f"k{n}" for n in range(2_000)]
+    stream = _TaskCounted(_STREAM, [(_key(name), b"v", None) for name in names])
+
+    keys = await live_kv_keys(ListedClient(stream), _BUCKET)  # type: ignore[arg-type]
+
+    assert keys == names
+    assert len(stream.alive) == len(names)
+    assert max(stream.alive) <= 100, max(stream.alive)
 
 
 # parity-exempt: a ListedStream whose STREAM.INFO the server answers with an error instead of the stream's state
