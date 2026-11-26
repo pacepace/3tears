@@ -52,6 +52,7 @@ from threetears.agent.acl.types import (
     RoleAssignment,
     ScopeType,
 )
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import tier_reads_total
 from threetears.core.collections.generation import GenerationMarks, GenerationVerdict
@@ -566,7 +567,7 @@ class TestAStaleAnswerIsNeverServedByAReplicaThatHeardTheChange:
             key=joined.answers.l2_key(joined.answers.key_of(_KIND, estate.customer, shape))
         )
         assert raw is not None
-        stamp = json.loads(json.loads(raw)["stamp"])
+        stamp = json.loads(json.loads(without_shape_header(raw))["stamp"])
         assert set(stamp.values()) == {"inc:5"}
 
     async def test_a_row_naming_no_generation_stays_stale_until_a_later_one_is_applied(
@@ -773,11 +774,15 @@ class TestWhatIsRecorded:
         await _ask(replica, estate, shape, _Computer())
         bucket = await _bucket(bus)
         key = replica.answers.l2_key(replica.answers.key_of(_KIND, estate.customer, shape))
-        await bucket.put(key=key, value=b"{")
+        held = await bucket.get(key=key)
+        assert held is not None
+        # the entry's own shape tag, then bytes its codec cannot read: a corrupt entry, not another shape's
+        unreadable = held[: held.index(b"{")] + b"{"
+        await bucket.put(key=key, value=unreadable)
         compute = _Computer()
         assert (await _ask(other, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED
         assert "an access-shape L2 entry could not be decoded" in caplog.text
-        await bucket.put(key=key, value=b"{")
+        await bucket.put(key=key, value=unreadable)
         replica.hear(_assignment_row(estate.states[0]))
         await replica.settle()
         assert key not in bucket.keys()

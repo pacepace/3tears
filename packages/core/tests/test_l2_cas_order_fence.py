@@ -41,6 +41,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import BigInteger, Column, DateTime, Integer, MetaData, String, Table, Text
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer, flush_pending
@@ -477,7 +478,9 @@ class TestReadsDoNotReorderL2:
         await read
         raw = await (await _bucket(nats)).get(key=_KEY)
         assert raw is not None
-        assert _members(json.loads(raw)) == ["x", "y"], "a read put L3's older row over a swapped L2 value"
+        assert _members(json.loads(without_shape_header(raw))) == ["x", "y"], (
+            "a read put L3's older row over a swapped L2 value"
+        )
         outcome = await writer.l2_cas_mutate(_ID, _add("z"))
         assert outcome.row is not None and _members(outcome.row) == ["x", "y", "z"]
 

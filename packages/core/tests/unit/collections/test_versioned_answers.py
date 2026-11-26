@@ -17,6 +17,7 @@ from uuid import uuid7
 import pytest
 from pydantic import SecretStr
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.versioned_answers import AnswerNotComputable, VersionedAnswers
 from threetears.core.config import DefaultCoreConfig
@@ -591,7 +592,7 @@ class TestForgettingAScope:
 
         assert await answers.announced("r1") is None
         assert _index_key("announced_r1") not in bucket.keys()
-        floor = json.loads(await bucket.get(key=_index_key("versions_r1")) or b"{}")
+        floor = json.loads(without_shape_header(await bucket.get(key=_index_key("versions_r1")) or b"{}"))
         assert floor.get("members") == {} and floor.get("floor") == 2, floor
         assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2")) == ([], [])
         assert (_shard_keys(bucket, "v1"), _shard_keys(bucket, "v2")) == ([], [])
@@ -725,5 +726,5 @@ class TestForgettingAScopeNoAnnounceLoses:
 
         bucket = await _bucket(nats)
         assert _entry_keys(bucket, "v1") == [] and _shard_keys(bucket, "v1") == [], "a forgotten version came back"
-        row = json.loads(await bucket.get(key=_index_key("versions_r1")) or b"{}")
+        row = json.loads(without_shape_header(await bucket.get(key=_index_key("versions_r1")) or b"{}"))
         assert row.get("members") == {}, row

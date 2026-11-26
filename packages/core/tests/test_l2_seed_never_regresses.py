@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -132,7 +133,7 @@ def _replica(nats: FakeNatsClient, store: _Store) -> _Profiles:
 async def _l2_name(nats: FakeNatsClient) -> str | None:
     bucket: FakeKvBucket = await nats.kv_bucket(name="collections")
     raw = await bucket.get(key=_KEY)
-    return None if raw is None else str(json.loads(raw)["name"])
+    return None if raw is None else str(json.loads(without_shape_header(raw))["name"])
 
 
 async def _rename(writer: _Profiles, name: str) -> None:

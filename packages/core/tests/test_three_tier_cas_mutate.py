@@ -25,6 +25,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer, flush_pending
@@ -210,7 +211,7 @@ async def _l2_count(nats: _Nats) -> int:
     bucket = await nats.kv_bucket(name="collections")
     raw = await bucket.get(key=_KEY)
     assert raw is not None
-    return int(json.loads(raw)["count"])
+    return int(json.loads(without_shape_header(raw))["count"])
 
 
 class TestSeedingFromL3:
@@ -384,8 +385,10 @@ class TestCreationTime:
     async def test_a_row_new_to_every_tier_is_stamped_even_over_an_l2_entry(self) -> None:
         nats, store = _Nats(), _Store()
         bucket = await nats.kv_bucket(name="collections")
-        await bucket.put(key=_KEY, value=b'{"id": "acct-1", "date_created": "not-a-time"}')  # corrupt
         coll, _ = _replica(_SynchronousCounters, nats, store)
+        await bucket.put(
+            key=_KEY, value=coll.encode_l2_entry({"id": "acct-1", "date_created": "not-a-time"})
+        )  # corrupt
         outcome = await coll.l2_cas_mutate("acct-1", _increment)
         assert outcome.row is not None and outcome.row.get("date_created") is not None
         assert store.rows["acct-1"].get("date_created") is not None

@@ -29,6 +29,7 @@ import asyncpg
 import pytest
 from sqlalchemy import MetaData
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
@@ -103,7 +104,7 @@ class _Tiers:
         bucket = await self.nats.kv_bucket(name="collections")
         raw = await bucket.get(key=self.sources.l2_key(source_id))
         assert raw is not None, "L2 holds no row"
-        return dict(json.loads(raw))
+        return dict(json.loads(without_shape_header(raw)))
 
 
 @pytest.fixture

@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: every collection L2 entry carries a shape tag; no release needs a cache clear again (Pace 2026-11-26)
+
+**Added:** every entry a collection writes to the shared collections bucket opens with its shape tag
+(``threetears.core.collections.l2_shape``): a NUL, ``shape:``, and an 8-byte digest of what the entry is, as hex. A read
+compares that prefix; an entry whose tag is not the reader's is a miss: the row is read from L3, the entry replaced at
+the revision read (or removed where L3 holds no row), and the mismatch counted on
+``threetears_collection_l2_shape_mismatches_total{table}``. It never raises. A ``TableSchema``'s tag covers its columns'
+names, types (a vector's width) and order, its key and stored key, its row epoch kind (plain, stamped, versioned) and
+move columns, and the codec version; never indexes, nullability, defaults, foreign keys, tenancy or eviction. A
+collection with no ``TableSchema`` tags by its key, its ``datetime_columns``, its ``l2_shape_columns`` where declared
+(dynamic collections declare their table definition's), and ``BaseCollection.l2_shape_version``, which a class with its
+own ``serialize`` raises when that codec changes. ``BaseCollection.encode_l2_entry`` / ``decode_l2_entry`` are the
+entry's codec: a tool or test that puts a row into L2 by hand writes ``encode_l2_entry``, never ``serialize``'s bytes.
+
+**What consumers get:** no more cache clears at a release, and a rolling deploy across a shape change is safe: old and
+new pods each ignore the other's entries. **Every entry written before 0.95.0 carries no tag and is ignored at its first
+read** (one L3 read a key, then cached again), so the hub's one-off "clear the collection bucket at first start" step is
+no longer needed. Where L2 is the only store (presence, pod heartbeats), an older entry reads as absent until its next
+write. Where L2 is a table's record (``l2_first``), an entry of another shape is still the committed row: it is counted
+and decoded as before, never read as "no row", which the saver would turn into a delete from L3.
+
 ### enforcement, core: two gate facts (Pace 2026-11-27): a migration's stamped write is heard; a reload's call is covered by what it reaches
 
 **Changed (epoch-bypass):** a keyed update (``update_keyed`` / ``update_before``) in a module the migration runner runs

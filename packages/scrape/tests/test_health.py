@@ -603,7 +603,7 @@ async def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
     bucket = await nats_client.kv_bucket(name=reader.L2_BUCKET_SUFFIX)
     await bucket.put(
         key=reader.l2_key("warn_bad"),
-        value=b'{"target_id": "warn_bad", "date_updated": "not-a-timestamp"}',
+        value=reader.encode_l2_entry({"target_id": "warn_bad", "date_updated": "not-a-timestamp"}),
     )
 
     with caplog.at_level("WARNING"):

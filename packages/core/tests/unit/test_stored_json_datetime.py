@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Column, MetaData, String, Table
 from sqlalchemy.dialects.postgresql import JSONB
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.duckdb import DuckDBBackend
@@ -341,7 +342,7 @@ class TestADeclaredTimestampColumnIsNotARefusal:
         bucket = await nats.kv_bucket(name=collection.L2_BUCKET_SUFFIX)
         stored = await bucket.get(key=collection.l2_key(_ID))
         assert stored is not None
-        assert json.loads(stored)["date_seen"] == _CANONICAL
+        assert json.loads(without_shape_header(stored))["date_seen"] == _CANONICAL
 
     def test_a_dynamic_tables_wall_clock_column_stays_naive_through_l2(self) -> None:
         """a product table's ``timestamp`` column is naive by declaration: cached as its wall-clock text."""

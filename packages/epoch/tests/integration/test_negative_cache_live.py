@@ -27,6 +27,7 @@ import pytest
 from nats.js.api import StorageType
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -301,7 +302,7 @@ async def test_listening_peers_in_one_scope_keep_a_compare_and_swap_counter(nats
             bucket = await first_nc.kv_bucket(name="collections")
             raw = await bucket.get(key=pods[0][0].l2_key("acct"))
             assert raw is not None, "a peer's listener evicted the compare-and-swap key"
-            assert json.loads(raw)["reason"] == "6"
+            assert json.loads(without_shape_header(raw))["reason"] == "6"
         finally:
             for _, registry in pods:
                 await registry.stop_invalidation_listener()

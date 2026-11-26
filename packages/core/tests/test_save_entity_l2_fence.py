@@ -32,6 +32,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table, Text
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -182,7 +183,7 @@ async def _bucket(nats: _Nats) -> FakeKvBucket:
 
 async def _l2_members(nats: _Nats) -> str | None:
     raw = await (await _bucket(nats)).get(key=_KEY)
-    return None if raw is None else str(json.loads(raw)["members"])
+    return None if raw is None else str(json.loads(without_shape_header(raw))["members"])
 
 
 async def _served(coll: _Plain) -> str:
@@ -254,7 +255,7 @@ class TestWhenL2CannotBeRead:
         nats, store = _Nats(), _Store()
         coll = await _replica(cls, nats, store)
         bucket = await _bucket(nats)
-        await bucket.put(key=_KEY, value=json.dumps(_row("stale")).encode())
+        await bucket.put(key=_KEY, value=coll.encode_l2_entry(_row("stale")))
         real_get_latest = bucket.get_latest
 
         async def _unreadable(**_: Any) -> tuple[bytes | None, int]:

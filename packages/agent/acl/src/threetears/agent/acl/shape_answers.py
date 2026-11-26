@@ -87,6 +87,7 @@ from threetears.agent.acl.collections import (
 )
 from threetears.agent.acl.types import MemberType
 from threetears.core.eviction import Declared, Policy
+from threetears.core.exceptions import CorruptCacheEntry
 
 if TYPE_CHECKING:
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
@@ -892,8 +893,13 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
                 if entry is None:
                     continue
                 raw, revision = entry
-                row = self.deserialize(raw)
-                if not self._current(row, str(row.get("context"))):
+                try:
+                    decoded = self.decode_l2_entry(raw)
+                except CorruptCacheEntry:
+                    # an older release's entry, another shape's (l2_shape), or one that will not decode: no read
+                    # answers with it, so it is stale here too
+                    decoded = None
+                if not isinstance(decoded, dict) or not self._current(decoded, str(decoded.get("context"))):
                     await kv.delete(key=self.l2_key(key), revision=revision)
         # prawduct:allow prawduct/broad-except -- background work no caller awaits: whatever it raises is recorded
         # here or nowhere, and an entry left in L2 is still checked against its stamp on every read

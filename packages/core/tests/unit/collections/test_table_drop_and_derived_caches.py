@@ -26,6 +26,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import base as base_module
@@ -456,7 +457,7 @@ class TestDroppingATable:
         await reader.members.get("m1")
         l2 = await bus.kv_bucket(name="collections")
         stale_key = reader.members.l2_key("m1")
-        assert json.loads(await l2.get(key=stale_key))["member_id"] == "ada"  # type: ignore[arg-type]
+        assert json.loads(without_shape_header(await l2.get(key=stale_key)))["member_id"] == "ada"  # type: ignore[arg-type]
 
         bus.deaf = True
         await _save(writer, "m1", "edsger")
@@ -467,7 +468,7 @@ class TestDroppingATable:
         assert await _member_id(reader, "m1") == "edsger"
         assert reader.members.fetches == fetches + 1, "the stale L2 entry was read past, to L3"
         # and replaced, so the tier is useful again: the next cold read is answered by L2
-        assert json.loads(await l2.get(key=stale_key))["member_id"] == "edsger"  # type: ignore[arg-type]
+        assert json.loads(without_shape_header(await l2.get(key=stale_key)))["member_id"] == "edsger"  # type: ignore[arg-type]
         reader.members.evict_from_cache_sync("m1")
         assert await _member_id(reader, "m1") == "edsger"
         assert reader.members.fetches == fetches + 1
@@ -609,7 +610,7 @@ class TestADropDoesNotPutAnOlderL3RowOverANewerL2Row:
         l2 = await pod.bus.kv_bucket(name="collections")
         raw = await l2.get(key=pod.members.l2_key(entity_id))
         assert raw is not None
-        return str(json.loads(raw)["member_id"])
+        return str(json.loads(without_shape_header(raw))["member_id"])
 
     async def test_a_write_behind_table(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "older"}}

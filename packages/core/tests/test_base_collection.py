@@ -231,8 +231,8 @@ class TestThreeTierGet:
         """L1 miss, L2 hit promotes to L1 and returns entity."""
         nats = _make_nats_mock()
         l2_data = {"id": "e2", "name": "Bob", "score": 50}
-        nats.store[f"{_TEST_SCOPE}.test_entities.e2"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
+        nats.store[f"{_TEST_SCOPE}.test_entities.e2"] = coll.encode_l2_entry(l2_data)
 
         entity = await coll.get("e2")
 
@@ -596,8 +596,8 @@ class TestSubscriptGetterPullThrough:
         """collection[id] pulls through L2 on L1 miss."""
         nats = _make_nats_mock()
         l2_data = {"id": "e1", "name": "Bob", "score": 50}
-        nats.store[f"{_TEST_SCOPE}.test_entities.e1"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
+        nats.store[f"{_TEST_SCOPE}.test_entities.e1"] = coll.encode_l2_entry(l2_data)
 
         entity = coll["e1"]
 
@@ -678,13 +678,13 @@ class TestSubscriptSetterPropagation:
         await _propagated(
             lambda: (
                 f"{_TEST_SCOPE}.test_entities.e1" in nats.store
-                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+                and present(coll.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))["name"] == "Bob"
             ),
             what="the setter's L2 write",
         )
 
         assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
-        l2_data = json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])
+        l2_data = present(coll.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))
         assert l2_data["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -721,7 +721,7 @@ class TestSubscriptSetterPropagation:
         await _propagated(
             lambda: (
                 f"{_TEST_SCOPE}.test_entities.e1" in nats.store
-                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+                and present(coll.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))["name"] == "Bob"
                 and buf.pending_count() == 1
             ),
             what="the setter's L2 write and buffered L3 write",
@@ -843,7 +843,7 @@ class TestMultiPodSimulation:
         await _propagated(
             lambda: (
                 f"{_TEST_SCOPE}.test_entities.e1" in nats.store
-                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Bob"
+                and present(pod_a.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))["name"] == "Bob"
             ),
             what="pod A's L2 write",
         )
@@ -855,7 +855,7 @@ class TestMultiPodSimulation:
         # But L2 has the update (shared NATS KV)
         l2_raw = nats.store.get(f"{_TEST_SCOPE}.test_entities.e1")
         assert l2_raw is not None
-        l2_data = json.loads(l2_raw)
+        l2_data = present(pod_a.decode_l2_entry(l2_raw))
         assert l2_data["name"] == "Bob"
 
         # Pod B invalidating its L1 and re-reading picks up the change
@@ -903,7 +903,7 @@ class TestMultiPodSimulation:
         await _propagated(
             lambda: (
                 f"{_TEST_SCOPE}.test_entities.e1" in nats.store
-                and json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])["name"] == "Deferred"
+                and present(pod_a.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))["name"] == "Deferred"
                 and buf.pending_count() == 1
             ),
             what="pod A's L2 write and buffered L3 write",
@@ -912,7 +912,7 @@ class TestMultiPodSimulation:
         # L3 still has old value
         assert l3_rows["e1"]["name"] == "Alice"
         # L2 has new value
-        l2_data = json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])
+        l2_data = present(pod_a.decode_l2_entry(nats.store[f"{_TEST_SCOPE}.test_entities.e1"]))
         assert l2_data["name"] == "Deferred"
         # Write buffer has pending entry
         assert buf.pending_count() == 1
@@ -1456,7 +1456,7 @@ class TestL2CasMutate:
 
         raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
         assert raw is not None
-        assert _members(json.loads(raw)) == ["conn-1"]
+        assert _members(coll.decode_l2_entry(raw)) == ["conn-1"]
         # L1 reconciled.
         assert _members(coll.get_row_sync("r1")) == ["conn-1"]
 
@@ -1472,7 +1472,7 @@ class TestL2CasMutate:
         await coll.l2_cas_mutate("r1", _append_member("conn-2"))
 
         raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
-        assert _members(json.loads(present(raw))) == ["conn-1", "conn-2"]
+        assert _members(coll.decode_l2_entry(present(raw))) == ["conn-1", "conn-2"]
 
     @pytest.mark.asyncio
     async def test_noop_returns_without_writing(
@@ -1510,13 +1510,15 @@ class TestL2CasMutate:
         """one CAS conflict then success — the loop retries and lands the write."""
         # seed the value so the write path is update (which conflicts once).
         bucket = _CasKvBucket(conflict_first=True)
-        await bucket.put(key=f"{_TEST_SCOPE}.test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
         coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+        await bucket.put(
+            key=f"{_TEST_SCOPE}.test_entities.r1", value=coll.encode_l2_entry({"id": "r1", "name": "seed"})
+        )
 
         await coll.l2_cas_mutate("r1", _append_member("conn-1"))
 
         raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
-        assert _members(json.loads(present(raw))) == ["seed", "conn-1"]
+        assert _members(coll.decode_l2_entry(present(raw))) == ["seed", "conn-1"]
 
     @pytest.mark.asyncio
     async def test_retry_budget_exhaustion_raises(
@@ -1524,8 +1526,10 @@ class TestL2CasMutate:
     ) -> None:
         """an always-conflicting bucket exhausts the budget and raises CME."""
         bucket = _CasKvBucket(always_conflict=True)
-        await bucket.put(key=f"{_TEST_SCOPE}.test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
         coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+        await bucket.put(
+            key=f"{_TEST_SCOPE}.test_entities.r1", value=coll.encode_l2_entry({"id": "r1", "name": "seed"})
+        )
 
         with pytest.raises(ConcurrentModificationError):
             await coll.l2_cas_mutate("r1", _append_member("conn-1"), max_retries=3)
@@ -1622,9 +1626,9 @@ class TestCorruptL2EntryFallsThroughToL3:
         coll = _Timestamped(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # A poisoned L2 entry: right key, right shape, one value that will not decode.
-        nats.store[coll.l2_key("e1")] = json.dumps(
+        nats.store[coll.l2_key("e1")] = coll.encode_l2_entry(
             {"id": "e1", "name": "FromCache", "score": 99, "date_created": "not-a-timestamp"}
-        ).encode()
+        )
 
         entity = await coll.get("e1")
 
@@ -1647,9 +1651,9 @@ class TestCorruptL2EntryFallsThroughToL3:
         nats = _make_nats_mock()
         l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
         coll = _Timestamped(registry, config_always, nats_client=nats, l3_rows=l3_rows)
-        nats.store[coll.l2_key("e1")] = json.dumps(
+        nats.store[coll.l2_key("e1")] = coll.encode_l2_entry(
             {"id": "e1", "name": "FromCache", "score": 99, "date_created": "2026-07-26T12:00:00+00:00"}
-        ).encode()
+        )
 
         entity = await coll.get("e1")
 

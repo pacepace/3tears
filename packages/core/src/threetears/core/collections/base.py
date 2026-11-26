@@ -94,6 +94,14 @@ from threetears.core import packed_keys
 from threetears.core.collections.l1_fence import KeyTicket, L1Fence, ScanReadTicket
 from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.collections.l2_first import L2First, L2FirstEpochs, L2FirstSupport
+from threetears.core.collections.l2_shape import (
+    L2_CODEC_VERSION,
+    L2ShapeMismatch,
+    count_shape_mismatch,
+    shape_digest,
+    shape_header,
+    without_shape_header,
+)
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
     L2Order,
@@ -3272,20 +3280,101 @@ class BaseCollection(ABC, Generic[EntityT]):
         """decode one L2 value of this collection: a row, or an absent-marker.
 
         The one decoder every read of a collection key goes through, so an absent-marker is never
-        handed to a subclass :meth:`deserialize` that has no idea what it is.
+        handed to a subclass :meth:`deserialize` that has no idea what it is, and an entry of another
+        shape (:mod:`~threetears.core.collections.l2_shape`) is never handed to it as this one's.
+
+        An entry whose shape tag is not this collection's -- an older release's, which carries none, or
+        another shape's -- is counted and raised as :class:`L2ShapeMismatch`, a
+        :class:`CorruptCacheEntry`: every read treats it as a miss, reads L3, and replaces the entry at
+        the revision it read. Except where L2 is this table's record (:attr:`l2_first`): a committed row
+        there exists nowhere else until the saver carries it, so it is counted and decoded as it is,
+        never read as "no row" (which the saver would turn into a delete from L3).
 
         :param raw: the stored bytes
         :ptype raw: bytes
         :return: the rehydrated row, or the marker
         :rtype: dict[str, Any] | _AbsentMarker
         :raises CorruptCacheEntry: when a row, or a marker's generation, cannot be decoded
+        :raises L2ShapeMismatch: when the entry is not this collection's shape
         """
         if raw.startswith(_ABSENT_MARKER_PREFIX):
             try:
                 return _AbsentMarker(generation=raw[len(_ABSENT_MARKER_PREFIX) :].decode("utf-8"))
             except UnicodeDecodeError as exc:
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
-        return self.decode_row(raw)
+        header = self._l2_shape_header
+        if raw.startswith(header):
+            return self.decode_row(raw[len(header) :])
+        count_shape_mismatch(self.table_name)
+        if self.l2_first is None:
+            raise L2ShapeMismatch(self.table_name, raw)
+        return self.decode_row(without_shape_header(raw))
+
+    def decode_l2_entry(self, raw: bytes) -> dict[str, Any] | None:
+        """decode one L2 entry of this collection back to its row: :meth:`encode_l2_entry` reversed.
+
+        :param raw: the stored bytes
+        :ptype raw: bytes
+        :return: the row; ``None`` for a recorded absence
+        :rtype: dict[str, Any] | None
+        :raises L2ShapeMismatch: when the entry is not this collection's shape (an older release's, or
+            another shape's)
+        :raises CorruptCacheEntry: when it cannot be decoded
+        """
+        decoded = self._decode_l2_value(raw)
+        return None if isinstance(decoded, _AbsentMarker) else decoded
+
+    @property
+    def _l2_shape_header(self) -> bytes:
+        """the prefix every L2 entry of this collection opens with (:func:`shape_header`), built once.
+
+        :return: the header
+        :rtype: bytes
+        """
+        header: bytes | None = getattr(self, "_l2_shape_header_held", None)
+        if header is None:
+            header = shape_header(shape_digest(self._l2_shape_inputs()))
+            self._l2_shape_header_held = header
+        return header
+
+    def _l2_shape_inputs(self) -> dict[str, Any]:
+        """what this collection's L2 shape tag covers (:mod:`~threetears.core.collections.l2_shape`).
+
+        A collection over a :class:`~threetears.core.collections.schema_backed.TableSchema` takes the
+        schema's own digest (:attr:`TableSchema.l2_shape`: columns, key, row epoch, moves, codec). One
+        with none -- an L1+L2-only or hand-written collection -- takes what it declares: its key, its
+        :attr:`datetime_columns`, its :attr:`l2_shape_columns` where it names them, and the codec
+        version. Either way :attr:`l2_shape_version` is in it, the constant a class with its own
+        :meth:`serialize` raises when that codec changes what its bytes mean.
+
+        :return: the inputs, JSON-able
+        :rtype: dict[str, Any]
+        """
+        schema_shape = getattr(getattr(self, "schema", None), "l2_shape", None)
+        if isinstance(schema_shape, bytes):
+            return {"schema": schema_shape.hex(), "version": self.l2_shape_version}
+        return {
+            "codec": L2_CODEC_VERSION,
+            "version": self.l2_shape_version,
+            "key": list(self.primary_key_columns),
+            "datetimes": sorted(self.datetime_columns),
+            "columns": [list(column) for column in self.l2_shape_columns],
+        }
+
+    def encode_l2_entry(self, data: dict[str, Any]) -> bytes:
+        """encode one row as this collection's L2 entry: its shape header, then its codec's bytes.
+
+        The one encoder every L2 write of a row goes through, so every entry carries the tag
+        :meth:`decode_l2_entry` checks: the L2 codec's boundary, as :meth:`serialize` is the row
+        codec's. Anything that puts a row of this collection into L2 by hand (a tool, a test's seed)
+        writes this, never :meth:`serialize`'s bytes, which every read ignores as another shape's.
+
+        :param data: the row
+        :ptype data: dict[str, Any]
+        :return: the entry
+        :rtype: bytes
+        """
+        return self._l2_shape_header + self.serialize(self._normalise_datetimes_for_write(data))
 
     def _decodes_off_loop(self, raw: bytes) -> bool:
         """whether a read decodes the L2 value ``raw`` on a worker thread rather than on the event loop.
@@ -3328,6 +3417,18 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: body (``tests/enforcement/test_l2_only_collections_declare_their_store.py``).
     l2_is_the_store: bool = False
 
+    #: the version of this class's own L2 codec, in its shape tag (:mod:`~threetears.core.collections.l2_shape`).
+    #:
+    #: ``0`` by default. A class that writes its own :meth:`serialize` / :meth:`deserialize` raises it when that
+    #: codec changes what its bytes mean (a field renamed, a value re-encoded) and nothing it declares changed: every
+    #: entry an older release wrote then reads as a miss and is refilled, with no cache clear.
+    l2_shape_version: ClassVar[int] = 0
+
+    #: the columns, ``(name, type)`` in order, of a collection with no
+    #: :class:`~threetears.core.collections.schema_backed.TableSchema`, for its shape tag. A collection over a schema
+    #: leaves it empty: its schema's columns are in the tag already.
+    l2_shape_columns: ClassVar[tuple[tuple[str, str], ...]] = ()
+
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
         """write entity payload to the L2 NATS KV bucket.
 
@@ -3359,7 +3460,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             if kv is None:
                 return False
             key = self.l2_key(entity_id)
-            value = self.serialize(self._normalise_datetimes_for_write(data))
+            value = self.encode_l2_entry(data)
             lifetime = self._l2_entry_lifetime(data)
             # the keyword is sent only when this table declares an expiry, so the call a
             # non-expiring collection makes is exactly the call it has always made -- a bucket
@@ -3601,9 +3702,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._write_l1_marker(entity_id, generation)
             if lookup.stale and lookup.revision is not None:
                 await self._delete_l2_at(entity_id, lookup.revision)
-        elif lookup.untrusted_row and lookup.revision is not None:
+        elif (lookup.untrusted_row or lookup.stale) and lookup.revision is not None:
             # L3 holds no row and L2 held one this read did not trust: it is the stale entry of a
-            # row deleted since, and nothing else will ever remove it.
+            # row deleted since, and nothing else will ever remove it. So is an entry no read may
+            # answer with -- an older release's, or another shape's (l2_shape), an expired row, an
+            # undecodable entry -- removed at the revision read, so a writer's value since stands.
             await self._delete_l2_at(entity_id, lookup.revision)
         if drops_before > 0 and lookup.revision is not None:
             # the key is trusted again once L2 no longer holds what this read distrusted: it held
@@ -4087,7 +4190,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             kv = await self._ensure_kv()
             if kv is not None:
                 key = self.l2_key(entity_id)
-                payload = self.serialize(self._normalise_datetimes_for_write(stored))
+                payload = self.encode_l2_entry(stored)
                 lifetime = self._l2_entry_lifetime(stored)
                 timed = {} if lifetime is None else {"ttl": lifetime}
                 superseded = await kv.update(key=key, value=payload, revision=revision, **timed) is None
@@ -4685,7 +4788,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 id_of_changed=self._id_of_changed,
                 id_of_row=self._id_of_row,
                 entry_lifetime=self._l2_entry_lifetime,
-                encode=lambda row: self.serialize(self._normalise_datetimes_for_write(row)),
+                encode=lambda row: self.encode_l2_entry(row),
                 save_many=getattr(self, "save_many_to_store") if getattr(self, "saves_many_to_store", False) else None,
             )
             self._l2_first_support_held = support
@@ -4953,7 +5056,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             data = self._write_ahead_row(data)
             kv = await self._l2_first_bucket()
             prior, revision = await self._l2_first_read(kv, entity_id, original_timestamp)
-            payload = self.serialize(self._normalise_datetimes_for_write(data))
+            payload = self.encode_l2_entry(data)
             changed = self.changed_row(entity_id, data, l2_key_current=True).model_copy(
                 update={"l3_pending": True, "value": payload, "l2_revision": revision}
             )
@@ -5556,7 +5659,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             kv = await self._ensure_kv()
             if kv is not None and revision is not None:
-                payload = self.serialize(self._normalise_datetimes_for_write(data))
+                payload = self.encode_l2_entry(data)
                 lifetime = self._l2_entry_lifetime(data)
                 timed = {} if lifetime is None else {"ttl": lifetime}
                 written = (
@@ -5695,7 +5798,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             kv = await self._ensure_kv()
             if kv is not None:
                 raw, revision = await kv.get_latest(key=self.l2_key(entity_id))
-                result = (raw is not None, revision)
+                # an entry of another shape (l2_shape) is no live value: the refresh replaces it
+                result = (raw is not None and raw.startswith(self._l2_shape_header), revision)
         except KvError as exc:
             degrade_l2(
                 exc,
@@ -6205,7 +6309,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # as in _save_to_l2: the ttl keyword is sent only when this table declares an
                 # expiry, so a bucket shim that predates per-entry lifetimes still satisfies the
                 # call a non-expiring collection makes.
-                payload = self.serialize(self._normalise_datetimes_for_write(new_row))
+                payload = self.encode_l2_entry(new_row)
                 timed = {} if lifetime is None else {"ttl": lifetime}
                 if revision is None:
                     # value absent: create-if-absent so a racing creator loses.

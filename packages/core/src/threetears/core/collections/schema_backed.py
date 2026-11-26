@@ -145,6 +145,7 @@ from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, WholeReach, records_changes
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
+from threetears.core.collections.l2_shape import L2_CODEC_VERSION, shape_digest
 from threetears.core.declared import whole_read
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.ddl.row_epoch import (
@@ -1584,6 +1585,8 @@ class TableSchema:
     # each column's fixed database default, for a table that opts in to delta files (TableSchema.delta_file_defaults)
     _delta_defaults: dict[str, Any] = field(init=False, repr=False, compare=False)
     _partition_column: str | None = field(init=False, repr=False)
+    # the digest of what this table's L2 entries are (threetears.core.collections.l2_shape), computed once here
+    _l2_shape: bytes = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """validate + index the schema after construction.
@@ -1685,6 +1688,7 @@ class TableSchema:
         object.__setattr__(self, "_stored_key", stored_key)
         object.__setattr__(self, "_by_name", by_name)
         object.__setattr__(self, "_partition_column", partition_column)
+        object.__setattr__(self, "_l2_shape", shape_digest(self._l2_shape_inputs()))
         # v0.8.0 cross-field validators. placed AFTER ``_by_name`` is
         # installed because they reference the indexed column map.
         for fk in self.foreign_keys:
@@ -2389,6 +2393,38 @@ class TableSchema:
         :rtype: tuple[str, ...]
         """
         return self._pk_columns
+
+    @property
+    def l2_shape(self) -> bytes:
+        """the 8-byte digest of what this table's L2 entries are: the tag every one carries
+        (:mod:`~threetears.core.collections.l2_shape`). Computed once, when the schema is built.
+
+        :return: the digest
+        :rtype: bytes
+        """
+        return self._l2_shape
+
+    def _l2_shape_inputs(self) -> dict[str, Any]:
+        """what the L2 shape tag covers: exactly what changes how an entry decodes or what it means.
+
+        The columns' names, types and order (a vector's width with its type); the row epoch's kind and the move
+        columns (the ``epoch`` and ``gone`` columns a row epoch adds are among the columns); the key and the stored
+        key; and the codec version. Never an index, a comment, a purpose, nullability, a default, a foreign key,
+        tenancy or eviction: none changes an entry, and a change to one must not empty every cache.
+
+        :return: the inputs, JSON-able
+        :rtype: dict[str, Any]
+        """
+        row_epoch = self.row_epoch
+        kind = "plain" if row_epoch is None else ("versioned" if row_epoch.versions else "stamped")
+        return {
+            "codec": L2_CODEC_VERSION,
+            "columns": [[column.name, column.column_type, column.vector_dim] for column in self.columns],
+            "key": list(self._pk_columns),
+            "stored_key": list(self._stored_key),
+            "row_epoch": kind,
+            "moveable": list(self.moveable),
+        }
 
     @property
     def stored_key(self) -> KeyColumns:

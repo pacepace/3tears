@@ -7,7 +7,6 @@ raise-loudly guards, entry serialize/deserialize round-trips, the
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
@@ -186,7 +185,7 @@ class TestSerialization:
         pod, _ = make_pod(bus)
         coll = pod.connections
         naive_iso = "2024-06-01T12:00:00"
-        payload = json.dumps(
+        payload = coll.encode_l2_entry(
             {
                 "connection_id": "c",
                 "room_id": "cust:story:main:scene.md",
@@ -197,7 +196,7 @@ class TestSerialization:
                 "date_created": naive_iso,
                 "date_updated": naive_iso,
             }
-        ).encode()
+        )
         bucket = await bus.kv_bucket(name=coll.L2_BUCKET_SUFFIX)
         await bucket.put(key=coll.l2_key("c"), value=payload)
 

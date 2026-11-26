@@ -30,6 +30,7 @@ import asyncpg
 import pytest
 from sqlalchemy import MetaData
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
@@ -106,7 +107,7 @@ class _Tiers:
     async def l2(self, source_id: uuid.UUID) -> dict[str, Any] | None:
         bucket = await self.nats.kv_bucket(name="collections")
         raw = await bucket.get(key=self.sources.l2_key(source_id))
-        return None if raw is None else dict(json.loads(raw))
+        return None if raw is None else dict(json.loads(without_shape_header(raw)))
 
 
 @pytest.fixture

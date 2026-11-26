@@ -30,6 +30,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table, Text
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import CallerTransaction
 from threetears.core.collections.base import BaseCollection
@@ -224,7 +225,7 @@ async def _bucket(nats: FakeNatsClient) -> FakeKvBucket:
 
 async def _l2_members(nats: FakeNatsClient) -> str | None:
     raw = await (await _bucket(nats)).get(key=_KEY)
-    return None if raw is None else str(json.loads(raw)["members"])
+    return None if raw is None else str(json.loads(without_shape_header(raw))["members"])
 
 
 async def _served(coll: _Tiered) -> str:
@@ -408,7 +409,7 @@ class TestAReadInFlightDuringAWrite:
         coll.evict_from_cache_sync(_ID)
         bucket = await _bucket(nats)
         # the save's own broadcast made the peer drop the shared key; a read seeds it again
-        await bucket.put(key=_KEY, value=json.dumps(_row("base")).encode("utf-8"))
+        await bucket.put(key=_KEY, value=coll.encode_l2_entry(_row("base")))
         real_get_latest = bucket.get_latest
         release = asyncio.Event()
         reached = asyncio.Event()

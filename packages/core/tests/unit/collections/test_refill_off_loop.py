@@ -49,6 +49,8 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, latest, ticks_while, trusted
 
+from packages.core.tests.optional_support import present
+
 #: the 11-03 state that held the loop: 33,786 rows
 _REAL = 33_786
 #: the broker's reply cap in production (the hub's FOURTEENAIBOTS_DB_L3_REPLY_MAX_BYTES)
@@ -210,8 +212,10 @@ class TestARefillPutsEveryRowAsRead:
         schema = _schema()
         for row in (0, count // 2, count - 1):
             expected = schema_sql.coerce_row(schema, deserialize_row(hub.rows[row]))
-            held = collection.deserialize(await kv.get(key=collection.l2_key(_id(row))))
-            assert held == collection.deserialize(collection.serialize(expected)), f"row {row} was not put as read"
+            held = collection.decode_l2_entry(present(await kv.get(key=collection.l2_key(_id(row)))))
+            assert held == collection.decode_l2_entry(collection.encode_l2_entry(expected)), (
+                f"row {row} was not put as read"
+            )
             assert held["date_updated"] == _AT + timedelta(seconds=row)
 
 

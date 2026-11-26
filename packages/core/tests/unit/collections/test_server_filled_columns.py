@@ -30,6 +30,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 from sqlalchemy import MetaData
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -185,7 +186,7 @@ def _ledger(nats: FakeNatsClient, store: _FakeDefaultingStore | None) -> _Ledger
 
 async def _l2_row(nats: FakeNatsClient) -> dict[str, Any] | None:
     raw = await (await nats.kv_bucket(name="collections")).get(key=_KEY)
-    return None if raw is None else dict(json.loads(raw))
+    return None if raw is None else dict(json.loads(without_shape_header(raw)))
 
 
 async def _settle_background() -> None:

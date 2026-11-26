@@ -32,6 +32,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
+from threetears.core.collections.l2_shape import without_shape_header
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -467,14 +468,14 @@ class TestNegativeCaching:
         )
         await coll.l2_cas_mutate("k", lambda row: ("upsert", {"id": "k", "reason": "set"}))
         raw = await nats.bucket.get(key=f"{_SCOPE}.{_TABLE}.k")
-        assert raw is not None and json.loads(raw)["reason"] == "set"
+        assert raw is not None and json.loads(without_shape_header(raw))["reason"] == "set"
 
     @pytest.mark.asyncio
     async def test_an_undecodable_l2_entry_is_removed(self) -> None:
         nats, store, gens = _wire()
         coll = _replica(_NegativeCaching, nats, store, gens)
         key = f"{_SCOPE}.{_TABLE}.k"
-        await nats.bucket.put(key=key, value=b'{"id": "k", "date_created": "not-a-time"}')
+        await nats.bucket.put(key=key, value=coll.encode_l2_entry({"id": "k", "date_created": "not-a-time"}))
         assert await coll.get("k") is None
         assert await nats.bucket.get(key=key) is None, "the poisoned entry was left in L2"
 

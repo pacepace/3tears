@@ -263,6 +263,7 @@ def create_dynamic_collection(
     pk_column = _find_pk_column(table_def)
     field_types = _build_field_types(table_def)
     column_names = [col.name for col in table_def.columns]
+    shape_columns = tuple((col.name, col.column_type) for col in table_def.columns)
     vector_columns = frozenset(col.name for col in table_def.columns if col.column_type == "vector")
     # a vector column read as its text, as the write binds it: asyncpg has no vector codec, and where no
     # ``init_connection`` registered a text one (a raw pool, the integration guide's shape) it reads PostgreSQL's
@@ -295,6 +296,8 @@ def create_dynamic_collection(
         # a ``timestamptz`` column names an instant: normalised aware on every cache write and
         # rehydrated on every L2 read, as any collection's declared timestamp columns are
         datetime_columns: ClassVar[frozenset[str]] = instant_columns
+        # its L2 shape tag (threetears.core.collections.l2_shape) covers the table definition's columns, in order
+        l2_shape_columns: ClassVar[tuple[tuple[str, str], ...]] = shape_columns
 
         @property
         def table_name(self) -> str:
