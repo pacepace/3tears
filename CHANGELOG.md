@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a doubted claim a key fact about its subject contradicts reads contradicted, with or without the web
+
+**Fixed (#1326):** the truth call is shown every key fact, but no check can make the model cite one. A world claim it
+answered with no citation and marked suspect, though a key fact contradicted it, went to the web, which is never shown
+the key: with the web off, past the cell's web budget or inconclusive, a planted false claim read `unverifiable`, not
+`contradicted`, understating the false rate. Such a claim is now asked again alone, before the web, shown only the key
+facts that name its subject; its answer takes every check a truth answer takes. A cited contradiction reads
+`contradicted`, a cited support `supported`, both graded against the case; an answer citing nothing leaves the claim
+nominated for the web as before. Code decides which key facts name the subject: the entity's name, or one of its
+aliases, standing in the claim's proposition as whole words in order. So a fact about "Ann Lee's brother" is never
+shown for a claim about Ann Lee. A restatement takes its original's re-ask outcome. The known limits: the match reads
+names, not reference (a claim about "Ann Lee's brother" is shown Ann Lee's facts, and a claim naming its subject only
+by a pronoun is asked nothing again), and a key fact about another attribute of the same subject, cited as a
+contradiction that passes every check, reads `contradicted`; the re-ask is told that another attribute bears on
+nothing, and that binding stays the model's, as in the truth batch.
+
+**Fixed:** a "!" or "?" followed by spaces and then "(" or a lower-case letter no longer ends a sentence, so a key fact
+such as "Revolting Cocks were a Wax Trax! (Chicago) act." keeps its subject and value in one sentence and needs no
+repair. Before a capitalised word, a digit or a line break it still does ("He left! Then ...", "He left? No.").
+
+**Changed:** each re-ask is a `repair` call and one of the truth step's `max_items_per_cell`, counted with that step's
+repairs: the truth step still asks at most that many items again, so the price ceiling and the four-times
+`max_items_per_cell` bound on a cell hold unchanged. A cell whose re-asks the budget cannot hold, or whose re-ask is cut
+short, unreadable past its repairs, failed by the provider or breaks the protocol, fails its claims criterion as any
+truth call does (`repair_budget_spent`, `cut_short`, or the error raised), never an `unverifiable` claim. The re-ask
+rule and the sentence rule (now `sentences-v3`) enter the claim verifier's identity and the web step's, so every claims
+criterion's fingerprint moves, and grades made before and after this never pool. No stored shape changes.
+
+**For hosts:** nothing to change in code. A cell with more doubted claims about key entities than its truth step's
+`max_items_per_cell` (with its repairs) now fails its claims criterion where it read `unverifiable` before; raise
+`RepairBudget.max_items_per_cell` if your cells hold many. Re-judging stored cells gives a new fingerprint.
+
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 
 **Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it
