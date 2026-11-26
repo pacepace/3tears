@@ -28,8 +28,15 @@ The steps, in order, each its own statement (DDL only; YugabyteDB's DDL/DML sepa
 It never truncates and never drops a row; the only things it drops are the old primary key constraint and the derived
 bucket column and its index, each added again in this run. Forward-only.
 
+**The moves table**: a moveable column's moving writes append to ``threetears_tenant_moves`` in the table's own schema,
+and a migration run ending with a moveable stamped table and no moves table beside it is refused
+(:func:`~threetears.core.ddl.epoch_catalog.refuse_moveable_without_moves`). So agent_acl's own chain creates it here,
+before the four steps, as ``TENANT_MOVES_SCHEMA.create_statements`` renders it, each ``CREATE`` made
+``IF NOT EXISTS`` (:func:`create_moves_table`): a schema that runs only agent_acl passes the refusal, and one whose
+deployment created the table already is left as it is.
+
 A deployment whose own migrations create ``namespaces`` (the hub's v001) runs no agent_acl migration: it takes these
-same steps in a migration of its own (:data:`NAMESPACES`, :func:`rekey_namespaces`).
+same steps in a migration of its own (:data:`NAMESPACES`, :func:`rekey_namespaces`), and creates its own moves table.
 
 Revision ID: 007
 """
@@ -39,13 +46,14 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
+from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.data.migrations.stamp_tables import StampingTable, bucket_statements, on_yugabyte
 from threetears.core.ddl.row_epoch import BUCKET_COLUMN
 from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_column
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
-__all__ = ["NAMESPACES", "SCOPE_ID_INDEX_SQL", "namespaces_keyed_by_id", "rekey_namespaces"]
+__all__ = ["NAMESPACES", "SCOPE_ID_INDEX_SQL", "create_moves_table", "namespaces_keyed_by_id", "rekey_namespaces"]
 
 log = get_logger(__name__)
 
@@ -126,6 +134,43 @@ async def rekey_namespaces(store: Any) -> None:
         await store.execute(statement)
 
 
+#: each ``CREATE`` the moves table's DDL may open with, and its ``IF NOT EXISTS`` form
+_IDEMPOTENT_CREATES: Final[tuple[tuple[str, str], ...]] = (
+    ("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "),
+    ("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "),
+    ("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "),
+)
+
+
+def _if_not_exists(statement: str) -> str:
+    """``statement`` with its leading ``CREATE TABLE`` or ``CREATE [UNIQUE] INDEX`` made ``IF NOT EXISTS``; any other
+    statement (a ``COMMENT ON``, which a re-run rewrites the same) as it is.
+
+    :param statement: one of ``TENANT_MOVES_SCHEMA.create_statements``
+    :ptype statement: str
+    :return: its idempotent form
+    :rtype: str
+    """
+    text = statement.lstrip()
+    for create, idempotent in _IDEMPOTENT_CREATES:
+        if text.startswith(create):
+            return idempotent + text[len(create) :]
+    return statement
+
+
+async def create_moves_table(store: Any) -> None:
+    """create ``threetears_tenant_moves`` in the store's schema unless it is there: the moves table ``namespaces``'
+    moveable ``row_scope`` appends to (:data:`~threetears.core.collections.tenant_moves.TENANT_MOVES_SCHEMA`).
+
+    :param store: the migration's store, bound to the schema via ``search_path``
+    :ptype store: Any
+    :return: nothing
+    :rtype: None
+    """
+    for statement in TENANT_MOVES_SCHEMA.create_statements(yugabyte=await on_yugabyte(store)):
+        await store.execute(_if_not_exists(statement))
+
+
 async def namespaces_keyed_by_id(store: Any) -> None:
     """key ``namespaces`` by ``namespace_id`` alone, ``row_scope`` a moveable column (v007).
 
@@ -134,5 +179,6 @@ async def namespaces_keyed_by_id(store: Any) -> None:
     :return: nothing
     :rtype: None
     """
+    await create_moves_table(store)
     await rekey_namespaces(store)
     log.info("agent_acl v007: namespaces is keyed by namespace_id; row_scope is moveable")

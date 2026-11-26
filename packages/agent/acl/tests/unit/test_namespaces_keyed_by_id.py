@@ -19,6 +19,7 @@ from threetears.agent.acl.migrations.v007_namespaces_keyed_by_id import (
     SCOPE_ID_INDEX_SQL,
     namespaces_keyed_by_id,
 )
+from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.data.migrations.stamp_tables import bucket_statements, stamping_table_of
 
@@ -71,6 +72,19 @@ def _writes(store: _Catalog) -> list[str]:
     return [sql for sql in store.statements if not sql.startswith("SELECT")]
 
 
+def _moves_table() -> list[str]:
+    """the moves table's DDL as v007 sends it: the declaration's, each CREATE made IF NOT EXISTS, whitespace folded."""
+    sent: list[str] = []
+    for statement in TENANT_MOVES_SCHEMA.create_statements(yugabyte=True):
+        folded = " ".join(statement.split())
+        for create in ("CREATE TABLE ", "CREATE UNIQUE INDEX ", "CREATE INDEX "):
+            if folded.startswith(create):
+                folded = f"{create}IF NOT EXISTS {folded[len(create) :]}"
+                break
+        sent.append(folded)
+    return sent
+
+
 def test_namespaces_is_keyed_by_its_id_with_row_scope_moveable() -> None:
     """Flips if the key is anything but ``namespace_id``, ``row_scope`` stays a key or partition column, or stops being
     declared moveable and named on every change (its restore declaration says each)."""
@@ -110,6 +124,7 @@ async def test_v007_rekeys_a_v006_table_in_place() -> None:
     store = _Catalog(("row_scope", "namespace_id"), _v006_comment())
     await namespaces_keyed_by_id(store)
     assert _writes(store) == [
+        *_moves_table(),
         'ALTER TABLE "namespaces" ADD COLUMN IF NOT EXISTS row_scope_moved_from text',
         'ALTER TABLE "namespaces" ADD COLUMN IF NOT EXISTS row_scope_moved_epoch bigint',
         " ".join(SCOPE_ID_INDEX_SQL.split()),
@@ -122,13 +137,30 @@ async def test_v007_rekeys_a_v006_table_in_place() -> None:
     assert not [sql for sql in store.statements if sql.upper().startswith(("UPDATE", "INSERT", "TRUNCATE", "DELETE"))]
 
 
+async def test_v007_creates_the_moves_table_its_moveable_column_needs() -> None:
+    """Flips if v007 stops creating ``threetears_tenant_moves`` before it rekeys, as the declaration renders it, or
+    sends any of it without ``IF NOT EXISTS``: a schema running only agent_acl would be refused at the run's end
+    (refuse_moveable_without_moves), and one whose deployment made the table already would fail on it."""
+    store = _Catalog(("row_scope", "namespace_id"), _v006_comment())
+    await namespaces_keyed_by_id(store)
+    moves = _moves_table()
+    assert moves and moves[0].startswith("CREATE TABLE IF NOT EXISTS threetears_tenant_moves ("), moves
+    assert all("IF NOT EXISTS" in each for each in moves if each.startswith("CREATE")), moves
+    assert _writes(store)[: len(moves)] == moves, _writes(store)
+
+
 async def test_v007_run_again_drops_nothing() -> None:
     """Flips if a second run (the table already keyed by namespace_id, its bucket declared for it) drops the key, the
     bucket or its index again."""
     [comment] = [each for each in _SCHEMA.create_statements(yugabyte=True) if each.startswith("COMMENT ON INDEX")]
     store = _Catalog(("namespace_id",), _comment(comment))
     await namespaces_keyed_by_id(store)
-    assert not [sql for sql in _writes(store) if "DROP" in sql or "PRIMARY KEY" in sql], _writes(store)
+    # the moves table's DDL leads every run, each statement IF NOT EXISTS (a no-op the second time); past it, nothing
+    # is dropped or rekeyed
+    moves = _moves_table()
+    assert _writes(store)[: len(moves)] == moves, _writes(store)
+    rekeying = _writes(store)[len(moves) :]
+    assert not [sql for sql in rekeying if "DROP" in sql or "PRIMARY KEY" in sql], rekeying
     assert _writes(store)[-1] == " ".join(bucket_statements(NAMESPACES, yugabyte=True)[2].split())
 
 
