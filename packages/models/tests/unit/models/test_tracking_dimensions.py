@@ -204,12 +204,14 @@ class TestUsageTrackerDimensionSpanAttrs:
             api_calls=3,
             correlation_id=correlation_id,
             origin_invocation_ref=origin_invocation_ref,
+            credential_label="primary",
         )
         tracker.record(usage)
 
         spans = self._exporter.get_finished_spans()
         assert len(spans) == 1
         attrs = dict(spans[0].attributes or {})
+        assert attrs["llm.credential_label"] == "primary"
         assert attrs["llm.correlation_id"] == str(correlation_id)
         assert attrs["llm.origin_invocation_ref"] == str(origin_invocation_ref)
         assert attrs["llm.bytes_in"] == 2048
@@ -238,6 +240,7 @@ class TestUsageTrackerDimensionSpanAttrs:
         assert "llm.bytes_in" not in attrs
         assert "llm.bytes_out" not in attrs
         assert "llm.api_calls" not in attrs
+        assert "llm.credential_label" not in attrs
 
     def test_dimension_attrs_stay_out_of_tenant_namespace(self) -> None:
         """call dimensions are NOT emitted under the llm.tenant.* namespace."""
@@ -289,6 +292,7 @@ class TestDimensionCardinalityContract:
                 api_calls=3,
                 correlation_id=uuid4(),
                 origin_invocation_ref=uuid4(),
+                credential_label="primary",
             )
         )
         samples = [
@@ -313,3 +317,4 @@ class TestDimensionCardinalityContract:
         assert "bytes_in" not in labels
         assert "bytes_out" not in labels
         assert "api_calls" not in labels
+        assert "credential_label" not in labels

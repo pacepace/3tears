@@ -124,6 +124,21 @@ What must stay possible:
   before the budget compare, and JSONB would reorder the reservations the sweep reports in order.
 - Chunk 05: the ledger refuses a registry with no L3 (main session, "do it right"). Spend on L2 alone is lost to a
   broker restart, and no ledger deployment runs without a database, unlike identity-edge's throttles.
+- Chunk 07: the pooled model (`threetears.models.pooled.PooledChatModel`) holds every key's model built up front, and a
+  re-binding (any method returning a runnable, plus `bind`, `with_config`, `with_retry`, `with_types`) is applied to
+  each, so `with_retry` retries inside one key's attempt, as it does on an `api_key=` model.
+- Chunk 07: the sync paths drive the async pool on one private daemon-thread event loop. A store bound to one event
+  loop (the core ledger's NATS and database clients) must be driven through the async paths; the docstring says so.
+- Chunk 07: Q4 over KP-H2: a key refused for a rate limit stays eligible for that call once more, so the pool's wait
+  can serve it after its hold (a one-key pool keeps the SDK's retry-after wait); with the default cap of 0 the call
+  raises at once. Every other verdict marks the key tried. [DECISION | owner can veto]
+- Chunk 07: settlement uses only provider-reported usage; "estimated" or "unavailable" usage keeps the reservation as
+  spend. A not-key-related failure after reported usage (a structured answer that fails to parse) settles the
+  reported cost. A settle that fails after a served call is logged and the answer returned: the open reservation
+  settles in full at expiry. A breaker that refuses after the pool chose its key releases the lease and counts as tried.
+- Chunk 07: a reservation carries no deadline (LangChain calls have none); it expires `reservation_margin` after the
+  call starts, and a late settle is accepted. Any chunk handed to a stream's caller, an empty first one included,
+  counts as output for KP-H5. `breaker`, `breaker_registry` and `unretried_key_errors` are refused with `key_pool`.
 - Chunk 05: `BudgetLedger` has no caller in this repo's src (models can't import core), so
   `_public_api_consumers.txt` names Hearsay, whose wiring follows the release. Owner to confirm at the boundary.
 
