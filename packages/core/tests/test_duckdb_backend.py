@@ -1175,6 +1175,8 @@ class TestAKeylessScopeIsCheckedForRepeats:
         )
         assert backend.execute_query("SELECT count(*) AS n FROM projections")[0]["n"] == 9
 
+    # bounds its own time on the host (a best-of-five ratio on the wall clock): run apart, never beside other work (tests/timing_suite.py)
+    @pytest.mark.loop_timing
     def test_adding_a_run_to_a_scope_costs_the_same_beside_six_times_the_rows(self) -> None:
         """Flips if adding a scope's rows grows with what the other scopes hold: the time beside 6,000,000 rows is
         held within 1.5x of the time beside 1,000,000.

@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Self
 
-from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
+from threetears.core.testing.loop_lateness import HostTicker, Tick, TimesApart, trusted
 
 __all__ = [
     "CpuStopwatch",
@@ -56,6 +56,9 @@ HOST_MAY_BE_LATE = 0.020
 async def best_seconds(run: Callable[[], Awaitable[Any]], *, runs: int = _RUNS) -> float:
     """the fastest of ``runs`` awaits of ``run()``, in seconds.
 
+    A measurement of the host as much as the code: it passes :class:`~threetears.core.testing.loop_lateness.TimesApart`
+    as it starts.
+
     :param run: makes the awaitable to time, once a run
     :ptype run: Callable[[], Awaitable[Any]]
     :param runs: how many runs
@@ -63,6 +66,7 @@ async def best_seconds(run: Callable[[], Awaitable[Any]], *, runs: int = _RUNS) 
     :return: the best run's seconds
     :rtype: float
     """
+    TimesApart.check("best_seconds()")
     best = float("inf")
     for _ in range(runs):
         began = time.perf_counter()
@@ -176,6 +180,12 @@ def thread_cpu_seconds() -> float:
     return time.thread_time()
 
 
+#: the CPU clocks :func:`best_cpu_seconds` reads the host on: a run on one of them is a measurement of the host
+_REAL_CPU_CLOCKS: frozenset[Callable[[], float]] = frozenset(
+    {_cpu_seconds, thread_cpu_seconds, time.process_time, time.thread_time}
+)
+
+
 class CpuStopwatch:
     """the process CPU spent inside a ``with`` block, in seconds and in milliseconds.
 
@@ -224,6 +234,9 @@ async def best_cpu_seconds(
     each timed run means a collection the run itself triggers walks only what is live, the same in every worker,
     rather than whatever earlier tests left behind.
 
+    On a real clock it measures the host as much as the code, so it passes
+    :class:`~threetears.core.testing.loop_lateness.TimesApart` as it starts; a scripted ``clock`` measures no host.
+
     :param operation: makes the operation's awaitable, once a run
     :ptype operation: Callable[[], Awaitable[object]]
     :param runs: how many timed runs
@@ -237,6 +250,9 @@ async def best_cpu_seconds(
     """
     if runs < 1:
         raise ValueError(f"runs must be at least 1, got {runs}")
+    if clock in _REAL_CPU_CLOCKS:
+        # a scripted clock (a test of this rule) measures no host and passes; a real one times against the host
+        TimesApart.check("best_cpu_seconds()")
     await operation()
     best = float("inf")
     for _ in range(runs):

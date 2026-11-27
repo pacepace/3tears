@@ -71,6 +71,7 @@ __all__ = [
     "CouldNotMeasure",
     "HostTicker",
     "Tick",
+    "TimesApart",
     "added_lateness",
     "hold_the_loop",
     "host_lateness",
@@ -143,6 +144,38 @@ async def main():
 
 asyncio.run(main())
 """
+
+
+class TimesApart:
+    """the gate a measurement whose verdict rests on the host passes as it starts: :func:`turn_holds`, and
+    :func:`~threetears.core.testing.calibrate.best_seconds` and
+    :func:`~threetears.core.testing.calibrate.best_cpu_seconds` on a real clock.
+
+    Open by default, so a suite that does not run its timing tests apart times as it always has. A suite that does
+    (3tears' ``tests/timing_suite.py``, which also refuses a :class:`HostTicker`) sets :attr:`refusal` for every test
+    not marked to run apart: :meth:`check` then calls it with what was about to time, and it fails the test.
+
+    Why CPU time needs it too. A CPU clock does not count the time a process waits for a core, but an oversubscribed
+    host still stretches the CPU the same work spends (caches and cores shared with other batches, a slower core):
+    the same work took 1.4-3x the CPU seconds on the pool's busiest runners as on its quiet ones (brooks-5950x,
+    brooks-nas, 2026-11-26), so a 10 ms turn bound passed or failed by runner.
+    """
+
+    #: what a measurement started outside the timing suite calls, given what it is; None while the gate is open
+    refusal: Callable[[str], None] | None = None
+
+    @classmethod
+    def check(cls, what: str) -> None:
+        """pass the gate, or be refused by :attr:`refusal`.
+
+        :param what: the measurement about to start, as a refusal names it (``turn_holds()``)
+        :ptype what: str
+        :return: nothing
+        :rtype: None
+        """
+        refusal = cls.refusal
+        if refusal is not None:
+            refusal(what)
 
 
 class HostTicker:
@@ -659,9 +692,12 @@ def turn_holds() -> Iterator[list[tuple[float, str]]]:
     its build's stretches). Asyncio's own loop runs every callback through ``Handle._run``, wrapped for the block
     (:mod:`threetears.core.testing._asyncio_internals`); a loop that runs callbacks elsewhere (uvloop) is not timed.
 
+    A bound on these turns is a bound on the host as well, so it passes :class:`TimesApart` as it starts.
+
     :return: the turns, as they ran: ``(CPU seconds, the callback's repr)``
     :rtype: Iterator[list[tuple[float, str]]]
     """
+    TimesApart.check("turn_holds()")
     held: list[tuple[float, str]] = []
     with timed_handles(lambda seconds, handle: held.append((seconds, repr(handle)[:120]))):
         yield held

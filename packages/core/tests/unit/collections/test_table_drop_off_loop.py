@@ -88,6 +88,8 @@ class TestNoRowIsServedOnceTheDropIsAnnounced:
         assert collection.exists_in_cache_sync("fresh")
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 class TestTheDropHoldsNoTurnOfTheLoop:
     async def test_dropping_100k_rows_holds_no_turn_long(self) -> None:
         collection, l1 = _cached_collection()
@@ -236,6 +238,8 @@ def _cache_states(l1: SQLiteBackend, per_state: int) -> None:
 
 
 class TestAPrefixDropHoldsNoTurnOfTheLoop:
+    # bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+    @pytest.mark.loop_timing
     async def test_dropping_a_100k_row_prefix_holds_no_turn_long_and_leaves_the_other_state(self) -> None:
         """Flips if a prefix drop reads L1's keys under it, or evicts them, on the event loop (the loop answered
         nothing else for that long), or drops a row outside the prefix."""

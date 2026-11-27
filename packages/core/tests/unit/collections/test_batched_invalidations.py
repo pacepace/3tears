@@ -280,10 +280,11 @@ def _waiting_marks(registry: CollectionRegistry) -> None:
 
 
 async def _hear_one_message(
-    receiver: CollectionRegistry, *, count: int = _ONE_MESSAGE, raise_at: int | None = None
+    receiver: CollectionRegistry, *, count: int = _ONE_MESSAGE, raise_at: int | None = None, timed: bool = False
 ) -> tuple[list[tuple[float, str]], list[str]]:
     """``receiver``, with a cache that takes rows, hears one message of ``count`` keys at ``inc:9000``: every turn of
-    the loop meanwhile, and the ids the cache was told. ``raise_at`` makes the cache raise on that row."""
+    the loop meanwhile when ``timed`` (``turn_holds``, which only a test marked ``loop_timing`` may start; else none),
+    and the ids the cache was told. ``raise_at`` makes the cache raise on that row."""
     bus = FakeNatsClient()
     sender = CollectionRegistry()
     told: list[str] = []
@@ -301,7 +302,8 @@ async def _hear_one_message(
     assert len(batches) == 1, "the keys did not fit one message"
     await receiver.start_invalidation_listener(bus)
     try:
-        with turn_holds() as holds:
+        untimed: list[tuple[float, str]] = []
+        with turn_holds() if timed else contextlib.nullcontext(untimed) as holds:
             with contextlib.suppress(RuntimeError):
                 await sender.publish_invalidations(bus, "results", batches, generation="inc:9000", bump_rows=count)
     finally:
@@ -309,6 +311,8 @@ async def _hear_one_message(
     return holds, told
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 async def test_a_message_of_50000_keys_heard_by_a_cache_taking_rows_holds_no_turn_past_the_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -341,7 +345,7 @@ async def test_a_message_of_50000_keys_heard_by_a_cache_taking_rows_holds_no_tur
 
     monkeypatch.setattr(type(marks), "hear", hear)
     monkeypatch.setattr(CacheInvalidationMessage, "each_row", each_row)
-    holds, told = await _hear_one_message(receiver)
+    holds, told = await _hear_one_message(receiver, timed=True)
     assert told == [str(n) for n in range(_ONE_MESSAGE)], "the cache was not told every row, in order"
     assert counts == [_ONE_MESSAGE], f"the message's rows were counted {len(counts)} times, not once"
     assert max(built) <= _A_RUN, f"{max(built)} row messages were built in one turn; a run is {_A_RUN}"
