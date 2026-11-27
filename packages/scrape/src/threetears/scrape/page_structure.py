@@ -15,10 +15,10 @@ import json
 
 from bs4 import BeautifulSoup
 
-__all__ = ["DOCUMENT_EXTENSIONS", "page_structure"]
+__all__ = ["page_structure"]
 
 #: a link ending in one of these is a document the scrape pipeline can extract
-DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xlsx", ".csv")
+_DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xlsx", ".csv")
 
 
 def page_structure(
@@ -71,7 +71,7 @@ def page_structure(
 
     for link in soup.find_all("a", href=True):
         href = str(link["href"]).lower()
-        if href.endswith(DOCUMENT_EXTENSIONS):
+        if href.endswith(_DOCUMENT_EXTENSIONS):
             return True, "document", f"found a document link ({href})"
 
     # "Nothing in the part I read" is a weaker claim than "nothing on the page",
