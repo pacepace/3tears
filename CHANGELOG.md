@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools: ``prepare_image_for_vision`` is async, its resize in a worker process (Pace 2026-11-26)
+
+**Changed:** ``threetears.agent.tools.builtin.image_prep.prepare_image_for_vision(data, mime_type)`` is now a coroutine
+function. An image past the size threshold or in a format a vision model does not take is decoded, resized and
+re-encoded in a worker process (``threetears.agent.tools.image_resize``), never on the event loop: on the loop a
+corrupt 19-byte HEIC held it 0.267 s. Its results and errors are as before: ``(bytes, mime_type)``, and
+``ImagePrepError`` when the image needed processing and it failed (Pillow missing, refused before any job).
+
+**What a consumer must do:** ``await`` it: ``data, mime = await prepare_image_for_vision(raw, mime_type)``. A caller
+that called it bare now gets a coroutine, not the tuple. A synchronous caller runs it on a loop of its own
+(``asyncio.run(...)``) or moves into async code.
+
 ### core: the ring takedown (``drop_ring_on``) clears every schema's change-note triggers before any note function (Pace 2026-11-27)
 
 **Fixed:** hub v193 failed on a database carrying data from before 0.95 (the local stack, 2026-11-27): ``cannot drop
@@ -31,7 +43,8 @@ extra=None)`` answers ``relation -> {column: Arrow type}`` for many relations fr
 only the relations asked kept: the same relations' pairs ORed took 153.3 s on Redshift, as IN lists 16.2 s). Each
 relation's answer is exactly ``warehouse_arrow_types(..., relation, None, ...)``'s: the same Arrow types, the
 catalogue's order, ``extra`` after them, a column of no one JSON form left out, a relation the catalogue lacks
-answering ``extra`` alone. A batch splits only past the wire protocol's 32767 parameters (16383 relations a statement).
+answering ``extra`` alone. Two names of one relation (a bare ``orders`` and ``public.orders``) each get its answer,
+from one ask of the pair. A batch splits only past the wire protocol's 32767 parameters (16383 relations a statement).
 ``warehouse_arrow_types`` is now a batch of one: its statement selects ``table_schema`` and ``table_name`` too and orders
 by them, then ``ordinal_position``. ``relation_columns_sql`` is unchanged.
 

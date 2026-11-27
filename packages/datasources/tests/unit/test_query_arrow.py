@@ -462,6 +462,44 @@ async def test_many_relations_types_are_read_in_one_catalogue_statement_each_as_
     assert nothing.asked == []
 
 
+class _PublicOrders:
+    """a catalogue holding one relation, ``public.orders``, answering every relation its statement's IN lists pair."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, list[Any] | None]] = []
+
+    async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
+        self.asked.append((query, params))
+        assert params is not None
+        rows = [
+            {"table_schema": schema, "table_name": name, "column_name": "order_id", "data_type": "integer"}
+            for schema, name in _asked_relations(query, params)
+            if (schema, name) == ("public", "orders")
+        ]
+        return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
+
+
+async def test_two_names_of_one_relation_each_answer_its_columns() -> None:
+    """Flips if, of two names of one (schema, name) pair (a bare ``orders`` and ``public.orders``), only one is
+    answered with its columns and the other with ``extra`` alone: every name asked gets its answer, from one ask of
+    the pair."""
+    catalogue = _PublicOrders()
+
+    many = await warehouse_arrow_types_of(
+        catalogue,  # type: ignore[arg-type]
+        "ds",
+        ["orders", "public.orders"],
+        dialect=Dialect.POSTGRES,
+        extra={"row_hash": pa.string()},
+    )
+
+    assert many == {
+        "orders": {"order_id": pa.int64(), "row_hash": pa.string()},
+        "public.orders": {"order_id": pa.int64(), "row_hash": pa.string()},
+    }
+    assert catalogue.asked == [(_ONE_STANDARD_RELATION, ["public", "orders"])], "the pair is asked once"
+
+
 async def test_a_batch_past_the_wire_protocols_parameter_count_is_split_there_and_only_there() -> None:
     """Flips if a batch binds more parameters than the wire protocol counts (32767: each distinct schema and name
     once), so the statement is refused, or is split before that limit (one more ~25 s statement on Redshift for

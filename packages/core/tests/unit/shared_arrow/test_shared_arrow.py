@@ -273,7 +273,7 @@ class TestRetirementWaitsForEveryReader:
     async def test_an_idle_worker_moves_its_mapping_onto_each_version_published(
         self, store: SharedArrowStore, single: SharedArrowPool
     ) -> None:
-        # until 2026-11-26 an idle worker held the version it read last until its next job; now it moves on at once
+        # an idle worker moves its mapping onto each version as it is published, before any next job
         store.publish("v1", {TABLE: _table(1)})
         assert (await single.run(jobs.column_sum, TABLE, "a")).value == ROWS
         await asyncio.to_thread(store.settle)

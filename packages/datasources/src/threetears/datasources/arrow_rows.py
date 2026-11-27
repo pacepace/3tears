@@ -213,9 +213,10 @@ async def _held_columns(
     :rtype: dict[str, dict[str, str]]
     """
     named = {relation: _schema_and_name(relation, dialect) for relation in relations}
-    by_pair = {pair: relation for relation, pair in named.items()}
-    held: dict[str, dict[str, str]] = {relation: {} for relation in relations}
-    for schemas, names in _statements(list(named.values())):
+    # by (schema, name), not by relation: two names of one pair (``orders`` and ``public.orders``) each answer its
+    # columns, from the one ask of that pair
+    by_pair: dict[tuple[str, str], dict[str, str]] = {pair: {} for pair in named.values()}
+    for schemas, names in _statements(list(by_pair)):
         result = await client.query(
             datasource_name,
             _batch_columns_sql(len(schemas), len(names), dialect=dialect),
@@ -223,10 +224,10 @@ async def _held_columns(
         )
         for row in result.rows:
             # a row of a schema and name the lists pair but no relation asked is not kept
-            relation = by_pair.get((str(row["table_schema"]), str(row["table_name"])))
-            if relation is not None:
-                held[relation][str(row["column_name"])] = str(row["data_type"])
-    return held
+            held = by_pair.get((str(row["table_schema"]), str(row["table_name"])))
+            if held is not None:
+                held[str(row["column_name"])] = str(row["data_type"])
+    return {relation: dict(by_pair[pair]) for relation, pair in named.items()}
 
 
 def _schema_and_name(relation: str, dialect: Dialect) -> tuple[str, str]:
