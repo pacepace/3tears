@@ -103,6 +103,7 @@ from threetears.search.extract import (
     EXTRACTION_METHOD_FACET,
     EXTRACTION_METHOD_SOURCE,
     EXTRACTION_METHOD_TEXT,
+    PageWorkers,
     EXTRACTION_NEXT_STEP_FACET,
     EXTRACTION_NOTES_FACET,
     EXTRACTION_REASON_FACET,
@@ -134,7 +135,7 @@ __all__ = [
 #: fixture page, most of it trafilatura's first read loading its stoplists (the loop-stall guard, 2026-11-26), and it
 #: grows with the page up to the 2 MiB cap. One worker: a read takes milliseconds to a few hundred, beside fetches of
 #: seconds, so pages queue behind one another for far less than the fetch they follow
-_PAGE_WORKERS: Final = ProcessWorkers(workers=1, name="web fetch page reads", process_name="3t-page-read")
+_PAGE_WORKERS: Final[PageWorkers] = ProcessWorkers(workers=1, name="web fetch page reads", process_name="3t-page-read")
 
 #: how much extracted text reaches the caller. A context bound, not a
 #: transport one: the byte cap that protects the *host* lives on the fetch
