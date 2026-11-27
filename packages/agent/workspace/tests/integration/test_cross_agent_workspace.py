@@ -58,6 +58,7 @@ from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.schemas import drop_schema
 
 from packages.agent.workspace.tests.helpers.workspace_shims import FakeWorkspaceContext
@@ -169,13 +170,14 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     # ``read`` / ``write``.
     await conn.execute(
         f"""
-        INSERT INTO "{_PLATFORM}".roles (role_id, name, description, permissions, is_builtin)
+        INSERT INTO "{_PLATFORM}".roles (role_id, name, description, permissions, is_builtin, epoch)
         VALUES ($1, 'WorkspaceEditor',
                 'Read and write on workspaces and workspace files.',
                 '{{"workspace": ["read", "write", "read_file_matching:**/*", "write_file_matching:**/*"], "workspace_file": ["read", "write"]}}'::jsonb,
-                TRUE)
+                TRUE, $2)
         """,
         _WORKSPACE_EDITOR_ROLE_ID,
+        next_epoch(),
     )
 
 
@@ -1031,8 +1033,8 @@ async def _seed_namespace_row(
         f"""
         INSERT INTO "{_PLATFORM}".namespaces (
             row_scope, namespace_id, name, namespace_type, owner_agent_id, schema_name,
-            customer_id, metadata, date_created, date_updated
-        ) VALUES ('customer', $1, $2, 'workspace', $3, $4, $5, '{{}}'::jsonb, $6, $7)
+            customer_id, metadata, date_created, date_updated, epoch
+        ) VALUES ('customer', $1, $2, 'workspace', $3, $4, $5, '{{}}'::jsonb, $6, $7, $8)
         """,
         workspace_id,
         f"workspace.{workspace_id}",
@@ -1041,6 +1043,7 @@ async def _seed_namespace_row(
         customer_id,
         now,
         now,
+        next_epoch(),
     )
 
 
@@ -1083,8 +1086,8 @@ async def _grant_via_singleton_group(
     await conn.execute(
         f"""
         INSERT INTO "{_PLATFORM}".groups (
-            row_scope, group_id, customer_id, name, description, date_created, date_updated
-        ) VALUES ('customer', $1, $2, $3, $4, $5, $6)
+            row_scope, group_id, customer_id, name, description, date_created, date_updated, epoch
+        ) VALUES ('customer', $1, $2, $3, $4, $5, $6, $7)
         """,
         group_id,
         customer_id,
@@ -1092,12 +1095,13 @@ async def _grant_via_singleton_group(
         f"test singleton group for {group_name}",
         now,
         now,
+        next_epoch(),
     )
     await conn.execute(
         f"""
         INSERT INTO "{_PLATFORM}".group_members (
-            id, group_id, member_type, member_id, customer_id, date_added
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            id, group_id, member_type, member_id, customer_id, date_added, epoch
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
         member_id,
         group_id,
@@ -1105,21 +1109,24 @@ async def _grant_via_singleton_group(
         principal_id,
         customer_id,
         now,
+        next_epoch(),
     )
     await conn.execute(
         f"""
         INSERT INTO "{_PLATFORM}".role_assignments (
             row_scope, assignment_id, role_id, group_id, scope_type,
             scope_namespace_id, scope_namespace_type, scope_customer_id,
-            granted_by, date_granted
+            granted_by, date_granted, customer_id, epoch
         )
-        VALUES ('customer', $1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5)
+        VALUES ('customer', $1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5, $6, $7)
         """,
         assignment_id,
         role_id,
         group_id,
         namespace_id,
         now,
+        customer_id,
+        next_epoch(),
     )
     return group_id, assignment_id
 

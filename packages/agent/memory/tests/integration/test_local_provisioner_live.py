@@ -14,86 +14,84 @@ import asyncpg
 import pytest
 
 from threetears.agent.acl import NamespaceCollection
+from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.memory import (
     LocalMemoryNamespaceProvisioner,
     memory_namespace_id,
     memory_namespace_name,
     memory_namespace_schema_name,
 )
+from threetears.agent.tools.platform_migrations import register as register_tools_platform
+from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.namespaces import build_agent_namespace_name
+
+from .conftest import AsyncpgStore
 
 pytestmark = pytest.mark.integration
 
-#: the hub's table shape (copied from agent-acl's namespace integration tests, which own the canonical copy).
-_NAMESPACES_DDL = """
-CREATE TABLE namespaces (
-    row_scope varchar(8) NOT NULL,
-    namespace_id uuid NOT NULL,
-    name varchar(255) NOT NULL,
-    namespace_type varchar(20) NOT NULL,
-    owner_agent_id uuid,
-    owner_namespace varchar(255),
-    customer_id uuid,
-    schema_name varchar(100),
-    metadata jsonb DEFAULT '{}'::jsonb,
-    tool_eligible boolean NOT NULL DEFAULT true,
-    skill_eligible boolean NOT NULL DEFAULT false,
-    face_api boolean NOT NULL DEFAULT false,
-    face_mcp boolean NOT NULL DEFAULT false,
-    face_platform_tool boolean NOT NULL DEFAULT true,
-    face_rest boolean NOT NULL DEFAULT false,
-    face_rest_declaration jsonb,
-    date_created timestamptz NOT NULL,
-    date_updated timestamptz NOT NULL,
-    CONSTRAINT namespaces_row_scope_ck CHECK (row_scope IN ('platform', 'customer')),
-    CONSTRAINT namespaces_row_scope_customer_ck CHECK (
-        (row_scope = 'platform' AND customer_id IS NULL
-            AND namespace_type IN ('system', 'model', 'tool', 'tool_provider', 'shared', 'knowledge'))
-     OR (row_scope = 'customer' AND customer_id IS NOT NULL)),
-    CONSTRAINT namespaces_pkey PRIMARY KEY (row_scope, namespace_id)
-)
-"""
+
+async def _hub_namespaces(conn: asyncpg.Connection) -> None:
+    """``namespaces`` as the hub has it, on the schema ``conn``'s search path names.
+
+    agent-acl's migrations, then agent-tools platform's (the tool columns ``NamespaceCollection`` reads), never a
+    hand-written copy, which drifted from the stamped table (``epoch``, ``gone``, ``owner_namespace_id``). On top, the
+    hub's own keys (v199), which the acl package leaves to the deployment: a name unique among live rows, and the
+    owner foreign key onto ``namespace_id``, a namespace's owner stored by id.
+
+    :param conn: a connection whose search path is the test's schema
+    :ptype conn: asyncpg.Connection
+    :return: nothing
+    :rtype: None
+    """
+    runner = MigrationRunner()
+    register_acl(runner)
+    register_tools_platform(runner, depends_on=("agent_acl",))
+    await runner.apply_for_platform_schema(AsyncpgStore(conn))
+    await conn.execute("CREATE UNIQUE INDEX uq_namespaces_name ON namespaces (name) WHERE NOT gone")
+    await conn.execute(
+        "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_id_fkey"
+        " FOREIGN KEY (owner_namespace_id) REFERENCES namespaces (namespace_id)"
+    )
 
 
 @pytest.fixture
-async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    from threetears.core.collections import init_connection
-
-    pool: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, init=init_connection)
+async def pg_pool(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Pool]:
+    url, schema = pg_schema
+    conn = await asyncpg.connect(url)
     try:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
-            await conn.execute(_NAMESPACES_DDL)
-            await conn.execute("CREATE UNIQUE INDEX namespaces_id_unique ON namespaces (namespace_id)")
-            await conn.execute("CREATE UNIQUE INDEX idx_namespaces_name ON namespaces (name)")
-            await conn.execute(
-                "CREATE UNIQUE INDEX idx_namespaces_schema_name_non_workspace ON namespaces (schema_name)"
-                " WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL"
-            )
-            await conn.execute(
-                "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey"
-                " FOREIGN KEY (owner_namespace) REFERENCES namespaces(name)"
-            )
+        await conn.execute(f'SET search_path TO "{schema}"')
+        await _hub_namespaces(conn)
+    finally:
+        await conn.close()
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        url, min_size=1, max_size=4, init=init_connection, server_settings={"search_path": f'"{schema}"'}
+    )
+    try:
         yield pool
     finally:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
         await pool.close()
 
 
-async def _agent_row(pool: asyncpg.Pool, agent: uuid.UUID, customer: uuid.UUID) -> None:
-    """the agent's own namespace, which the owner_namespace foreign key names (the hub provisions it)."""
+async def _agent_row(pool: asyncpg.Pool, agent: uuid.UUID, customer: uuid.UUID) -> uuid.UUID:
+    """the agent's own namespace, owned by itself as the hub provisions it, which the owner foreign key names; its id."""
     now = datetime.now(UTC)
+    namespace_id = uuid.uuid4()
     await pool.execute(
-        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created, "
-        "date_updated) VALUES ('customer', $1, $2, 'agent', $3, $4, $4)",
-        uuid.uuid4(),
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, owner_namespace, "
+        "owner_namespace_id, customer_id, date_created, date_updated, epoch) "
+        "VALUES ('customer', $1, $2, 'agent', $3, $2, $1, $4, $5, $5, $6)",
+        namespace_id,
         build_agent_namespace_name(agent),
+        agent,
         customer,
         now,
+        next_epoch(),
     )
+    return namespace_id
 
 
 def _provisioner(pool: asyncpg.Pool) -> LocalMemoryNamespaceProvisioner:
@@ -105,7 +103,7 @@ def _provisioner(pool: asyncpg.Pool) -> LocalMemoryNamespaceProvisioner:
 
 async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) -> None:
     agent, customer = uuid.uuid4(), uuid.uuid4()
-    await _agent_row(pg_pool, agent, customer)
+    owner = await _agent_row(pg_pool, agent, customer)
     provisioner = _provisioner(pg_pool)
 
     ref = await provisioner.ensure(agent_id=agent, customer_id=customer)
@@ -118,6 +116,7 @@ async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) 
     assert row["name"] == memory_namespace_name(agent, customer)
     assert row["owner_agent_id"] == agent and row["customer_id"] == customer
     assert row["owner_namespace"] == build_agent_namespace_name(agent) == ref.owner_namespace
+    assert row["owner_namespace_id"] == owner, "the owner is stored by id, as the hub stores it"
     assert row["schema_name"] == memory_namespace_schema_name(agent, customer)
     assert await pg_pool.fetchval("SELECT count(*) FROM namespaces WHERE namespace_type = 'memory'") == 1
 
@@ -150,18 +149,20 @@ async def test_a_row_named_by_the_earlier_rule_is_found_not_refused(pg_pool: asy
     The provisioner resolves by (type, owner agent, customer) first, so the existing row is returned as
     it is and never compared against the current rule's name.
     """
-    await _agent_row(pg_pool, _AGENT_A, _CUSTOMER)
+    owner = await _agent_row(pg_pool, _AGENT_A, _CUSTOMER)
     now = datetime.now(UTC)
     await pg_pool.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, owner_namespace, "
-        "customer_id, schema_name, date_created, date_updated) "
-        "VALUES ('customer', $1, 'memories.019470a8.019470a8', 'memory', $2, $3, $4, "
-        "'memory__019470a8__019470a8', $5, $5)",
+        "owner_namespace_id, customer_id, schema_name, date_created, date_updated, epoch) "
+        "VALUES ('customer', $1, 'memories.019470a8.019470a8', 'memory', $2, $3, $4, $5, "
+        "'memory__019470a8__019470a8', $6, $6, $7)",
         memory_namespace_id(_AGENT_A, _CUSTOMER),
         _AGENT_A,
         build_agent_namespace_name(_AGENT_A),
+        owner,
         _CUSTOMER,
         now,
+        next_epoch(),
     )
 
     ref = await _provisioner(pg_pool).ensure(agent_id=_AGENT_A, customer_id=_CUSTOMER)

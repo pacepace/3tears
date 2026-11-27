@@ -38,10 +38,16 @@ class _Row:
     schema_name: str | None = None
 
 
-# parity-exempt: a stand-in for the two NamespaceCollection reads/writes the local provisioner makes
+@dataclass
+class _Owner:
+    id: UUID
+
+
+# parity-exempt: a stand-in for the three NamespaceCollection reads/writes the local provisioner makes
 @dataclass
 class _FakeNamespaces:
     rows: dict[tuple[str, UUID, UUID], _Row] = field(default_factory=dict)
+    owners: dict[str, _Owner] = field(default_factory=dict)
     ensured: list[dict[str, Any]] = field(default_factory=list)
     lose_the_write: bool = False
     fail_with: Exception | None = None
@@ -51,6 +57,9 @@ class _FakeNamespaces:
     ) -> _Row | None:
         assert owner_agent_id is not None and customer_id is not None
         return self.rows.get((namespace_type, owner_agent_id, customer_id))
+
+    async def get_by_name(self, name: str) -> _Owner | None:
+        return self.owners.get(name)
 
     async def ensure_namespace(self, **fields: Any) -> _Row:
         if self.fail_with is not None:
@@ -84,7 +93,8 @@ def _provisioner(rows: _FakeNamespaces) -> LocalMemoryNamespaceProvisioner:
 
 async def test_it_writes_the_row_the_hub_writes() -> None:
     agent, customer = uuid4(), uuid4()
-    rows = _FakeNamespaces()
+    owner = _Owner(uuid4())
+    rows = _FakeNamespaces(owners={build_agent_namespace_name(agent): owner})
     ref = await _provisioner(rows).ensure(agent_id=agent, customer_id=customer)
     [written] = rows.ensured
     assert written == {
@@ -94,11 +104,21 @@ async def test_it_writes_the_row_the_hub_writes() -> None:
         "owner_agent_id": agent,
         "customer_id": customer,
         "owner_namespace": build_agent_namespace_name(agent),
+        "owner_namespace_id": owner.id,
         "schema_name": memory_namespace_schema_name(agent, customer),
         "metadata": {},
     }
     assert (ref.id, ref.owner_agent_id, ref.customer_id) == (memory_namespace_id(agent, customer), agent, customer)
     assert ref.owner_namespace == build_agent_namespace_name(agent), "an agent owns the row it provisioned"
+
+
+async def test_with_no_owner_row_the_owner_is_named_but_stores_no_id() -> None:
+    """A deployment holding no row for its agents (ensure_namespace's NULL case) still names the owner."""
+    agent, customer = uuid4(), uuid4()
+    rows = _FakeNamespaces()
+    await _provisioner(rows).ensure(agent_id=agent, customer_id=customer)
+    [written] = rows.ensured
+    assert (written["owner_namespace"], written["owner_namespace_id"]) == (build_agent_namespace_name(agent), None)
 
 
 async def test_an_existing_row_for_the_pair_is_found_not_duplicated() -> None:
