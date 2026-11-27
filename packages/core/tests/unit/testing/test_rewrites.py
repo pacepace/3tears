@@ -109,6 +109,44 @@ def test_the_source_check_refuses_columns_it_cannot_read_as_recorded(
         assert_source_says(_module_with_columns(tmp_path, constant, call_columns), _ENTRY)
 
 
+#: the entry with a guard binding nothing (``WHERE id = $1 AND NOT "gone"``)
+_GUARDED: dict[str, Any] = {
+    **_ENTRY,
+    "where": [
+        {
+            "cast": None,
+            "column": "",
+            "compared": [],
+            "kind": "guard",
+            "literal": 'NOT "gone"',
+            "param": None,
+            "params": [],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("fragment", ["Fragment('NOT \"gone\"')", "Fragment('NOT \"gone\"', ())"])
+def test_the_source_check_reads_a_guard_binding_nothing_either_way(tmp_path: Path, fragment: str) -> None:
+    """Flips if a guard binding no parameter is missed when written without its empty arguments, or with them."""
+    call = (
+        "read_row(conn, 'agents', by={'id': self.key(agent_id), 'is_deleted': False},"
+        f" where=[{fragment}], columns=('id', 'name'), records=True)"
+    )
+    assert_source_says(_module(tmp_path, f"        return await {call}\n"), _GUARDED)
+
+
+@pytest.mark.parametrize("fragment", ["Fragment('NOT \"stale\"')", "Fragment('NOT \"gone\"', (agent_id,))"])
+def test_the_source_check_refuses_another_guard(tmp_path: Path, fragment: str) -> None:
+    """Flips if a guard of other text, or one binding an argument the entry does not record, passes."""
+    call = (
+        "read_row(conn, 'agents', by={'id': self.key(agent_id), 'is_deleted': False},"
+        f" where=[{fragment}], columns=('id', 'name'), records=True)"
+    )
+    with pytest.raises(AssertionError, match="as the manifest records it"):
+        assert_source_says(_module(tmp_path, f"        return await {call}\n"), _GUARDED)
+
+
 def _shape() -> CatalogTable:
     def column(name: str, kind: str, category: str, *, nullable: bool = True) -> CatalogColumn:
         return CatalogColumn(name, kind, category, "", nullable, False, False)

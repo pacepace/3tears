@@ -359,7 +359,7 @@ process's `db_container` is then a one-node YugabyteDB cluster of its own, start
 | | |
 |---|---|
 | release | 2026.1.0.0-b118, the one production runs: `_YB_VERSION`, and `docker/testament.Dockerfile` copies its install tree from `yugabytedb/yugabyte` pinned by digest |
-| servers | `yb-master` and `yb-tserver`, with the settings `yugabyted` gave the local cluster every earlier proof ran on (one tablet per table, read committed, `yb_enable_cbo=on`, packed rows) |
+| servers | `yb-master` and `yb-tserver`, with the settings `yugabyted` gave the local cluster every earlier proof ran on (one tablet per table, read committed, `yb_enable_cbo=on`, packed rows); the tablet server holds 20% of its memory for tablets' overheads (`tablet_overhead_size_percentage`), a ceiling of 584 tablet replicas where its recommended 10% gave 292, which the root integration suite's one migrated schema passed |
 | address | a loopback address of the cluster's own (`127.x.y.z`, YugabyteDB's usual ports on it), so the batches in one container never share a port |
 | URL | `postgresql://yugabyte:yugabyte@<address>:5433/test`: YSQL authentication on, as in production |
 | start | about 7 s alone; a batch's tests then share the cluster, as they share a Postgres |

@@ -78,6 +78,17 @@ def test_the_tserver_runs_as_yugabyted_runs_it_on_its_own_address(tmp_path: Path
     assert int(flags["memory_limit_hard_bytes"]) > 0
 
 
+def test_the_tserver_takes_the_root_suite_s_schema_in_tablets(tmp_path: Path) -> None:
+    """Flips if the tablet server's share for tablets falls back to its recommended 10% of 2 GiB: a ceiling of 292
+    tablet replicas (1462 a GiB), which the root integration suite's migrated schema passed, so every YugabyteDB
+    rewrite proof errored at its setup."""
+    flags = _flags(services.yugabyte_tserver_argv("127.9.8.7", tmp_path / "tserver"))
+    reserved_gib = (
+        int(flags["memory_limit_hard_bytes"]) * int(flags["tablet_overhead_size_percentage"]) / 100 / (1 << 30)
+    )
+    assert reserved_gib * 1462 >= 2 * 292, flags
+
+
 def test_a_cluster_address_is_a_free_loopback_other_than_127_0_0_1() -> None:
     """Flips if a cluster takes 127.0.0.1 (where every other service and test listens) or an address off loopback."""
     for _ in range(20):

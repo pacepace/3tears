@@ -83,6 +83,15 @@ caller has nothing to do.
 guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
 listing reads with a fixed set of readers, never one task a subject.
 
+### core (testing): a process-mode YugabyteDB takes 584 tablet replicas, not 292
+
+`threetears.core.testing.services`' one-node cluster (`THREETEARS_TEST_SERVICES=process`, the pool's YugabyteDB
+suites) holds 20% of its tablet server's 2 GiB for tablets' overheads (`--tablet_overhead_size_percentage=20`) where
+the release's recommended share was 10%: a ceiling of 584 tablet replicas instead of 292, in the same memory limit. The
+root integration suite's one migrated schema (every package's tables, a tablet each and one an index) passed 292 this
+release (measured: 299, 286 of them the schema's), and every YugabyteDB rewrite proof errored creating
+`datasource_columns`. No consumer action.
+
 ### core: a process can ask whether its declared collections were loaded
 
 `declared_collections_loaded()` (exported from `threetears.core.collections`) is True once
