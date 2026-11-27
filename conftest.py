@@ -30,6 +30,7 @@ import os
 import sys
 import warnings
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
@@ -81,6 +82,26 @@ pytest_plugins = [
     "pytester",
 ]
 
+# What the session's start pays once (pytest_collection_finish, below), each imported only where installed: the
+# workspace installs them all, a narrower environment skips what it lacks
+import freezegun  # noqa: E402
+
+from tests.clock_isolation import resolve_lazy_names  # noqa: E402
+
+try:
+    import duckdb
+except ImportError:  # NOSILENT: an extra this environment lacks; its first connect is then no test's to pay
+    duckdb = None  # type: ignore[assignment]
+try:
+    import pyarrow
+    import pyarrow.compute
+except ImportError:  # NOSILENT: an extra this environment lacks; its first kernel call is then no test's to pay
+    pyarrow = None  # type: ignore[assignment]
+try:
+    import PIL.Image
+except ImportError:  # NOSILENT: Pillow absent; its plugin registry is then no test's to fill
+    PIL = None  # type: ignore[assignment]
+
 
 #: the threetears packages whose lazy attributes are already resolved in this process
 _RESOLVED_LAZY: set[str] = set()
@@ -116,6 +137,49 @@ def _resolve_lazy_attributes() -> None:
 def _lazy_attributes_resolved_outside_any_freeze() -> None:
     """every loaded threetears package's lazy names resolved before the test (:func:`_resolve_lazy_attributes`)."""
     _resolve_lazy_attributes()
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """pay the process's one-time costs before its first test, so no test's loop turn or time bound carries them.
+
+    A cost paid once a process lands on whichever test reaches it first: in its event loop's turn (the loop-stall guard,
+    ``threetears.core.testing.loop_stall``, fails a turn past 250 ms of CPU), inside a time bound, or not at all when an
+    earlier test happened to pay it. Which test that is depends on the batch a runner was handed, so the same test was
+    red on one runner and green on another. Paid here, after every test module is imported and before any test runs,
+    in order:
+
+    - the loaded packages' lazy names resolved (:func:`_resolve_lazy_attributes`, ``resolve_lazy_names``), so the
+      freeze below imports nothing under its fake clock (``tests/clock_isolation.py``);
+    - one ``freeze_time`` start and stop: freezegun's first start reads every attribute of every loaded module and
+      caches what it found a module, and a later start reads only modules new since. The first start measured ~115 ms on
+      a laptop and stalled a pool runner's loop 1.9 s (2026-11-26); a later one, ~14 ms;
+    - ``PIL.Image.init()``: Pillow imports every image plugin on the first open or save that needs one, ~29 ms
+      (2026-11-26; 17 ms on a laptop's second run, 575 ms cold off disk);
+    - one in-memory DuckDB connection: its first open, ~5 ms, ~1 ms over a later one (2026-11-26, a laptop);
+    - one pyarrow compute call: its kernel registry, 0.1-0.4 ms the first call, nothing after (2026-11-26, a laptop).
+
+    Nothing is paid on a collect-only run, which runs no test.
+
+    :param session: the session, its tests collected
+    :ptype session: pytest.Session
+    :return: nothing
+    :rtype: None
+    """
+    if session.config.option.collectonly:
+        return
+    _resolve_lazy_attributes()
+    resolve_lazy_names()
+    # a datetime, not a string: freezegun parses a string by reading the clock, which testament counts against every
+    # test of the process as a clock read in a hook
+    freezer = freezegun.freeze_time(datetime(2026, 1, 1, tzinfo=UTC))
+    freezer.start()
+    freezer.stop()
+    if PIL is not None:
+        PIL.Image.init()
+    if duckdb is not None:
+        duckdb.connect(":memory:").close()
+    if pyarrow is not None:
+        pyarrow.compute.sum(pyarrow.array([1]))
 
 
 @pytest.fixture(autouse=True)

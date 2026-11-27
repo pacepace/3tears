@@ -1057,6 +1057,8 @@ def _born(l3: Any, log: Any, keys: Sequence[tuple[Any, ...]]) -> None:
 _LOOP_TURN_SECONDS = 0.010
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) -> None:
     """Flips if a pass applying a 200,000-row commit from its file holds one turn of the event loop past 10 ms, the
     collector on (decision 35): the keys heard a Python object each (a row message a key from the registry, a tuple and
@@ -1083,6 +1085,8 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) 
     assert await _same_now(backend, l3)
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_keys_off_the_loop(
     _volume: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1158,6 +1162,8 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
 _WAIT_TURN_SECONDS = 0.010
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns(
     _volume: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

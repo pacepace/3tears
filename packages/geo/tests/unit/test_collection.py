@@ -667,6 +667,8 @@ class TestColumnsWhole:
         ]
 
 
+# bounds its own time on the host (turn_holds): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 class TestTheLoopWaitsOnly:
     async def test_a_tile_build_holds_no_turn_of_the_loop(self, tmp_path: Path) -> None:
         """Flips if a tile's CPU (decoding, simplifying, projecting and encoding 3,000 polygons) runs on the event

@@ -293,6 +293,11 @@ counts each test once (its inventory times its typical duration), so it is the f
 run, and the one behind "evals is about four fifths": 13,904 s of 16,887 s (82%) on 2026-11-10.
 The unit suite is two testament suites, `default` and `loop_timing` (the event loop's wall-clock
 tests, one batch a runner: `testament run --suite loop_timing`); the areas divide both.
+A test belongs in `loop_timing` when its verdict rests on this host's time: a `HostTicker`, a loop turn bound by
+`turn_holds()`, a best-of-N by `best_seconds()`, a CPU bound by `best_cpu_seconds()` on a real clock, or a hand-timed
+ratio. A CPU clock skips the time a process waits for a core, yet the pool's oversubscribed runners stretched the CPU
+of the same work 1.4-3x (2026-11-26). Each of those helpers refuses to start in a test not marked `loop_timing`
+(`tests/timing_suite.py`).
 
 `platform` names its packages one by one rather than ending in a catch-all `packages/**`: a
 catch-all overlaps every area above it, and `areas check --strict` reports each overlap. A new
