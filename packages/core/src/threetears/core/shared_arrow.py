@@ -5266,8 +5266,9 @@ class SharedArrowPool:
         pipe it holds closes, in no order against its other files). So the release that follows the death
         (:meth:`_Run.worker_done`) may find the dead worker's lock still held and leave its hand-off, its version
         or its result in place, and nothing else would sweep until an unrelated hand, publish or claim. Once the
-        pool's processes are reaped, none of their locks is held: a sweep then
-        removes what they left. On a thread of its own: this runs on the executor's thread, which the reaping joins.
+        pool's processes are reaped, they hold none of their locks: a sweep then removes what they left, and what a
+        process that inherited a lock still holds stays until that process lets it go (the store's release waiter
+        sweeps it then). On a thread of its own: this runs on the executor's thread, which the reaping joins.
 
         :param pool: the pool the job was submitted to
         :ptype pool: ProcessPoolExecutor
