@@ -10,12 +10,14 @@ the worker died mid-write) leaves nothing behind. Both: the directory holds no m
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import gc
 import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -258,30 +260,42 @@ class TestRetirementWaitsForEveryReader:
         store.publish("v1", {TABLE: _table(1)})
         with store.lease(), read_version(store.root, "v1") as mapped:
             assert mapped.tables[TABLE].num_rows == ROWS
+        store.settle()
+        assert _held(store, "v1"), "the read kept v1 mapped while it was current"
         store.publish("v2", {TABLE: _table(2)})
-        assert "v1" in store.versions(), "the read kept v1 mapped while it was current"
+        store.settle()
+        assert store.versions() == ("v2",), "the kept mapping moved onto v2 as it was published, and let v1 go"
+        assert _held(store, "v2"), "kept, now v2"
         with store.lease(), read_version(store.root, "v2") as mapped:
             assert mapped.name == "v2"
         assert store.versions() == ("v2",)
 
-    async def test_an_idle_worker_holds_its_mapping_until_its_next_job(
+    async def test_an_idle_worker_moves_its_mapping_onto_each_version_published(
         self, store: SharedArrowStore, single: SharedArrowPool
     ) -> None:
+        # until 2026-11-26 an idle worker held the version it read last until its next job; now it moves on at once
         store.publish("v1", {TABLE: _table(1)})
         assert (await single.run(jobs.column_sum, TABLE, "a")).value == ROWS
-        store.publish("v2", {TABLE: _table(2)})
-        assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
+        await asyncio.to_thread(store.settle)
+        assert _held(store, "v1"), "the idle worker keeps v1 while it is current"
+        await asyncio.to_thread(store.publish, "v2", {TABLE: _table(2)})
+        await asyncio.to_thread(store.settle)
+        assert store.versions() == ("v2",), "the idle worker moved onto v2 and let v1 go, before any next job"
+        assert _held(store, "v2"), "it keeps v2 for its next job"
         assert (await single.run(jobs.column_sum, TABLE, "a")).value == 2 * ROWS
-        assert store.versions() == ("v2",), "its next job let v1 go"
+        assert store.versions() == ("v2",)
 
     async def test_a_worker_that_exits_lets_go(self, store: SharedArrowStore) -> None:
         one = SharedArrowPool(store, workers=1, private_bytes=1 << 40, name="one")
         store.publish("v1", {TABLE: _table(1)})
         await one.run(jobs.column_sum, TABLE, "a")
-        store.publish("v2", {TABLE: _table(2)})
-        assert "v1" in store.versions()
-        await one.close()
+        await asyncio.to_thread(store.publish, "v2", {TABLE: _table(2)})
+        await asyncio.to_thread(store.settle)
         assert store.versions() == ("v2",)
+        assert _held(store, "v2"), "the idle worker keeps the version it moved onto"
+        await one.close()
+        await asyncio.to_thread(store.settle)
+        assert not _held(store, "v2"), "its exit let it go"
 
     def test_a_new_store_clears_what_nobody_holds(self, where: Path) -> None:
         first = SharedArrowStore(where / "shm", max_bytes=64 << 20)
@@ -899,18 +913,76 @@ def _reaped(pid: int) -> bool:
     return False
 
 
+def _stopped(pid: int) -> bool:
+    """whether process ``pid`` is stopped (``SIGSTOP``): Linux's ``/proc/<pid>/stat``, else ``ps``.
+
+    :return: whether it is
+    :rtype: bool
+    """
+    stat = Path(f"/proc/{pid}/stat")
+    if stat.exists():
+        # the state follows the command's closing parenthesis (the command may hold spaces or parentheses itself)
+        return stat.read_text().rpartition(")")[2].split()[0] == "T"
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False).stdout
+    return state.strip().startswith("T")
+
+
+@contextlib.contextmanager
+def _frozen(pid: int) -> Iterator[None]:
+    """worker ``pid`` stopped (``SIGSTOP``) for the block, continued after.
+
+    An idle worker moves its kept mapping onto each version the store publishes, a few milliseconds after the publish
+    (``_KeptVersions``); stopped, it cannot, so the version it read last stays its own, by construction, while it is
+    stopped: the state a worker that died before it moved on leaves. Unstopped, a test that asserts the worker still
+    holds the superseded version races that move, and loses it on a loaded host (2026-11-26: 3 ms on the pool).
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        while not _stopped(pid):
+            time.sleep(0.001)
+        yield
+    finally:
+        # a worker killed in the block is gone or not yet joined: continuing it is a no-op either way
+        with contextlib.suppress(ProcessLookupError):  # NOSILENT: already joined, which is what was wanted
+            os.kill(pid, signal.SIGCONT)
+
+
+def _held(store: SharedArrowStore, version: str) -> bool:
+    """whether a reader holds ``version``: its read lock or its cached lock (a kept mapping) taken by anyone. Ask only
+    while no sweep runs (after :meth:`SharedArrowStore.settle`): a sweep beside the exclusive try would take it for a
+    reader.
+
+    :return: whether it is held
+    :rtype: bool
+    """
+    directory = store.root / "versions" / version
+    for name in (".lock", ".cached"):
+        descriptor = os.open(directory / name, os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(descriptor)
+    return False
+
+
 class TestADeadWorkersPoolIsReplaced:
     async def test_a_worker_dead_between_jobs_has_its_pool_replaced_and_what_it_held_swept(
         self, store: SharedArrowStore, single: SharedArrowPool, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # no job is pending when the worker dies, so no job's future fails: the executor refuses the next submission
+        # no job is pending when the worker dies, so no job's future fails: the executor refuses the next submission.
+        # It dies stopped, before it could move off v1 (``_frozen``), so v1 is what it held and what must be swept
         caplog.set_level(logging.WARNING)
         store.publish("v1", {TABLE: _table(1)})
         dead = (await single.run(jobs.process_id)).value
-        store.publish("v2", {TABLE: _table(2)})
-        assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
-
-        os.kill(dead, signal.SIGKILL)
+        with _frozen(dead):
+            store.publish("v2", {TABLE: _table(2)})
+            assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
+            os.kill(dead, signal.SIGKILL)
         await _until(lambda: _reaped(dead), "the executor joining its dead worker")
 
         assert (await single.run(jobs.column_sum, TABLE, "a")).value == 2 * ROWS, "the job ran on a fresh pool"
@@ -962,10 +1034,11 @@ class TestADeadWorkersPoolIsReplaced:
         try:
             store.publish("v1", {TABLE: _table(1)})
             dead = (await bounded.run(jobs.process_id)).value
-            store.publish("v2", {TABLE: _table(2)})
-            assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
-
-            os.kill(dead, signal.SIGKILL)
+            # it dies stopped, before it could move off v1 (``_frozen``), so v1 is what it held and what must be swept
+            with _frozen(dead):
+                store.publish("v2", {TABLE: _table(2)})
+                assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
+                os.kill(dead, signal.SIGKILL)
             await _until(lambda: _reaped(dead), "the executor joining its dead worker")
 
             assert (await bounded.run(jobs.column_sum, TABLE, "a")).value == 2 * ROWS, "the job ran on a fresh pool"
@@ -1000,14 +1073,20 @@ class TestADeadWorkersPoolIsReplaced:
             )
             await _until(lambda: (signals / "started").exists(), "the long job started")
             await bounded.run(jobs.process_id, read=False)
-            # the third pool, retired (by the next job) while the second still runs the long job
+            # the third pool, retired (by the next job) while the second still runs the long job. Its worker keeps v1
+            # mapped, the one reader of it: v1 stays current until the third pool is gone, so the worker never moves
+            # off it, and only that pool's shutdown lets it go
             mapping = (await bounded.run(jobs.process_id)).value
-            store.publish("v2", {TABLE: _table(2)})
-            assert set(store.versions()) == {"v1", "v2"}, "the third pool's worker still maps v1"
+            await asyncio.to_thread(store.settle)
+            assert _held(store, "v1"), "the third pool's worker still maps v1"
             await bounded.run(jobs.process_id, read=False)
 
             await _until(lambda: _reaped(mapping), "the third pool's worker shut down")
-            await _until(lambda: store.versions() == ("v2",), "the third pool's v1 swept")
+            await asyncio.to_thread(store.settle)
+            assert not _held(store, "v1"), "the third pool's worker let v1 go"
+            await asyncio.to_thread(store.publish, "v2", {TABLE: _table(2)})
+            await asyncio.to_thread(store.settle)
+            assert store.versions() == ("v2",), "nothing holds v1: swept as it was superseded"
             assert not long.done(), "the long job still runs"
         finally:
             (signals / "go").touch()
