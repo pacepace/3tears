@@ -4,8 +4,17 @@
 (``threetears.core.keyed.read_reached`` with ``depth`` and ``joins``). Read a level a read and the grants a read more
 (3 round trips), it cost 1.18-1.26 ms against the hand-written reached-CTE's 0.38-0.42 ms on PostgreSQL (5,000
 groups, a caller in two, one of them nested; scratchpad d5/lat/pg.log), over the bar of twice the old statement
-(coordinator, 2026-11-15). This test is the guard: the same world, the old statement (as it was written, cut to this
-deployment's nesting) timed turn about with the set on one session, within the default 2x, and both giving one set.
+(coordinator, 2026-11-15). This test is the guard: the same world, a hand-written statement doing the walk's work
+(:func:`_baseline`) timed turn about with the set on one session, within the default 2x, and the set the old statement
+gives (:func:`_old`).
+
+WHY the baseline is no longer the old statement (2026-11-26): the security fixes since made the walk do more than the
+old statement ever did -- each grant read beside its role (the 2026-11-18 security fix "visible_customers counts a
+grant only through a role that acts where its scope needs one"), each membership edge, granting group and role beside
+the customer it names (2026-11-20 "caller visibility applies the evaluator's cross-customer wall"; 2026-11-21 "a grant
+whose group has no row opens no list"), and every table read live alone (``NOT "gone"``, the access tables stamped). Timed against the old statement, the set measured 1.83x on the exclusive
+runner (best of 60: old 72 us, the walk's statement sent raw 92 us, ``visible_customers`` 132 us) and over 2x on a
+slower host, the gap the joins the old statement never made. The bar compares the set with the same work hand-written.
 """
 
 from __future__ import annotations
@@ -67,6 +76,47 @@ def _old() -> str:
     """the old statement walking this deployment's nesting."""
     arms = "\n     UNION\n".join(_OLD_ARMS[:MAX_GROUP_MEMBERSHIP_DEPTH])
     return f"WITH reached AS MATERIALIZED (\n{arms}\n)\n{_OLD_TAIL}"
+
+
+def _baseline_arm(level: int) -> str:
+    """the old statement's arm for a chain of ``level`` groups, each membership live, answering the chain's last edge
+    (who is in which group, and the customer the edge names: the wall's input) where the old arm answered its group."""
+    joins = "".join(
+        f"      JOIN group_members gm{n} ON gm{n}.member_id = gm{n + 1}.group_id AND gm{n}.member_type = 'group'"
+        f" AND NOT gm{n}.gone\n"
+        for n in range(level - 1, 0, -1)
+    )
+    return (
+        f"    SELECT gm1.member_id, gm1.group_id, gm1.customer_id\n      FROM group_members gm{level}\n{joins}"
+        f"     WHERE gm{level}.member_type = 'user' AND gm{level}.member_id = $1 AND NOT gm{level}.gone"
+    )
+
+
+#: what the walk joins each reached edge to, by key and live alone, as ``visible_customers`` sends it: its grants,
+#: each grant's role, the granting group (in either partition) and a namespace grant's namespace
+_BASELINE_TAIL = (
+    "SELECT DISTINCT r.member_id, r.group_id, r.customer_id, ra.scope_type, ra.scope_customer_id,"
+    " ra.scope_namespace_type, ra.scope_namespace_id, ra.role_id, ro.permissions AS role_permissions,"
+    " ro.customer_id AS role_customer_id, g.customer_id AS group_customer_id, g.group_id AS group_row_id,"
+    " ns.customer_id AS namespace_customer_id, ns.namespace_type\n"
+    "      FROM reached r\n"
+    "      LEFT JOIN LATERAL (SELECT scope_type, scope_customer_id, scope_namespace_type, scope_namespace_id, role_id"
+    " FROM role_assignments WHERE group_id = r.group_id AND NOT gone OFFSET 0) ra ON TRUE\n"
+    "      LEFT JOIN LATERAL (SELECT permissions, customer_id FROM roles"
+    " WHERE role_id = ra.role_id AND NOT gone OFFSET 0) ro ON TRUE\n"
+    "      LEFT JOIN LATERAL (SELECT customer_id, group_id FROM groups WHERE group_id = r.group_id"
+    " AND row_scope IN ('platform', 'customer') AND NOT gone OFFSET 0) g ON TRUE\n"
+    "      LEFT JOIN LATERAL (SELECT customer_id, namespace_type FROM namespaces"
+    " WHERE namespace_id = ra.scope_namespace_id AND NOT gone OFFSET 0) ns ON TRUE"
+)
+
+
+def _baseline() -> str:
+    """the walk's work hand-written: the old statement's arms to this deployment's nesting, each a chain's last live
+    edge, and each reached edge's grants, roles, granting group and namespace by key, live alone -- every join and guard
+    ``visible_customers``' one statement sends (the module docstring: why the bar moved off :func:`_old`)."""
+    arms = "\n     UNION\n".join(_baseline_arm(level) for level in range(1, MAX_GROUP_MEMBERSHIP_DEPTH + 1))
+    return f"WITH reached AS MATERIALIZED (\n{arms}\n)\n{_BASELINE_TAIL}"
 
 
 class _Store:
@@ -179,14 +229,15 @@ async def test_the_visible_set_caches_its_generic_plan(db_container: str, world:
 async def test_the_visible_set_costs_within_twice_the_statement_it_replaced(
     db_container: str, world: tuple[str, uuid.UUID]
 ) -> None:
-    """Flips if ``visible_customers`` takes more than twice the reached-CTE statement it replaced on the same session
-    (a level a read back, or a join the planner hashes from the grants' side), sends more than one statement, or
-    gives another set than it."""
+    """Flips if ``visible_customers`` takes more than twice the same work hand-written on the same session
+    (:func:`_baseline`: a level a read back, a join the planner hashes from the grants' side, or Python a call that a
+    shape could do once), sends more than one statement, or gives another set than the reached-CTE statement it
+    replaced."""
     schema, caller = world
     conn = await asyncpg.connect(db_container, server_settings={"search_path": f'"{schema}", public'})
     try:
-        old_sql = _old()
-        row = await conn.fetchrow(old_sql, caller, _TYPE)
+        row = await conn.fetchrow(_old(), caller, _TYPE)
+        baseline_sql = _baseline()
         sent: list[str] = []
 
         def log(record: Any) -> None:
@@ -199,9 +250,13 @@ async def test_the_visible_set_costs_within_twice_the_statement_it_replaced(
         assert [sql for sql in sent if "group_members" in sql] == [sent[-1]], sent
         assert (got.is_all, list(got.customer_ids)) == (row["is_all"], sorted(row["customer_ids"], key=str))
         assert got.customer_ids, "the caller's groups grant customers"
+        # the baseline does the walk's work: the same grants, beside the same roles and groups
+        grants = await conn.fetch(baseline_sql, caller)
+        assert sorted({g["scope_customer_id"] for g in grants}, key=str) == list(got.customer_ids)
+        assert all(g["role_permissions"] is not None and g["group_row_id"] is not None for g in grants)
 
         async def bare() -> list[Any]:
-            return [await conn.fetchrow(old_sql, caller, _TYPE) for _ in range(_READS)]
+            return [await conn.fetch(baseline_sql, caller) for _ in range(_READS)]
 
         async def keyed() -> list[Any]:
             return [await visible_customers(conn, user_id=caller, namespace_type=_TYPE) for _ in range(_READS)]

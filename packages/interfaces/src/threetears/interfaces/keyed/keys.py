@@ -87,6 +87,7 @@ __all__ = [
     "next_newest_keys",
     "prefix_text",
     "register_versioned_table",
+    "registered_generation",
     "versioned_table",
     "declared_columns",
     "default_projection",
@@ -886,6 +887,25 @@ class VersionedTable:
 #: every ``(relation, table)`` a versioned declaration registered, a tuple replaced whole (as the keys are)
 _VERSIONED: tuple[tuple[Relation, VersionedTable], ...] = ()
 
+#: how many times a versioned or stamped registration changed (:func:`registered_generation`): an int replaced whole,
+#: raised AFTER the registration's tuple is, so a reader that saw a generation never saw an older registration
+_GENERATION: int = 0
+
+
+def registered_generation() -> int:
+    """the generation of the versioned and stamped registrations: it rises with every :func:`register_versioned_table`
+    and :func:`register_stamped_table`, so an answer computed from them (a statement shape's checks,
+    ``threetears.core.keyed._filters.append_only_checks``) is held only for the generation it was computed at.
+
+    Raised after the registration it counts, so an answer stored under a generation was computed from a registration
+    at least that new: a check that ran beside a registration is stored under the generation before it, and the next
+    call, seeing the new one, checks again.
+
+    :return: the generation
+    :rtype: int
+    """
+    return _GENERATION
+
 
 def register_versioned_table(table: VersionedTable) -> None:
     """record that the L3 table ``table.name`` names keeps a version of a key a write: every keyed read of it then sees
@@ -904,6 +924,17 @@ def register_versioned_table(table: VersionedTable) -> None:
     # one declaration a relation: a schema built again (``dataclasses.replace``) registers the same one, and a
     # relation declared again otherwise (a test's own table of the same name) takes the later declaration
     _VERSIONED = (*((named, known) for named, known in _VERSIONED if named != relation), (relation, table))
+    _bump_generation()
+
+
+def _bump_generation() -> None:
+    """raise :data:`_GENERATION`, after a registration changed (:func:`registered_generation`).
+
+    :return: nothing
+    :rtype: None
+    """
+    global _GENERATION
+    _GENERATION += 1
 
 
 def versioned_table(table: Any, *, l3: bool) -> VersionedTable | None:
@@ -1309,6 +1340,7 @@ def register_stamped_table(declared: StampedTable) -> None:
             raise ValueError(f"{declared.name}: {column!r} is not a plain column name")
     global _STAMPED
     _STAMPED = (*((named, held) for named, held in _STAMPED if named != relation), (relation, declared))
+    _bump_generation()
 
 
 def _stamped(table: Any) -> StampedTable | None:

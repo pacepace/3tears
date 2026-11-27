@@ -7,7 +7,7 @@ is the one question a filter asks of the connection it is sent on: whether it bi
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Final
 
 import asyncpg
@@ -29,11 +29,13 @@ from threetears.interfaces.keyed.keys import (
     newest_relation,
     newest_settings,
     not_null_guards,
+    registered_generation,
     serving_index,
     stamped_table,
     versioned_table,
 )
 from threetears.interfaces.keyed.page import Sort
+from threetears.observe import BuildOnce
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
     AnyOf,
@@ -89,6 +91,7 @@ __all__ = [
     "refuse_versioned",
     "refuse_append_only",
     "stamped_names",
+    "one_statement_guards",
     "one_use_each",
     "refuse_in_place",
     "renumbered",
@@ -247,7 +250,20 @@ def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
     :rtype: None
     :raises ValueError: when one of them is a versioned L3 table
     """
-    named = [table for table in tables if newest_of(conn, table) is not None]
+    _refuse_named_versioned([table for table in tables if newest_of(conn, table) is not None], read)
+
+
+def _refuse_named_versioned(named: Sequence[Any], read: str) -> None:
+    """:func:`refuse_versioned`'s refusal of the versioned tables ``named``; nothing when there are none.
+
+    :param named: the versioned L3 tables the read names
+    :ptype named: Sequence[Any]
+    :param read: what the read is, for the refusal
+    :ptype read: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when ``named`` holds a table
+    """
     if named:
         raise ValueError(
             f"{read} names the versioned table(s) {', '.join(map(str, named))}, every version of which it would read: "
@@ -300,6 +316,58 @@ def stamped_names(conn: Any, tables: Sequence[Any]) -> frozenset[str]:
     """
     l3 = reads_l3(conn)
     return frozenset(str(table) for table in tables if stamped_table(table, l3=l3) is not None)
+
+
+#: each statement shape's checks (:func:`one_statement_guards`), by ``(reads L3, the tables named)``: the generation of
+#: the registrations they were computed at, the versioned tables among them and the stamped ones. A value is current
+#: only at its own generation: a registration (a new generation) makes the next call check again, in its place.
+#: WHY (2026-11-26): checked every call, a statement's tables cost the visible-customer set 6.7 us of its ~24 us of
+#: Python (five tables, each parsed and looked up in both registrations; best of 60 on the exclusive runner), and
+#: their answer changes only when a registration does (test_visible_customers_speed_live). Bounded at 256 shapes (a
+#: process names a few); a shape past the bound is checked for its call
+_SHAPE_CHECKS: BuildOnce[Hashable, tuple[int, tuple[str, ...], frozenset[str]]] = BuildOnce(
+    is_current=lambda checked: checked[0] == registered_generation(), cost=lambda _: 1, max_cost=256
+)
+
+
+def one_statement_guards(conn: Any, tables: Sequence[Any], read: str) -> frozenset[str]:
+    """:func:`refuse_versioned` then :func:`stamped_names` of a statement naming ``tables`` (a walk or a join inside
+    one statement): refuse it when it names a versioned L3 table, else the stamped L3 tables it guards in place.
+
+    Answered once a shape (where the read goes, the tables) for each generation of the versioned and stamped
+    registrations (:func:`~threetears.interfaces.keyed.keys.registered_generation`, :data:`_SHAPE_CHECKS`): a
+    registration made after a shape was checked raises the generation, so the next call checks it again and refuses
+    where it must. A refusal is not held, only what it names: each call naming a versioned table is refused.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the tables the statement names
+    :ptype tables: Sequence[Any]
+    :param read: what the read is, for the refusal
+    :ptype read: str
+    :return: the stamped ones, by name
+    :rtype: frozenset[str]
+    :raises ValueError: when one of them is a versioned L3 table
+    """
+
+    def check() -> tuple[int, tuple[str, ...], frozenset[str]]:
+        # the generation is read before the registrations are: a check is never held as current for a generation
+        # newer than the registrations it read, so one beside a registration is made again on the next call
+        generation = registered_generation()
+        return (
+            generation,
+            tuple(str(table) for table in tables if newest_of(conn, table) is not None),
+            stamped_names(conn, tables),
+        )
+
+    named = tuple(tables)
+    try:
+        checked = _SHAPE_CHECKS.get((reads_l3(conn), named), check)
+    except TypeError:
+        # NOSILENT: a relation that is not hashable (a derived one) only means its shape is not held: checked a call
+        checked = check()
+    _refuse_named_versioned(checked[1], read)
+    return checked[2]
 
 
 def versions_read(

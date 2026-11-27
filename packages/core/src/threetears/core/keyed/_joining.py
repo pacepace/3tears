@@ -8,10 +8,11 @@ so a join is spelled one way whichever read it follows.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
@@ -59,6 +60,39 @@ class Joined:
     matched: str | None = None
     casts: Mapping[str, str] = field(default_factory=dict)
     counts: Mapping[str, str | None] = field(default_factory=dict)
+    #: what a statement joining this table is written from (every field, in order, each pin's value beside its
+    #: type), computed once: None when a pin's value is not hashable (an AnyOf of a list)
+    shape: Hashable | None = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """hold each mapping as a read-only copy and compute :attr:`shape` once.
+
+        WHY (2026-11-26): a walk's held statement is found by its call's shape
+        (``threetears.core.keyed.joins._statement_key``), and rebuilding the joins' part from their mappings every call
+        cost ~3 us of the visible-customer set's ~24 us of Python (its joins a module constant, rebuilt each call;
+        test_visible_customers_speed_live). The mappings are copied read-only so the shape computed here stays true.
+        """
+        for name in ("on", "columns", "casts", "counts"):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+        if self.by is not None:
+            object.__setattr__(self, "by", MappingProxyType(dict(self.by)))
+        shape: Hashable | None = (
+            self.table,
+            tuple(self.on.items()),
+            tuple(self.columns.items()),
+            self.left,
+            None if self.by is None else tuple((type(c), c, type(v), v) for c, v in self.by.items()),
+            self.matched,
+            tuple(self.casts.items()),
+            tuple(self.counts.items()),
+        )
+        try:
+            hash(shape)
+        except TypeError:
+            # NOSILENT: an unhashable pin (an AnyOf of a list) only means a statement joining this table is not held
+            # by its shape: it is written for its call (joins._statement_key answers None)
+            shape = None
+        object.__setattr__(self, "shape", shape)
 
 
 #: a Python value's SQL type, for an ``on`` column given no cast
