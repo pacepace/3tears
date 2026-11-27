@@ -33,6 +33,7 @@ import asyncpg
 import pytest
 
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -377,12 +378,13 @@ async def _seed_grants(pool: asyncpg.Pool, count: int) -> list[UUID]:
     :rtype: list[UUID]
     """
     now = datetime.now(UTC)
-    rows = [(uuid4(), "user", uuid4(), f"tool_{i % 50}", f"mcp.speed.{i % 200}", now) for i in range(count)]
+    epoch = next_epoch()  # the table is ROW_STAMPED (mcp v003): one write statement, one epoch, as its writer stamps
+    rows = [(uuid4(), "user", uuid4(), f"tool_{i % 50}", f"mcp.speed.{i % 200}", now, epoch) for i in range(count)]
     async with pool.acquire() as conn:
         await conn.copy_records_to_table(
             "mcp_tool_grants",
             records=rows,
-            columns=["grant_id", "principal_type", "principal_id", "tool_name", "permission", "date_created"],
+            columns=["grant_id", "principal_type", "principal_id", "tool_name", "permission", "date_created", "epoch"],
         )
         await conn.execute("ANALYZE mcp_tool_grants")
     return [row[0] for row in rows]

@@ -36,7 +36,6 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -48,6 +47,7 @@ from threetears.observe import PeriodicTask, cancel_and_wait, contain, get_logge
 _GRANTS_IMPORT_ERROR: ImportError | None = None
 try:
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+    from threetears.core.frozen_state import logged, with_entry, without_entry
     from threetears.epoch import GenerationReader, TableFollower, follow_tables
 except ImportError as _exc:  # NOSILENT: the grants extra is optional; LocalGrantAuthorizer names it
     _GRANTS_IMPORT_ERROR = _exc
@@ -535,10 +535,12 @@ class LocalGrantAuthorizer:
         # each grant by its key -> the (principal_id, permission) it gives, and how many grants
         # give each pair: two grants for two tools can give one permission, and revoking one of
         # them must not take the permission away. presence is the grant; absence is default-deny.
-        # each a read-only snapshot replaced whole on a change (decision 41; this package does not depend on
-        # threetears.core, so its frozen_state is spelled inline): one entry per grant, tens to hundreds
-        self._grants: Mapping[UUID, tuple[UUID, str]] = MappingProxyType({})
-        self._held: Mapping[tuple[UUID, str], int] = MappingProxyType({})
+        # each a read-only snapshot (decision 41), set a key at a time as a logged map (frozen_state.logged): the
+        # next snapshot shares the last one's chunks. WHY (2026-11-26): replaced whole (a dict copy a change), one
+        # walked change copied both maps -- 20,000 grants in the speed test: 1.9 ms against a bare keyed read's
+        # 0.2 ms, 12.7x (test_a_walked_change_applies_as_fast_as_a_bare_keyed_read); a logged map's set is ~3.5 us
+        self._grants: Mapping[UUID, tuple[UUID, str]] = logged()
+        self._held: Mapping[tuple[UUID, str], int] = logged()
         # reads (a fill's, a key's) overlap, so each is numbered when it STARTS. a read lands only
         # when nothing that started later has already landed for what it read, and clears what is
         # owed only when it started after the failure that owed it: otherwise a slow read that
@@ -550,8 +552,8 @@ class LocalGrantAuthorizer:
         self._fill_failed_generation = 0
         self._fill_owed = False
         # per grant: the newest keyed read landed, and a failed one still owed
-        self._key_landed: Mapping[UUID, int] = MappingProxyType({})
-        self._keys_owed: Mapping[UUID, int] = MappingProxyType({})
+        self._key_landed: Mapping[UUID, int] = logged()
+        self._keys_owed: Mapping[UUID, int] = logged()
         # the keyed reads (and a whole-table change's fill) the registry's synchronous callbacks
         # started, held so stop() can end them
         self._reads: frozenset[asyncio.Task[None]] = frozenset()
@@ -816,20 +818,18 @@ class LocalGrantAuthorizer:
         :return: nothing
         :rtype: None
         """
-        grants = dict(self._grants)
-        counts = dict(self._held)
-        before = grants.pop(grant_id, None)
+        grants = self._grants
+        counts = self._held
+        before = grants.get(grant_id)
         if before is not None:
+            grants = without_entry(grants, grant_id)
             remaining = counts[before] - 1
-            if remaining:
-                counts[before] = remaining
-            else:
-                del counts[before]
+            counts = with_entry(counts, before, remaining) if remaining else without_entry(counts, before)
         if held is not None:
-            grants[grant_id] = held
-            counts[held] = counts.get(held, 0) + 1
-        self._grants = MappingProxyType(grants)
-        self._held = MappingProxyType(counts)
+            grants = with_entry(grants, grant_id, held)
+            counts = with_entry(counts, held, counts.get(held, 0) + 1)
+        self._grants = grants
+        self._held = counts
 
     async def _apply_grant(self, grant_id: UUID) -> None:
         """read one grant by key and put it in the cache: inserted, updated, or removed when gone.
@@ -857,15 +857,15 @@ class LocalGrantAuthorizer:
             # name. the read is owed whatever it raised, and the error goes on to the caller's
             # boundary (the read's task, the retry pass), which logs it.
             if not landed and generation > max(self._key_landed.get(grant_id, 0), self._filled_generation):
-                self._keys_owed = MappingProxyType(
-                    {**self._keys_owed, grant_id: max(self._keys_owed.get(grant_id, 0), generation)}
+                self._keys_owed = with_entry(
+                    self._keys_owed, grant_id, max(self._keys_owed.get(grant_id, 0), generation)
                 )
         if generation < max(self._key_landed.get(grant_id, 0), self._filled_generation):
             return
-        self._key_landed = MappingProxyType({**self._key_landed, grant_id: generation})
+        self._key_landed = with_entry(self._key_landed, grant_id, generation)
         self._put(grant_id, held)
         if generation > self._keys_owed.get(grant_id, 0):
-            self._keys_owed = MappingProxyType({key: at for key, at in self._keys_owed.items() if key != grant_id})
+            self._keys_owed = without_entry(self._keys_owed, grant_id)
 
     async def _fill(self) -> None:
         """read every grant into the cache: the cold start, or the fill after a whole-table change.
@@ -902,10 +902,10 @@ class LocalGrantAuthorizer:
         counts: dict[tuple[UUID, str], int] = {}
         for held in filled.values():
             counts[held] = counts.get(held, 0) + 1
-        self._grants = MappingProxyType(filled)
-        self._held = MappingProxyType(counts)
-        self._key_landed = MappingProxyType({key: at for key, at in self._key_landed.items() if at > generation})
-        self._keys_owed = MappingProxyType({key: at for key, at in self._keys_owed.items() if at > generation})
+        self._grants = logged(filled)
+        self._held = logged(counts)
+        self._key_landed = logged((key, at) for key, at in self._key_landed.items() if at > generation)
+        self._keys_owed = logged((key, at) for key, at in self._keys_owed.items() if at > generation)
         self._filled_generation = generation
         if generation > self._fill_failed_generation:
             self._fill_owed = False
