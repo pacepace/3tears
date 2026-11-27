@@ -34,8 +34,10 @@ from threetears.core.collections.scope_epochs import (
     EpochSnapshot,
     ScopeEpochs,
     scope_epochs_collection,
+    scope_epochs_schema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.plans import on_yugabyte
 from threetears.nats import NatsClient, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -58,19 +60,12 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
         await admin.close()
     pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, server_settings={"search_path": schema})
     assert pool is not None
-    await pool.execute(
-        f"""
-        CREATE TABLE {_TABLE} (
-            scope TEXT PRIMARY KEY,
-            epoch BIGINT NOT NULL,
-            previous_epoch BIGINT,
-            writing BIGINT,
-            pending BIGINT,
-            date_created TIMESTAMPTZ NOT NULL,
-            date_updated TIMESTAMPTZ
-        )
-        """
-    )
+    # the table as the owner declares it (scope_epochs_schema), its indexes with it, so a column the schema gains
+    # (last_epoch, append-only L3) is here without this test restating it
+    async with pool.acquire() as conn:
+        yugabyte = await on_yugabyte(conn)
+        for statement in scope_epochs_schema(_TABLE).create_statements(yugabyte=yugabyte):
+            await conn.execute(statement)
     await pool.execute("CREATE TABLE results (state TEXT PRIMARY KEY, votes BIGINT)")
     return pool
 
@@ -756,7 +751,8 @@ class _LateConn(_CuttingConn):
         if moved_page and len(rows) < 4:
             # the last page read: a scope pending only now, as though marked between the read and the UPDATE
             await self._conn.execute(
-                f"INSERT INTO {_TABLE} (scope, epoch, pending, date_created) VALUES ($1, 0, 1, now())", self._late
+                f"INSERT INTO {_TABLE} (scope, epoch, pending, date_created, date_updated) VALUES ($1, 0, 1, now(), now())",
+                self._late,
             )
         return rows
 
