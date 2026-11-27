@@ -193,20 +193,23 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         assert rows.value == 1, "a fresh pool"
 
     async def test_a_worker_whose_death_is_heard_before_its_lock_goes_leaves_nothing(
-        self, store: SharedArrowStore, single: SharedArrowPool
+        self, store: SharedArrowStore, single: SharedArrowPool, tmp_path: Path
     ) -> None:
-        """the pool hears a worker die when a pipe the worker holds closes, which the kernel does as the process exits,
-        in no order against the hand-off's lock: the release that follows may find the lock still held, and the
-        executor fails the job's future before it reaps its workers, so the pool sweeps again once they are reaped.
-        Here the worker closes that pipe itself and holds the lock until the pool kills it.
+        """the pool may hear a worker die while the hand-off's lock is still held: the release that follows finds it
+        held and leaves the hand-off, so it must go once the lock does, with no later sweep. Here the worker dies at
+        once and a process holding its lock lets go on the test's word, after the pool heard the death.
         """
+        signals = tmp_path / "signals"
         with pytest.raises(BrokenProcessPool):
             await single.run(
                 jobs.die_heard_before_its_lock_goes,
                 str(store.root),
+                str(signals),
                 read=False,
                 tables={"t": pa.table({"a": [1, 2, 3]})},
             )
+        assert len(store.handoffs()) == 1, "the death was heard with the hand-off's lock still held"
+        (signals / "go").touch()
         await _until(lambda: store.handoffs() == () and _hidden(store) == [], "the dead worker's hand-off removed")
         assert store.status()["handoffs_open"] == 0
         assert store.held_bytes() == 0

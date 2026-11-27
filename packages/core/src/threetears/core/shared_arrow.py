@@ -3629,8 +3629,9 @@ class SharedArrowStore:
         """the worker is done with a hand-off (its job returned or raised, or its worker died): it goes now, or as soon
         as no worker maps it. Harmless twice.
 
-        A worker that still maps it holds its shared lock: a reader finishing, or a worker that died and whose exit
-        has not yet closed its descriptors (the pool hears of a death as its pipe closes, which can come first). Then
+        A worker that still maps it holds its shared lock: a reader finishing, or a worker that died while another
+        process still holds its lock (a child that inherited its descriptors; or, in a spawned executor, which hears
+        a death as the worker's pipe closes, an exit that has not yet closed the lock). Then
         a thread of the store's waits on the lock and sweeps once it is free, so the hand-off never waits for some
         later, unrelated sweep to go.
 
@@ -5259,9 +5260,10 @@ class SharedArrowPool:
         """a job's (or a retiring pool's probe's) future's callback: when its worker died, say so, and sweep once
         the broken pool's processes are reaped.
 
-        The executor hears a worker die when a pipe the worker holds closes, which the kernel does as the process
-        exits, in no order against the other files it closes then, the hand-off's lock among them; and it fails the
-        job's future before it terminates and joins its processes. So the release that follows the death
+        The executor fails the job's future as it hears the worker die, before it terminates and joins its
+        processes; the dead worker's lock may still be held then (a forked worker's death is heard from the fork
+        server once it is reaped, but a process that inherited its descriptors still holds it; a spawned one's as a
+        pipe it holds closes, in no order against its other files). So the release that follows the death
         (:meth:`_Run.worker_done`) may find the dead worker's lock still held and leave its hand-off, its version
         or its result in place, and nothing else would sweep until an unrelated hand, publish or claim. Once the
         pool's processes are reaped, none of their locks is held: a sweep then

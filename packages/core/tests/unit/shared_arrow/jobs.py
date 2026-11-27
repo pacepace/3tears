@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +21,15 @@ from threetears.core.shared_arrow import HandedTables, JobContext, MappedTables,
 
 #: how long a job waits on the test's signal file before it gives up
 _WAIT_SECONDS = 60.0
+
+#: the process that holds a dead worker's hand-off lock until the test's go (:func:`die_heard_before_its_lock_goes`):
+#: its descriptors are inherited, so it holds the very lock the worker took; it gives up after the job's own wait
+_HOLDER = """
+import os, sys, time
+deadline = time.monotonic() + float(sys.argv[2])
+while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
+    time.sleep(0.01)
+"""
 
 #: memory a job keeps between jobs, so the worker's private memory grows
 _KEPT: list[bytearray] = []
@@ -340,36 +351,38 @@ def die_holding_handed(context: JobContext) -> None:
     os._exit(19)
 
 
-def die_heard_before_its_lock_goes(context: JobContext, root: str) -> None:
-    """close every descriptor but the hand-off's own files, the pipe whose closing tells the pool its worker is gone
-    among them, then wait to be killed, the hand-off's lock still held: a worker whose death the pool hears before the
-    kernel lets its lock go. A dying process's descriptors close in no order the pool can rely on, so this is the
-    order the slowest exit can take, held open.
+def die_heard_before_its_lock_goes(context: JobContext, root: str, signals: str) -> None:
+    """die at once while a process of the job's own holds the hand-off's lock on, until the test's go: a worker whose
+    death the pool hears before the lock goes.
+
+    The pool hears a worker's death from the fork server once it has reaped the worker, after the kernel closed the
+    worker's descriptors, so a dying worker alone never shows the pool its lock still held; a process holding the
+    worker's own lock description (its files inherited) does, for as long as the test says.
 
     :param root: the store's directory
     :ptype root: str
+    :param signals: the test's signal directory: ``go`` lets the lock go
+    :ptype signals: str
     :return: never
     :rtype: None
     """
     assert context.tables is not None
     handoff = Path(root) / "handoffs" / context.tables.name
     files = {(found.st_dev, found.st_ino) for found in (entry.stat() for entry in os.scandir(handoff))}
-    listed = [int(name) for name in os.listdir("/dev/fd")]
     kept: list[int] = []
-    for descriptor in listed:
+    for name in os.listdir("/dev/fd"):
         try:
-            found = os.fstat(descriptor)
+            found = os.fstat(int(name))
         except OSError:
             # NOSILENT: the listing's own descriptor, closed once it was listed
             continue
         if (found.st_dev, found.st_ino) in files:
-            kept.append(descriptor)
-    start = 3
-    for descriptor in sorted(kept):
-        os.closerange(start, descriptor)
-        start = descriptor + 1
-    os.closerange(start, max(listed) + 1)
-    time.sleep(_WAIT_SECONDS)
+            kept.append(int(name))
+    assert kept, "the worker maps its hand-off"
+    # returns once the holder runs, its inherited descriptors open
+    subprocess.Popen(
+        [sys.executable, "-c", _HOLDER, str(Path(signals) / "go"), str(_WAIT_SECONDS)], pass_fds=kept, close_fds=True
+    )
     os._exit(19)
 
 
