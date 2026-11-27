@@ -13,6 +13,7 @@ Against the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to a 
 
 from __future__ import annotations
 
+import asyncio
 import io
 import threading
 import uuid
@@ -114,7 +115,9 @@ async def pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 def _files(served: tuple[Path, str]) -> list[LoadFile]:
-    """the export: Texas's 254 counties and 49 states of 50, 33 offices, 4 candidates each, one file a state."""
+    """the export: Texas's 254 counties and 49 states of 50, 33 offices, 4 candidates each, one file a state.
+    Synchronous (a Python pass a row, the files written): a test runs it on a thread (asyncio.to_thread), never on the
+    loop, where it held one turn past threetears.core.testing.loop_stall's limit."""
     directory, base = served
     schema = pa.schema(
         [
@@ -150,7 +153,7 @@ async def test_a_reloaded_tables_first_read_of_some_geographies_plans_by_its_ind
     await pool.execute("TRUNCATE results")
 
     written = await collection.load_files(
-        _files(served),
+        await asyncio.to_thread(_files, served),
         columns=["office_key", "candidate", _GEO, _STATE, "votes"],
         rows_per_transaction=20_000,
         # a load of many races names each office's key prefix: its epoch reaches those, never the table
@@ -185,7 +188,7 @@ async def test_a_reload_s_analyze_speed_at_real_size(pool: asyncpg.Pool, served:
     registry = CollectionRegistry()
     registry.configure(l3_pool=SqlL3Backend(pool))
     collection = collection_for_schema(_SCHEMA, entity_class=_Row)(registry, DefaultCoreConfig(), None)
-    files = _files(served)
+    files = await asyncio.to_thread(_files, served)
     columns = ["office_key", "candidate", _GEO, _STATE, "votes"]
     prefixes = [{"office_key": f"o{o}"} for o in range(1, 34)]
 

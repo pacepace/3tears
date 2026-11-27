@@ -38,12 +38,24 @@ from typing import Any
 
 import asyncpg
 import pytest
+from threetears.agent.memory.migrations import register as register_memory
+from threetears.agent.tools.migrations import register as register_tools
+from threetears.agent.workspace.migrations import register as register_workspace
+from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import (
     MigrationFailedError,
     MigrationRunner,
     MigrationScope,
     PackageMigrations,
+    diff_expected_live,
+    parse_ddl_to_expected,
+    snapshot_live_schema,
 )
+
+# the agent packages' migrations are imported here at the module's top, never inside a test: importing them loads
+# threetears.langgraph (langchain's agents and middleware), ~0.7 s of CPU that held the test's event loop past
+# threetears.core.testing.loop_stall's limit when it ran inside the coroutine
+from threetears.langgraph.migrations import register as register_langgraph
 
 
 # canonical testcontainer harness -- single ``pytest_plugins`` entry
@@ -199,12 +211,6 @@ def _build_composed_agent_runner() -> MigrationRunner:
     :return: runner with every agent-scope package registered
     :rtype: MigrationRunner
     """
-    from threetears.agent.memory.migrations import register as register_memory
-    from threetears.agent.tools.migrations import register as register_tools
-    from threetears.agent.workspace.migrations import register as register_workspace
-    from threetears.conversations.migrations import register as register_conversations
-    from threetears.langgraph.migrations import register as register_langgraph
-
     runner = MigrationRunner()
     register_conversations(runner)
     register_tools(runner)
@@ -386,12 +392,6 @@ class TestDriftDetection:
         :param pg_schema: (url, schema) tuple from fixture
         :ptype pg_schema: tuple[str, str]
         """
-        from threetears.core.data.migrations import (
-            diff_expected_live,
-            parse_ddl_to_expected,
-            snapshot_live_schema,
-        )
-
         url, schema = pg_schema
         runner = _build_composed_agent_runner()
         conn = await asyncpg.connect(url)
