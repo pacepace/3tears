@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the ring takedown (``drop_ring_on``) clears every schema's change-note triggers before any note function (Pace 2026-11-27)
+
+**Fixed:** hub v193 failed on a database carrying data from before 0.95 (the local stack, 2026-11-27): ``cannot drop
+function threetears_note_... because other objects depend on it``, from the triggers on
+``ns_*.result_snapshots_by_id``. A noted table's note function lives in the ring's schema (the platform schema), its
+three change-note triggers on the table, in the table's own schema: every agent schema's (``ns_*``) noted tables. The
+takedown went a schema at a time, so the platform schema's functions were dropped before a later agent schema's
+triggers. ``threetears.core.data.migrations.ring_cutover.drop_ring_on`` now drops, each across the whole database read
+from the catalog: every ring trigger in every schema (by the ring's trigger names, or by its function being a note
+function whatever its name), then every note function, then the ring's tables. Still never ``CASCADE``, never a
+``TRUNCATE``; the keeper's marks are kept. Each statement commits on its own (the migration run holds no transaction
+around a body, on PostgreSQL or YugabyteDB), so a run that failed part way left what it dropped dropped; a rerun reads
+what is left and finishes the job: a hub whose v193 failed passes it on its next start with this 3tears.
+
+**What a consumer must do:** nothing beyond taking this 3tears. The hub's v193 and identity-core's start call
+``drop_ring_on`` as before; the takedown now clears the per-namespace triggers itself.
+
 ### datasources: many relations' column types in one catalogue statement (``warehouse_arrow_types_of``) (Pace 2026-11-27)
 
 **Added:** ``threetears.datasources.arrow_rows.warehouse_arrow_types_of(client, datasource, relations, *, dialect,

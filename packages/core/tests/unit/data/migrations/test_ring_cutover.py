@@ -23,6 +23,7 @@ from threetears.core.ddl.session import ConnectionSession
 #: the ring's row trigger and truncate trigger, as a database cut over still carries them (the ring's DDL is gone)
 NOTE_TRIGGER = "threetears_change_note"
 NOTE_TRUNCATE_TRIGGER = "threetears_change_note_truncate_table"
+NOTE_WHOLE_TRIGGER = "threetears_change_note_whole_write"
 
 
 #: a step that waits for the lock would wait forever here; the test's own bound, far past one that never waits
@@ -38,24 +39,29 @@ class _Lock:
 
 
 class _Conn:
-    """a database holding the ring in ``platform`` and two noted tables, until the statements take it down.
+    """a database holding the ring in ``hub_platform`` and two noted tables (one in an agent schema), until the statements take it down.
 
     :param lock: the database's DDL lock, shared by every connection of one database
     """
 
     def __init__(self, lock: _Lock | None = None) -> None:
         self.lock = lock if lock is not None else _Lock()
+        # (schema, table, trigger, the trigger's function): the ring's schema sorts before the agent schema whose noted
+        # table calls the ring schema's function, as the hub's platform schema does before ``ns_*``
         self.triggers = {
-            ("platform", "roles", NOTE_TRIGGER),
-            ("platform", "roles", NOTE_TRUNCATE_TRIGGER),
-            ("agent_x", "rows", NOTE_TRIGGER),
-            ("agent_x", "rows", "rows_search_vector"),
+            ("hub_platform", "roles", NOTE_TRIGGER, "threetears_note_abc"),
+            ("hub_platform", "roles", NOTE_TRUNCATE_TRIGGER, "threetears_note_abc"),
+            ("ns_x", "rows", NOTE_TRIGGER, "threetears_note_def"),
+            ("ns_x", "rows", NOTE_WHOLE_TRIGGER, "threetears_note_def"),
+            ("ns_x", "rows", "an_older_name", "threetears_note_def"),
+            ("ns_x", "rows", "rows_search_vector", "rows_search_vector_update"),
         }
         self.functions = {
-            ("threetears_note_abc", "", "platform"),
-            ("threetears_change_note_put", "text, text[]", "platform"),
+            ("threetears_note_abc", "", "hub_platform"),
+            ("threetears_note_def", "", "hub_platform"),
+            ("threetears_change_note_put", "text, text[]", "hub_platform"),
         }
-        self.tables = {("platform", table) for table in (*RING_TABLES, MARKS_TABLE)}
+        self.tables = {("hub_platform", table) for table in (*RING_TABLES, MARKS_TABLE)}
         self.executed: list[str] = []
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
@@ -73,19 +79,21 @@ class _Conn:
             if self.lock.holds == 0:
                 self.lock.holder = None
             return [{"released": True}]
-        if "FROM pg_namespace n" in query:
-            ring, names = args
-            held = {s for s, t in self.tables if t == ring} | {s for s, _, g in self.triggers if g in names}
-            return [{"schema": s} for s in sorted(held)]
         if "pg_trigger" in query:
-            schema, names = args
+            (names,) = args
+            ring = {n for n, _, _ in self.functions}
             return [
-                {"table_name": t, "trigger_name": g} for s, t, g in sorted(self.triggers) if s == schema and g in names
+                {"schema": s, "table_name": t, "trigger_name": g}
+                for s, t, g, f in sorted(self.triggers)
+                if g in names or f.startswith(("threetears_note_", "threetears_change_note")) or f in ring
             ]
         if "pg_proc" in query:
-            return [{"name": n, "args": a} for n, a, s in sorted(self.functions) if s == args[0]]
-        if "ANY($2::text[])" in query:
-            return [{"table_name": t} for s, t in sorted(self.tables) if s == args[0] and t in args[1]]
+            return [
+                {"schema": s, "name": n, "args": a} for n, a, s in sorted(self.functions, key=lambda f: (f[2], f[0]))
+            ]
+        if "ANY($1::text[])" in query:
+            (names,) = args
+            return [{"schema": s, "table_name": t} for s, t in sorted(self.tables) if t in names]
         raise AssertionError(f"unexpected read: {query}")
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -94,9 +102,16 @@ class _Conn:
         if query.startswith("DROP TRIGGER IF EXISTS"):
             name, _, target = query.removeprefix("DROP TRIGGER IF EXISTS ").partition(" ON ")
             schema, _, table = target.partition(".")
-            self.triggers.discard((schema.strip('"'), table.strip('"'), name.strip('"')))
+            self.triggers = {
+                each for each in self.triggers if each[:3] != (schema.strip('"'), table.strip('"'), name.strip('"'))
+            }
         elif query.startswith("DROP FUNCTION IF EXISTS"):
-            self.functions = {f for f in self.functions if f'"{f[0]}"' not in query}
+            gone = {f for f in self.functions if f'"{f[0]}"' in query}
+            depending = [each for each in self.triggers if each[3] in {f[0] for f in gone}]
+            if depending:
+                # PostgreSQL's refusal: a function a trigger still calls is not dropped without CASCADE
+                raise RuntimeError(f"cannot drop function because other objects depend on it: {depending}")
+            self.functions -= gone
         elif query.startswith("DROP TABLE IF EXISTS"):
             self.tables = {(s, t) for s, t in self.tables if f'"{s}"."{t}"' not in query}
         return "OK"
@@ -107,12 +122,25 @@ async def test_the_ring_goes_whole_and_the_marks_stay() -> None:
     from the tables still reads X from) are dropped, or if a trigger that is not the ring's is touched."""
     conn = _Conn()
     dropped = await drop_ring_on(ConnectionSession(conn))
-    assert conn.triggers == {("agent_x", "rows", "rows_search_vector")}
+    assert conn.triggers == {("ns_x", "rows", "rows_search_vector", "rows_search_vector_update")}
     assert conn.functions == set()
-    assert conn.tables == {("platform", MARKS_TABLE)}
-    assert set(dropped.tables) == {f"platform.{table}" for table in RING_TABLES}
-    assert f"platform.{RING_TABLE}" in dropped.tables
-    assert len(dropped.triggers) == 3
+    assert conn.tables == {("hub_platform", MARKS_TABLE)}
+    assert set(dropped.tables) == {f"hub_platform.{table}" for table in RING_TABLES}
+    assert f"hub_platform.{RING_TABLE}" in dropped.tables
+    assert len(dropped.triggers) == 5
+
+
+async def test_an_agent_schema_s_triggers_go_before_the_ring_schema_s_functions_they_call() -> None:
+    """The hub's v193 on a database from before 0.95 (2026-11-27): a noted table's function lives in the ring's schema,
+    its triggers on the table in its own agent schema (``ns_*``), which sorts after the platform schema. Flips if the
+    step drops a schema's functions before every schema's triggers (the drop is refused while a trigger calls the
+    function), or misses a trigger calling a note function under a name not the ring's."""
+    conn = _Conn()
+    await drop_ring_on(ConnectionSession(conn))
+    first_function = next(i for i, each in enumerate(conn.executed) if each.startswith("DROP FUNCTION"))
+    last_trigger = max(i for i, each in enumerate(conn.executed) if each.startswith("DROP TRIGGER"))
+    assert last_trigger < first_function
+    assert not [each for each in conn.triggers if each[3].startswith("threetears_")]
 
 
 async def test_the_cutover_never_truncates_or_deletes_and_a_second_run_drops_nothing() -> None:
@@ -139,9 +167,9 @@ async def test_on_a_session_holding_the_lock_the_step_takes_it_again_at_once_and
         dropped = await asyncio.wait_for(drop_ring_on(session), _NEVER_WAITS_SECONDS)
         assert (conn.lock.holder, conn.lock.holds) == (conn, 1), "the caller still holds its own hold"
     assert conn.lock.holder is None
-    assert conn.tables == {("platform", MARKS_TABLE)}
+    assert conn.tables == {("hub_platform", MARKS_TABLE)}
     assert conn.functions == set()
-    assert len(dropped.triggers) == 3
+    assert len(dropped.triggers) == 5
 
 
 async def test_a_migration_body_s_store_is_used_as_it_is_under_the_run_s_lock() -> None:
@@ -153,8 +181,8 @@ async def test_a_migration_body_s_store_is_used_as_it_is_under_the_run_s_lock() 
         store = DataStore.over_session(session, holds_ddl_lock=True)
         dropped = await asyncio.wait_for(drop_ring_on(store, policy=DdlLockPolicy(max_wait=0)), _NEVER_WAITS_SECONDS)
         assert conn.lock.holds == 1
-    assert set(dropped.tables) == {f"platform.{table}" for table in RING_TABLES}
-    assert conn.tables == {("platform", MARKS_TABLE)}
+    assert set(dropped.tables) == {f"hub_platform.{table}" for table in RING_TABLES}
+    assert conn.tables == {("hub_platform", MARKS_TABLE)}
 
 
 async def test_a_second_connection_of_the_database_is_refused_the_held_lock() -> None:
