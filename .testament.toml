@@ -255,7 +255,7 @@ default_selection = [
     "packages/scrape/tests/integration/test_health_l3_roundtrip.py",
     "packages/scrape/tests/integration/test_reprobe_booking_l3.py",
     # the repo's own: the kept-schema path of tests/pg_template, and the use-the-helper rewrite and hand-conversion
-    # equivalence proofs (their PostgreSQL half here; the YugabyteDB half where a YugabyteDB server is)
+    # equivalence proofs (their PostgreSQL half here; the YugabyteDB half in [suites.integration_yugabyte])
     "tests/integration",
 ]
 env = { UV_CACHE_DIR = "/tr/cache/uv", THREETEARS_TEST_SERVICES = "process", THREETEARS_REQUIRE_SERVICES = "1" }

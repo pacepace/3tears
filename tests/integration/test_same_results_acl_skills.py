@@ -45,8 +45,11 @@ _PAGE = 5
 
 
 @pytest.fixture(params=["conn", "yugabyte_conn"])
-def db(request: pytest.FixtureRequest) -> Any:
+def db(request: pytest.FixtureRequest, db_container: str) -> Any:
     """the session's migrated schema on whichever engine it is (the other skips)."""
+    # ``db_container`` is named so the session database is in this fixture's closure: the engine fixture comes
+    # through ``getfixturevalue``, which pytest cannot see while collecting, and a run on YugabyteDB deselects a
+    # test whose closure does not reach the session database (``tests/require_services.py``)
     return request.getfixturevalue(request.param)
 
 

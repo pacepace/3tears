@@ -26,8 +26,11 @@ _ENTRIES = {entry["index"]: entry for entry in load_manifest(Path(__file__).with
 
 
 @pytest.fixture(params=["conn", "yugabyte_conn"])
-def engine_conn(request: pytest.FixtureRequest) -> Any:
+def engine_conn(request: pytest.FixtureRequest, db_container: str) -> Any:
     """each engine's connection (``conftest.py``): the run's engine is proven, the other deselected."""
+    # ``db_container`` is named so the session database is in this fixture's closure: the engine fixture comes
+    # through ``getfixturevalue``, which pytest cannot see while collecting, and a run on YugabyteDB deselects a
+    # test whose closure does not reach the session database (``tests/require_services.py``)
     return request.getfixturevalue(request.param)
 
 

@@ -6,8 +6,8 @@ rewritten statement to its helper call on a database holding every rewritten tab
 ``THREETEARS_TEST_POSTGRES_URL`` a run points at), so each fixture serves the engine the session's server is and skips
 on the other: a PostgreSQL run proves the PostgreSQL half, a YugabyteDB run the YugabyteDB half. This directory is in
 the integration suite (``.testament.toml``'s ``[suites.integration]``, CI's integration job), so the pool and CI prove
-the PostgreSQL half on every run; the YugabyteDB half runs where a YugabyteDB server is
-(``THREETEARS_TEST_ENGINE=yugabyte`` with ``THREETEARS_TEST_POSTGRES_URL`` naming it). A run deselects the half of the
+the PostgreSQL half on every run; the pool's ``[suites.integration_yugabyte]`` (``THREETEARS_TEST_ENGINE=yugabyte``)
+proves the YugabyteDB half. A run deselects the half of the
 engine it does not name (PostgreSQL when it names none). Each module marks itself ``integration``.
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
@@ -99,15 +99,40 @@ def _engine_of(item: pytest.Item) -> str | None:
     return engines.pop() if len(engines) == 1 else None
 
 
+#: the session database's fixture: a run on YugabyteDB keeps only the tests whose closure reaches it
+#: (``tests/require_services.py``)
+_DATABASE_FIXTURE = "db_container"
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """deselect the other engine's half: a run proves the engine it names (``THREETEARS_TEST_ENGINE``, PostgreSQL
     when unnamed), so the other half is not run at all rather than skipped (a skip fails the pool's integration
-    suite, ``THREETEARS_REQUIRE_SERVICES=1``)."""
+    suite, ``THREETEARS_REQUIRE_SERVICES=1``).
+
+    First, before ``tests/require_services.py`` deselects anything, it refuses a test that proves an engine whose
+    closure does not reach ``db_container``: a fixture parametrized over the engine fixtures' names reaches them
+    through ``getfixturevalue``, which collection cannot see, so the YugabyteDB run would leave its YugabyteDB half
+    out as a test that never touches the database (five modules here were never run on YugabyteDB that way). Such a
+    fixture names ``db_container`` in its signature."""
     engine = os.environ.get(_ENGINE_ENV) or "postgres"
     # only this directory's tests: a package's own integration module run beside them may name its own ``conn``
     # fixture for whichever engine the run names (the wake and scheduled-jobs plan tests), and was deselected on
     # YugabyteDB with them, so its plans were proven on PostgreSQL alone
     here = Path(__file__).parent
+    unseen = [
+        item.nodeid
+        for item in items
+        if item.path.is_relative_to(here)
+        and _engine_of(item) is not None
+        and _DATABASE_FIXTURE not in getattr(item, "fixturenames", ())
+    ]
+    if unseen:
+        raise pytest.UsageError(
+            f"{len(unseen)} test(s) prove an engine but their fixtures do not reach {_DATABASE_FIXTURE}, so a run on"
+            f" YugabyteDB would leave them out: name {_DATABASE_FIXTURE} in the signature of the fixture that"
+            f" requests the engine's connection ({', '.join(unseen[:3])})"
+        )
     other = [item for item in items if item.path.is_relative_to(here) and _engine_of(item) not in (None, engine)]
     if other:
         config.hook.pytest_deselected(items=other)
