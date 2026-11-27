@@ -104,7 +104,14 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
             FROM generate_series(1, {_STATES}) s, generate_series(1, {_GEOS}) g, generate_series(1, {_IDS}) i""",
             _START,
         )
+        # ANALYZE samples 300 x the statistics target rows; at the default (100) that is 30,000 of these 300,000, and a
+        # write's plan is never run (explain_write), so its rows_scanned IS the planner's estimate from those sampled
+        # frequencies of state and geo, so a key's 30 rows are estimated a few rows off either way (35 failed 1.1x on PG,
+        # markpace-mbp, f0f4ba2be). A target that samples every row makes the statistics exact and each estimate 30.
+        whole_table_target = -(-(_STATES * _GEOS * _IDS) // 300)
+        await conn.execute(f"SET default_statistics_target = {whole_table_target}")
         await conn.execute(f"ANALYZE {_TABLE}")
+        await conn.execute("RESET default_statistics_target")
         yield _Seeded(conn=conn, yugabyte=await on_yugabyte(conn))
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
