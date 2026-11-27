@@ -4,11 +4,13 @@ The loop-stall guard (``threetears.core.testing.loop_stall``) holds every test t
 because a serving process answers every call on one loop. evals serves nobody: it is an offline batch harness, so a
 long turn only slows its own runs. Its runner and report writer do synchronous CPU work on the loop (gzip of case
 files in ``WriterCaseFile.write``, report prose, JSON encoding), and on the testament pool 528 turns across its tests
-ran past the limit (2026-11-26, 3tears 11d0494e5: median 0.36 s, 95th percentile 1.57 s, worst 5.46 s).
+ran past the limit (2026-11-26, 3tears 11d0494e5: median 0.36 s, 95th percentile 1.57 s, worst 5.46 s). The worst
+turn depends on the pool machine: ``test_campaign_readings``' one turn in ``analysis.stats._betting_p_staked`` held
+5.46 s of loop CPU on one runner and 14.80 s on another (3tears 0429ab38d), the same code.
 
 Pace, 2026-11-26: evals takes a package-wide limit now, and moving its CPU work off the loop is a separate evals pass.
-The limit sits above the worst measured turn with room for slower pool machines, so a runaway still fails. Remove
-this file when that pass lands.
+The limit is twice the worst turn measured on any pool machine, so a runaway still fails. Remove this file when that
+pass lands.
 """
 
 from __future__ import annotations
@@ -17,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-#: above the worst turn measured on the pool (5.46 s), so only a runaway fails
-_EVALS_STALL_LIMIT_SECONDS = 10.0
+#: twice the worst turn measured on any pool machine (14.80 s), so only a runaway fails
+_EVALS_STALL_LIMIT_SECONDS = 30.0
 
 _WHY = (
     "evals is an offline batch harness that serves nobody; its runner and report writer still do CPU work on the "
