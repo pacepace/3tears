@@ -154,6 +154,16 @@ class RestoreFolder:
         #: the worker's exit and the store's removal, started by :meth:`close`
         self._closing: asyncio.Task[None] | None = None
 
+    @property
+    def store(self) -> Path | None:
+        """the store's directory while the folder holds one (made by its first restore, gone once closed), else None.
+
+        :return: the directory, or None
+        :rtype: Path | None
+        """
+        with self._lock:
+            return self._root
+
     async def __aenter__(self) -> RestoreFolder:
         return self
 

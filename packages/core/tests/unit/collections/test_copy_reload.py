@@ -401,7 +401,9 @@ class TestMemory:
         copy, gate = gated
         gc.collect()
         baseline = pa.total_allocated_bytes()
-        pages = _big_reload(400_000)
+        # built on a thread (0.44 s of loop CPU on a runner, 11-26): Arrow's pool is the process's, so the baseline
+        # and the size still count these buffers, and the loop's measured work stays the handover below
+        pages = await asyncio.to_thread(_big_reload, 400_000)
         size = sum(page.rows.nbytes for page in pages)
         reload = await copy.reloads.reload(pages)
         del pages

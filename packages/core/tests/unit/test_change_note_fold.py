@@ -8,11 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
-import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from itertools import groupby
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -218,30 +216,23 @@ async def test_an_empty_final_page_folds_into_nothing() -> None:
     assert folded == 0 and records == []
 
 
-def _stores() -> set[Path]:
-    """the restore stores' directories there are now, where a folder makes them (``/dev/shm``, else the temp dir)."""
-    shm = Path("/dev/shm")
-    parent = shm if shm.is_dir() else Path(tempfile.gettempdir())
-    return set(parent.glob("change-note-restore-*"))
-
-
 async def test_a_closed_folder_leaves_no_worker_and_no_store() -> None:
     """Flips if a restore's worker outlives its restore, or its shared-memory store stays: after ``close`` no child
     process of the folder's is alive and its store's directory is gone (R4, 2026-11-15: kept, the worker held 193 MiB
     for the process's life)."""
     before = {child.pid for child in multiprocessing.active_children()}
-    stores_before = _stores()
     folder = RestoreFolder()
     folder.start()
     folded, _records = await folder.fold(
         _csv(_notes()), final=True, form=_PIECES, chunk_rows=3, max_bytes=_FORM.max_bytes
     )
     assert folded == len(_csv(_notes()))
-    stores = _stores() - stores_before
+    # this folder's own store, never a glob of /dev/shm: every test batch on a runner shares it (two runners, 11-26)
+    store = folder.store
     spawned = {child.pid for child in multiprocessing.active_children()} - before
-    assert len(stores) == 1 and spawned
+    assert store is not None and store.is_dir() and store.name.startswith("change-note-restore-") and spawned
     await _ended(folder)
-    assert not any(store.exists() for store in stores)
+    assert not store.exists() and folder.store is None
     assert not ({child.pid for child in multiprocessing.active_children()} & spawned)
 
 
@@ -250,21 +241,21 @@ async def test_close_returns_before_the_worker_exits_and_the_exit_still_ends() -
     331-372 ms, R4), or if the exit started then does not end with no worker and no store, a caller cancelled while
     it waits included."""
     before = {child.pid for child in multiprocessing.active_children()}
-    stores_before = _stores()
     folder = RestoreFolder()
     folder.start()
     await folder.fold(b"", final=True, form=_PIECES, chunk_rows=5000, max_bytes=_FORM.max_bytes)
-    stores = _stores() - stores_before
+    store = folder.store
+    assert store is not None
     spawned = {child.pid for child in multiprocessing.active_children()} - before
     await folder.close()
     # close only started the shutdown: the store and the worker are still there as it returns
-    assert all(store.exists() for store in stores) and stores
+    assert store.exists()
     assert spawned <= {child.pid for child in multiprocessing.active_children()}
     waiting = asyncio.ensure_future(folder.closed())
     await asyncio.sleep(0)
     waiting.cancel()
     await folder.closed()
-    assert not any(store.exists() for store in stores)
+    assert not store.exists()
     assert not ({child.pid for child in multiprocessing.active_children()} & spawned)
 
 
@@ -299,8 +290,7 @@ async def test_a_folder_never_started_spawns_nothing() -> None:
     """Flips if a folder spawns a worker or makes a store before a restore of this keeper's starts it: another
     keeper's restore (``begin_restore`` answered None) costs no process."""
     before = {child.pid for child in multiprocessing.active_children()}
-    stores_before = _stores()
-    async with RestoreFolder():
-        pass
-    assert _stores() == stores_before
+    async with RestoreFolder() as folder:
+        assert folder.store is None
+    assert folder.store is None
     assert {child.pid for child in multiprocessing.active_children()} == before
