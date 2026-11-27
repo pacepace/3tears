@@ -858,6 +858,15 @@ _YB_YCQL_PORT = 9042
 #: single-node cluster measured about 0.7 GB resident (2026-11-16, 2026.1.0.0-b118): these are its ceilings.
 _YB_MASTER_MEMORY = 1 << 30
 _YB_TSERVER_MEMORY = 2 << 30
+#: the share of the tablet server's memory held for tablets' own overheads, which sets how many tablets the cluster
+#: takes (1462 a GiB of it, the pinned release's ``tablet_replicas_per_gib_limit``). Its recommended share at this
+#: memory is 10%, a ceiling of 292 tablet replicas, which the root integration suite's one migrated schema (every
+#: package's tables, a tablet each and a tablet an index) passed (2026-11-26: "the total running tablet replica count
+#: (293) [would] exceed the safe system maximum (292)" at ``datasource_columns``, every YugabyteDB rewrite proof
+#: erroring at its setup). Measured once built (yb_local_tablets, the same day): 299 replicas, 286 of the schema's and
+#: 13 of the system's. 20% is a ceiling of 584 within the same memory limit; YugabyteDB's own estimate a tablet (about
+#: 0.7 MB) still holds for each.
+_YB_TABLET_OVERHEAD_PERCENT = 20
 #: a fresh cluster's start, master to first YSQL statement, took about 7 s alone; a runner's other batches slow it
 _YB_START_TIMEOUT_S = 180.0
 #: the settings ``yugabyted start`` gave the local YugabyteDB every earlier proof ran on (the integ095-yb container,
@@ -927,6 +936,7 @@ def yugabyte_tserver_argv(address: str, data: Path) -> list[str]:
         "--ysql_pg_conf_csv=yb_enable_cbo=on",
         "--ysql_enable_auth=true",
         f"--memory_limit_hard_bytes={_YB_TSERVER_MEMORY}",
+        f"--tablet_overhead_size_percentage={_YB_TABLET_OVERHEAD_PERCENT}",
         *_YB_COMMON_FLAGS,
     ]
 

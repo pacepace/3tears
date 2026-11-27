@@ -32,7 +32,9 @@ from threetears.agent.skills.collections import AgentSkillCollection, AgentSkill
 from threetears.agent.skills.types import SkillOutcome
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.same_results import Seeded, assert_same_results
+from threetears.interfaces.keyed.keys import declared_columns
 
 pytestmark = pytest.mark.integration
 
@@ -112,7 +114,17 @@ def _namespace(seed: Seeded) -> dict[str, Any]:
         "skill_eligible": seed.index % 3 == 0,
         "date_created": _BASE,
         "date_updated": _BASE,
+        # namespaces is ROW_STAMPED: a deleted row stays, marked gone, and every read skips it
+        "gone": seed.index % 5 == 4,
     }
+
+
+def _every_column() -> str:
+    """what a read of every column of the stamped ``namespaces`` selects: its declared columns, never its gone flag or
+    restore bucket (``keys.default_projection``)."""
+    declared = declared_columns("namespaces")
+    assert declared is not None, "namespaces is no longer declared ROW_STAMPED"
+    return ", ".join(f'"{column}"' for column in declared)
 
 
 async def test_the_names_under_a_node_are_the_rows_the_statement_read(db: Any) -> None:
@@ -129,7 +141,7 @@ async def test_the_names_under_a_node_are_the_rows_the_statement_read(db: Any) -
         row=_namespace,
         old_sql=(
             "SELECT namespace_id FROM namespaces WHERE row_scope IN ('platform', 'customer')"
-            ' AND (name = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3))'
+            ' AND (name = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3)) AND NOT gone'
         ),
         params=["a.b", "a.b.", "a.b/"],
         helper=helper,
@@ -160,8 +172,8 @@ async def test_the_flagged_tools_are_the_rows_the_statement_read(db: Any, flag: 
         table="namespaces",
         row=_namespace,
         old_sql=(
-            "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
-            f" AND {flag} = TRUE"
+            f"SELECT {_every_column()} FROM namespaces WHERE row_scope IN ('platform', 'customer')"
+            f" AND namespace_type = 'tool' AND {flag} = TRUE AND NOT gone"
         ),
         helper=helper,
         ordered=False,
@@ -174,9 +186,10 @@ _GROUPS = (uuid.uuid5(_NS, "group-0"), uuid.uuid5(_NS, "group-1"))
 @pytest.fixture
 async def groups(db: Any) -> AsyncIterator[None]:
     """the two groups the memberships hang on (committed: a membership's foreign key names its group)."""
+    # groups is ROW_STAMPED: each row carries its epoch, as every write stamps it
     await db.executemany(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
-        [(group, f"same-results-{group}") for group in _GROUPS],
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
+        [(group, f"same-results-{group}", next_epoch()) for group in _GROUPS],
     )
     try:
         yield

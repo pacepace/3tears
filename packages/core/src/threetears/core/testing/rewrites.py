@@ -1805,6 +1805,9 @@ def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> b
     if pin["kind"] == "increment":
         return _same_expression(value, f"Increment({pin['literal']!r})")
     if pin["kind"] in {"fragment", "guard"}:
+        if not pin["params"] and _same_expression(value, f"Fragment({pin['literal']!r})"):
+            # a fragment binding nothing, written without its empty arguments: the same fragment
+            return True
         bound = ", ".join(args[number - 1] for number in pin["params"])
         tail = "," if len(pin["params"]) == 1 else ""
         return _same_expression(value, f"Fragment({pin['literal']!r}, ({bound}{tail}))")
