@@ -25,12 +25,16 @@ import math
 from dataclasses import dataclass
 from typing import Final
 
+import numpy as np
+
 __all__ = [
     "MAX_MERCATOR_LATITUDE",
     "TILE_EXTENT",
     "BoundingBox",
     "TileId",
     "bounds_to_tile_range",
+    "lat_edges",
+    "lon_edges",
     "tile_bounds",
     "tile_for_point",
 ]
@@ -160,6 +164,52 @@ def tile_bounds(tile: TileId) -> BoundingBox:
     max_lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * tile.y / n))))
     min_lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (tile.y + 1) / n))))
     return BoundingBox(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
+
+
+def lon_edges(zoom: int, first_x: int, last_x: int) -> np.ndarray:
+    """the western edges of columns ``first_x`` to ``last_x + 1`` at ``zoom``: column ``x``'s
+    west is ``edges[x - first_x]`` and its east ``edges[x - first_x + 1]``.
+
+    :func:`tile_bounds` for a whole range of columns at once, the same numbers to the bit (the
+    same true division and arithmetic, as float64 arrays): a sweep over many tiles builds no
+    :class:`TileId` or :class:`BoundingBox` per tile.
+
+    :param zoom: zoom level
+    :ptype zoom: int
+    :param first_x: first column
+    :ptype first_x: int
+    :param last_x: last column, inclusive
+    :ptype last_x: int
+    :return: ``last_x - first_x + 2`` longitudes, west to east
+    :rtype: np.ndarray
+    """
+    edges: np.ndarray = np.arange(first_x, last_x + 2, dtype=np.int64) / (1 << zoom) * 360.0 - 180.0
+    return edges
+
+
+def lat_edges(zoom: int, first_y: int, last_y: int) -> np.ndarray:
+    """the northern edges of rows ``first_y`` to ``last_y + 1`` at ``zoom``: row ``y``'s north is
+    ``edges[y - first_y]`` and its south ``edges[y - first_y + 1]``.
+
+    :func:`tile_bounds` for a whole range of rows at once. one value a grid line, never a tile
+    (z8 has 257 lines and 65,536 tiles), each computed by :func:`tile_bounds`' own ``math`` calls:
+    numpy's ``sinh``/``arctan`` may differ from the C library's in the last bit, and a chunk's
+    edges must equal the tile bounds its loader queries were built from.
+
+    :param zoom: zoom level
+    :ptype zoom: int
+    :param first_y: first row
+    :ptype first_y: int
+    :param last_y: last row, inclusive
+    :ptype last_y: int
+    :return: ``last_y - first_y + 2`` latitudes, north to south
+    :rtype: np.ndarray
+    """
+    n = 1 << zoom
+    return np.array(
+        [math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n)))) for y in range(first_y, last_y + 2)],
+        dtype=np.float64,
+    )
 
 
 def bounds_to_tile_range(bounds: BoundingBox, zoom: int) -> tuple[int, int, int, int]:

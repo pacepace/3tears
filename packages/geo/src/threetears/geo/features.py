@@ -34,6 +34,7 @@ dropped when it is garbage-collected.
 
 from __future__ import annotations
 
+import itertools
 import secrets
 import weakref
 from collections.abc import Awaitable, Callable, Mapping
@@ -46,11 +47,26 @@ import pyarrow.compute as pc
 from threetears.core.cache.rtree import SQLiteRTree
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
-from threetears.core.frozen_state import EMPTY, with_entry, with_newest, without_entry
+from threetears.core.frozen_state import (
+    EMPTY,
+    with_entries,
+    with_entry,
+    with_newest,
+    with_newest_entries,
+    without_entries,
+)
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.geo.bounds import BOUNDS_COLUMNS, BoundsOf
 from threetears.geo.scope import check_cache_scope
-from threetears.geo.tiles import MAX_MERCATOR_LATITUDE, BoundingBox, TileId, bounds_to_tile_range, tile_bounds
+from threetears.geo.tiles import (
+    MAX_MERCATOR_LATITUDE,
+    BoundingBox,
+    TileId,
+    bounds_to_tile_range,
+    lat_edges,
+    lon_edges,
+    tile_bounds,
+)
 from threetears.geo.workers import read_bounds
 from threetears.observe import contain, get_logger, traced
 
@@ -156,9 +172,11 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         # bounds), least recently read first. coverage is what lets a hit be trusted: without it
         # the R-Tree can only say what is held, never what is complete. only filled with an L1
         # bound, and bounded by ``_row_limit`` row entries (``_held``). a read-only snapshot
-        # replaced whole (threetears.core.frozen_state): one entry a chunk, a few hundred at the
-        # default bound. a feature in two chunks is a row in each; it leaves the index when no
-        # held chunk next to the one evicted still carries it (see :meth:`_carried_nearby`)
+        # replaced whole (threetears.core.frozen_state): one entry a chunk, as many as the bound's
+        # entries (an empty chunk is one: a z1 rectangle over a small layer holds 16,384), so it is
+        # replaced once a read, a wide hold or an eviction, never once a chunk of many. a feature in
+        # two chunks is a row in each; it leaves the index when no held chunk next to the one
+        # evicted still carries it (see :meth:`_carried_nearby`)
         self._chunks: Mapping[_ChunkMarker, pa.Table] = EMPTY
         self._held = 0
         # chunks a read in progress depends on, which eviction skips until that read has answered;
@@ -313,25 +331,27 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if self.l1_backend is None:
             rows = await self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
             return _answer(rows, bounds)
-        chunks = self._chunks_for(bounds)
-        uncovered = sum(1 for chunk in chunks if (layer, source_version, chunk.key) not in self._chunks)
-        if uncovered > self.max_chunk_reads:
+        markers = self._markers_for(layer, source_version, bounds)
+        if markers is None or sum(1 for marker in markers if marker not in self._chunks) > self.max_chunk_reads:
             rows = await self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
             self._hold_rectangle(layer, source_version, bounds, rows)
             self._evict()
             return _answer(rows, bounds)
-        pinned: list[_ChunkMarker] = []
+        # the chunks held now are pinned at once, in one snapshot: one at a time copies the pins a
+        # chunk, quadratic in a z1 rectangle's 16,384 chunks (a small layer holds them all)
+        mine = [marker for marker in markers if marker in self._chunks]
+        self._pins = with_entries(self._pins, {marker: self._pins.get(marker, 0) + 1 for marker in mine})
+        pinned_first = set(mine)
         # rows of chunks this read cannot hold, answered from here instead of from the index
         transient: list[pa.Table] = []
         # entries this read has newly held: together they may not pass half the bound
         claimed = 0
         try:
-            for chunk in chunks:
-                marker = (layer, source_version, chunk.key)
-                held = self._chunks.get(marker)
-                if held is not None:
-                    self._chunks = with_newest(self._chunks, marker, held)
-                else:
+            for marker in markers:
+                if marker in pinned_first:
+                    continue
+                if marker not in self._chunks:
+                    chunk = TileId(*marker[2])
                     loaded = await self._prepared(
                         layer, source_version, await self._loader(layer, source_version, tile_bounds(chunk))
                     )
@@ -358,20 +378,23 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                     claimed += weight
                     self._index_rows(self._hold(marker, loaded))
                 self._pins = with_entry(self._pins, marker, self._pins.get(marker, 0) + 1)
-                pinned.append(marker)
+                mine.append(marker)
+            # the read's chunks become the newest, in the rectangle's chunk order, in one snapshot
+            ours = set(mine)
+            pinned = [marker for marker in markers if marker in ours]
+            self._chunks = with_newest_entries(self._chunks, {marker: self._chunks[marker] for marker in pinned})
             # every feature overlapping the rectangle overlaps a chunk under it, which this read
             # either holds (pinned: no eviction can take it before the answer) or answers from
             # ``transient``; the R-Tree says which held rows overlap, in its order
             keys = pa.array(self._keys_in_bbox(layer, source_version, bounds), type=pa.string())
-            found = [*transient, *(_rows_by_key(self._chunks[marker], keys) for marker in pinned)]
+            found = [*transient, *([_rows_by_key([self._chunks[marker] for marker in pinned], keys)] if pinned else [])]
             return _answer(_first_per_key(_concat(found)), bounds)
         finally:
-            for marker in pinned:
-                count = self._pins[marker] - 1
-                if count:
-                    self._pins = with_entry(self._pins, marker, count)
-                else:
-                    self._pins = without_entry(self._pins, marker)
+            left = {marker: self._pins[marker] - 1 for marker in mine}
+            self._pins = without_entries(
+                with_entries(self._pins, {marker: count for marker, count in left.items() if count}),
+                [marker for marker, count in left.items() if not count],
+            )
             self._evict()
 
     @property
@@ -418,10 +441,19 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             table = table.append_column(own, pc.cast(found.column(name), pa.float64()))
         return table
 
-    def _chunks_for(self, bounds: BoundingBox) -> list[TileId]:
-        """coarse tiles covering ``bounds``."""
-        min_x, min_y, max_x, max_y = bounds_to_tile_range(bounds, self.chunk_zoom)
-        return [TileId(z=self.chunk_zoom, x=x, y=y) for x in range(min_x, max_x + 1) for y in range(min_y, max_y + 1)]
+    def _markers_for(self, layer: str, source_version: int, bounds: BoundingBox) -> list[_ChunkMarker] | None:
+        """the markers of the coarse tiles covering ``bounds``, in column then row order; ``None``
+        when more of them are uncovered than :attr:`max_chunk_reads`, told without listing them.
+
+        at most ``len(self._chunks)`` of them are held, so a rectangle of more chunks than that and
+        :attr:`max_chunk_reads` together is the wide path, counted in two subtractions: listing a
+        z0 rectangle's 65,536 chunks held the loop 0.07-0.4 s to learn it.
+        """
+        zoom = self.chunk_zoom
+        min_x, min_y, max_x, max_y = bounds_to_tile_range(bounds, zoom)
+        if (max_x - min_x + 1) * (max_y - min_y + 1) - len(self._chunks) > self.max_chunk_reads:
+            return None
+        return [(layer, source_version, (zoom, x, y)) for x in range(min_x, max_x + 1) for y in range(min_y, max_y + 1)]
 
     def _hold_rectangle(self, layer: str, source_version: int, bounds: BoundingBox, rows: pa.Table) -> None:
         """cover every chunk ``bounds`` wholly contains, from one rectangle's prepared rows.
@@ -430,36 +462,67 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         its own would have returned -- an empty one included, which is coverage too (ocean). the
         whole rectangle is held or none of it, counted as the bound counts, and indexed in one
         transaction.
+
+        vectorised over the chunk grid (a z0 rectangle contains 65,536 chunks, a z1 one 16,384): a
+        chunk is wholly inside exactly when its column and its row both are, so the test is one
+        pass a grid line (:func:`~threetears.geo.tiles.lon_edges`, the same numbers as
+        :func:`~threetears.geo.tiles.tile_bounds`), never a :class:`TileId` and
+        :class:`BoundingBox` a chunk; and the contained chunks are held in one snapshot. a chunk at
+        a time this held the loop 0.07 s at z0 and 21 s at z1 (one row; the snapshot copied once a
+        chunk, the neighbours asked once a chunk).
         """
         zoom = self.chunk_zoom
+        n = 1 << zoom
         tile_range = bounds_to_tile_range(bounds, zoom)
         min_x, min_y, max_x, max_y = tile_range
-        contained: dict[tuple[int, int], BoundingBox] = {}
-        for x in range(min_x, max_x + 1):
-            for y in range(min_y, max_y + 1):
-                if (layer, source_version, (zoom, x, y)) in self._chunks:
-                    continue
-                chunk_bounds = tile_bounds(TileId(z=zoom, x=x, y=y))
-                if (
-                    chunk_bounds.min_lon >= bounds.min_lon
-                    and chunk_bounds.max_lon <= bounds.max_lon
-                    and chunk_bounds.min_lat >= bounds.min_lat
-                    and chunk_bounds.max_lat <= bounds.max_lat
-                ):
-                    contained[(x, y)] = chunk_bounds
-        if not contained:
+        west = lon_edges(zoom, min_x, max_x)
+        north = lat_edges(zoom, min_y, max_y)
+        columns = min_x + np.flatnonzero((west[:-1] >= bounds.min_lon) & (west[1:] <= bounds.max_lon))
+        lines = min_y + np.flatnonzero((north[1:] >= bounds.min_lat) & (north[:-1] <= bounds.max_lat))
+        cells = len(columns) * len(lines)
+        if cells - len(self._chunks) > self._read_cap:
+            # every contained chunk costs at least one entry and at most len(self._chunks) are held,
+            # so this read cannot fit: told before a code a chunk is made
+            self._log_wide_not_held(layer, source_version, rows.num_rows, cells - len(self._chunks))
             return
-        if len(contained) > self._read_cap:
-            # every contained chunk costs at least one entry, so this read cannot fit
-            self._log_wide_not_held(layer, source_version, rows.num_rows, len(contained))
+        held = np.fromiter(
+            (
+                x * n + y
+                for held_layer, held_version, (held_zoom, x, y) in self._chunks
+                if held_layer == layer and held_version == source_version and held_zoom == zoom
+            ),
+            dtype=np.int64,
+        )
+        # column-major, as the chunks were always taken: ascending codes
+        grid_x = np.repeat(columns, len(lines))
+        grid_y = np.tile(lines, len(columns))
+        fresh = ~np.isin(grid_x * n + grid_y, held)
+        grid_x, grid_y = grid_x[fresh], grid_y[fresh]
+        if not len(grid_x):
             return
-        per_chunk = _split_by_chunk(rows, contained, tile_range, zoom)
-        entries = sum(max(1, held.num_rows) for held in per_chunk.values())
+        if len(grid_x) > self._read_cap:
+            self._log_wide_not_held(layer, source_version, rows.num_rows, len(grid_x))
+            return
+        chunk_bounds = (
+            west[grid_x - min_x],
+            north[grid_y - min_y + 1],
+            west[grid_x - min_x + 1],
+            north[grid_y - min_y],
+        )
+        per_chunk = _split_by_chunk(rows, grid_x * n + grid_y, chunk_bounds, tile_range, zoom)
+        entries = sum(max(1, part.num_rows) for part in per_chunk)
         if entries > self._read_cap:
             self._log_wide_not_held(layer, source_version, rows.num_rows, entries)
             return
-        fresh = [self._hold((layer, source_version, (zoom, x, y)), held) for (x, y), held in per_chunk.items()]
-        self._index_rows(_concat([part.select(list(_OWN_COLUMNS)) for part in fresh]))
+        new = self._hold_all(
+            layer,
+            source_version,
+            {
+                (layer, source_version, (zoom, x, y)): part
+                for x, y, part in zip(grid_x.tolist(), grid_y.tolist(), per_chunk, strict=True)
+            },
+        )
+        self._index_rows(new.select(list(_OWN_COLUMNS)))
         log.debug(
             "wide read held: layer=%s version=%s rows=%d chunks covered=%d entries=%d",
             layer,
@@ -493,32 +556,66 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         self._held += max(1, rows.num_rows)
         return _without_keys(rows, nearby)
 
+    def _hold_all(self, layer: str, source_version: int, chunks: Mapping[_ChunkMarker, pa.Table]) -> pa.Table:
+        """:meth:`_hold` for many chunks none of which is held, in one snapshot: their rows whose
+        features are new to the pod, each feature once, at its first row, to index.
+
+        the same rows :meth:`_hold` a chunk at a time indexes: a feature a held chunk carries is in
+        the index already, and one two of these chunks carry is indexed once, at the first. the
+        neighbours are asked once for all of them, never once a chunk.
+        """
+        rows = _concat(list(chunks.values()))
+        nearby = self._carried_nearby(layer, source_version, rows)
+        self._chunks = with_newest_entries(self._chunks, chunks)
+        self._held += sum(max(1, part.num_rows) for part in chunks.values())
+        return _without_keys(_first_per_key(rows), nearby)
+
     def _evict(self) -> None:
-        """release least recently read chunks no read depends on, until within the bound."""
-        evicted = 0
-        while self._held > self._row_limit:
-            victim = next((marker for marker in self._chunks if marker not in self._pins), None)
-            if victim is None:
+        """release least recently read chunks no read depends on, until within the bound: in one
+        snapshot, their neighbours asked once (as :meth:`_release_all`)."""
+        over = self._held - self._row_limit
+        if over <= 0:
+            return
+        victims: list[_ChunkMarker] = []
+        for marker, rows in self._chunks.items():
+            if over <= 0:
                 break
-            self._release(victim)
-            evicted += 1
-        if evicted:
-            log.debug(
-                "feature cache evicted %d chunk(s); holding %d entries in %d chunk(s), bound %d",
-                evicted,
-                self._held,
-                len(self._chunks),
-                self._row_limit,
-            )
+            if marker in self._pins:
+                continue
+            victims.append(marker)
+            over -= max(1, rows.num_rows)
+        if not victims:
+            return
+        self._release_all(victims)
+        log.debug(
+            "feature cache evicted %d chunk(s); holding %d entries in %d chunk(s), bound %d",
+            len(victims),
+            self._held,
+            len(self._chunks),
+            self._row_limit,
+        )
+
+    def _release_all(self, markers: list[_ChunkMarker]) -> None:
+        """evict covered chunks, dropping from the index each feature no held chunk left carries.
+
+        what :meth:`_release` a chunk at a time ends with: a feature two victims carry is dropped
+        when neither is held, and kept while a chunk left holds it. one layer and version's chunks
+        are asked about their neighbours together.
+        """
+        gone = [self._chunks[marker] for marker in markers]
+        self._chunks = without_entries(self._chunks, markers)
+        self._held -= sum(max(1, rows.num_rows) for rows in gone)
+        by_source: dict[tuple[str, int], list[pa.Table]] = {}
+        for (layer, source_version, _key), rows in zip(markers, gone, strict=True):
+            by_source.setdefault((layer, source_version), []).append(rows)
+        for (layer, source_version), parts in by_source.items():
+            rows = _first_per_key(_concat(parts))
+            dropped = _without_keys(rows, self._carried_nearby(layer, source_version, rows))
+            self._unindex_keys(dropped.column(_KEY).to_pylist())
 
     def _release(self, marker: _ChunkMarker) -> None:
         """evict one covered chunk, dropping from the index each feature no other held chunk carries."""
-        rows = self._chunks[marker]
-        self._chunks = without_entry(self._chunks, marker)
-        self._held -= max(1, rows.num_rows)
-        layer, source_version, _key = marker
-        gone = _without_keys(rows, self._carried_nearby(layer, source_version, rows))
-        self._unindex_keys(gone.column(_KEY).to_pylist())
+        self._release_all([marker])
 
     def _carried_nearby(self, layer: str, source_version: int, rows: pa.Table) -> pa.Array | None:
         """the feature keys held chunks near ``rows`` carry, or ``None`` when none is held there.
@@ -652,10 +749,22 @@ def _first_per_key(rows: pa.Table) -> pa.Table:
     return _first_per(rows, rows.column(_KEY))
 
 
-def _rows_by_key(rows: pa.Table, keys: pa.Array) -> pa.Table:
-    """the rows of ``rows`` carrying ``keys``, in ``keys``' order; a key it does not carry is skipped."""
-    positions = pc.drop_null(pc.index_in(keys, value_set=rows.column(_KEY).combine_chunks()))
-    return rows.take(positions)
+def _rows_by_key(tables: list[pa.Table], keys: pa.Array) -> pa.Table:
+    """the rows of each of ``tables`` carrying ``keys``, table by table, each in ``keys``' order; a
+    key a table does not carry is skipped there.
+
+    one pass over the tables together, never a lookup a table (a z1 rectangle reads 16,384 held
+    chunks); each table carries a key once (:meth:`FeatureCache._prepared`), so a row's place is its
+    table's, then its key's.
+    """
+    rows = _concat(tables)
+    if not rows.num_rows or not len(keys):
+        return rows.slice(0, 0)
+    position = pc.index_in(rows.column(_KEY), value_set=keys)
+    present = np.flatnonzero(position.is_valid().to_numpy(zero_copy_only=False))
+    table = np.repeat(np.arange(len(tables)), [part.num_rows for part in tables])[present]
+    order = np.lexsort((position.to_numpy(zero_copy_only=False)[present], table))
+    return rows.take(pa.array(present[order], type=pa.int64()))
 
 
 def _without_keys(rows: pa.Table, keys: pa.Array | None) -> pa.Table:
@@ -696,18 +805,21 @@ def _tile_y(lat: np.ndarray, n: int) -> np.ndarray:
 
 def _split_by_chunk(
     rows: pa.Table,
-    contained: Mapping[tuple[int, int], BoundingBox],
+    codes: np.ndarray,
+    chunk_bounds: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     tile_range: tuple[int, int, int, int],
     zoom: int,
-) -> dict[tuple[int, int], pa.Table]:
-    """each ``contained`` chunk's rows: the prepared ``rows`` intersecting it, in row order.
+) -> list[pa.Table]:
+    """each chunk's rows: the prepared ``rows`` intersecting it, in row order, one table a chunk in
+    ``codes``' order.
 
-    each row is tried against the chunks of its own chunk range one chunk wider on every side -- a
-    row whose edge lies exactly on a chunk boundary touches the chunk beyond it too, and the
-    loader's edge-inclusive query returns it there, so the held set must as well -- then tested
-    exactly against the chunk's bounds. vectorised: one (row, chunk) pair per candidate, never a
-    Python object per row. each chunk's rows are a copy, so a held chunk never keeps the whole
-    rectangle's buffers alive.
+    ``codes`` names the chunks, ``x * 2**zoom + y`` ascending, and ``chunk_bounds`` holds their
+    :data:`BOUNDS_COLUMNS`, one array each. each row is tried against the chunks of its own chunk
+    range one chunk wider on every side -- a row whose edge lies exactly on a chunk boundary touches
+    the chunk beyond it too, and the loader's edge-inclusive query returns it there, so the held set
+    must as well -- then tested exactly against the chunk's bounds. vectorised: one (row, chunk)
+    pair per candidate, never a Python object per row. each chunk's rows are a copy, so a held chunk
+    never keeps the whole rectangle's buffers alive; the chunks with none share one empty table.
     """
     n = 1 << zoom
     range_min_x, range_min_y, range_max_x, range_max_y = tile_range
@@ -724,9 +836,6 @@ def _split_by_chunk(
     step = np.arange(int(pairs.sum())) - np.repeat(np.cumsum(pairs) - pairs, pairs)
     pair_x = first_x[row] + step % np.maximum(width[row], 1)
     pair_y = first_y[row] + step // np.maximum(width[row], 1)
-    order = sorted(contained)
-    codes = np.array([x * n + y for x, y in order], dtype=np.int64)
-    chunk_bounds = [np.array([getattr(contained[xy], name) for xy in order]) for name in BOUNDS_COLUMNS]
     found = np.minimum(np.searchsorted(codes, pair_x * n + pair_y), len(codes) - 1)
     keep = codes[found] == pair_x * n + pair_y
     keep &= min_lon[row] <= chunk_bounds[2][found]
@@ -736,11 +845,12 @@ def _split_by_chunk(
     kept_row, kept_chunk = row[keep], found[keep]
     by_chunk = np.lexsort((kept_row, kept_chunk))
     kept_row, kept_chunk = kept_row[by_chunk], kept_chunk[by_chunk]
-    edges = np.searchsorted(kept_chunk, np.arange(len(codes) + 1))
-    return {
-        xy: rows.take(pa.array(has_bounds[kept_row[edges[i] : edges[i + 1]]], type=pa.int64()))
-        for i, xy in enumerate(order)
-    }
+    edges = np.searchsorted(kept_chunk, np.arange(len(codes) + 1)).tolist()
+    empty = rows.schema.empty_table()
+    return [
+        rows.take(pa.array(has_bounds[kept_row[start:end]], type=pa.int64())) if end > start else empty
+        for start, end in itertools.pairwise(edges)
+    ]
 
 
 def _drop_index_entries(tree: SQLiteRTree) -> None:

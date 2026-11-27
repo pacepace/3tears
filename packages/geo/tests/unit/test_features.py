@@ -954,3 +954,43 @@ class TestHeldRowsAreArrow:
         loads = len(calls)
         assert _ids(await cache.features_in_bbox("tracts", 1, c_bounds)) == ["w"]
         assert len(calls) == loads, "c should still be held"
+
+
+class TestALowZoomReadOfASmallLayer:
+    """a z1 rectangle over a small layer is held whole: 16,384 z8 chunks, almost all empty. holding,
+    reading and evicting them is one snapshot each, never one a chunk: a chunk at a time copied the
+    chunk map a chunk and held the loop 21 s at z1 with one row (the loop-stall guard fails these on
+    that code). the answers are the chunk-at-a-time answers."""
+
+    _Z1 = TileId(z=1, x=0, y=0)
+
+    async def test_a_z1_rectangle_is_held_and_read_again_from_what_it_holds(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        # the z2 tile in the z1 tile's corner is 65x65 held chunks (its range takes the column and
+        # row past its edges, held too): every one read from what is held, none loaded
+        row = {"feature_id": "a", "bounds": BoundingBox(-150.0, 70.0, -149.99, 70.01)}
+        loader, calls = _recording_loader([row])
+        cache = _cache_over(request, loader)
+
+        first = await cache.features_in_bbox("tracts", 1, tile_bounds(self._Z1))
+        corner = await cache.features_in_bbox("tracts", 1, tile_bounds(TileId(z=2, x=0, y=0)))
+        inside = await cache.features_in_bbox("tracts", 1, tile_bounds(tile_for_point(-149.995, 70.005, 12)))
+
+        assert len(calls) == 1, f"the z1 rectangle should cover every chunk it contains, got {len(calls)} loads"
+        assert _ids(first) == _ids(corner) == _ids(inside) == ["a"]
+
+    async def test_held_z1_rectangles_are_evicted_together(self, request: pytest.FixtureRequest) -> None:
+        # each z1 rectangle holds 16,384 entries; the third passes the bound of 40,000 and evicts
+        # the oldest 9,152 chunks -- the first rectangle's western columns, its feature with them
+        row = {"feature_id": "a", "bounds": BoundingBox(-179.9, 85.0, -179.8, 85.01)}
+        loader, calls = _recording_loader([row])
+        cache = _cache_over(request, loader, max_cached_rows=40_000)
+        north_west = tile_bounds(self._Z1)
+
+        for x, y in ((0, 0), (1, 0), (0, 1)):
+            await cache.features_in_bbox("tracts", 1, tile_bounds(TileId(z=1, x=x, y=y)))
+
+        assert cache.indexed_keys_in_bbox("tracts", 1, north_west) == []
+        assert _ids(await cache.features_in_bbox("tracts", 1, north_west)) == ["a"]
+        assert len(calls) == 4, "the evicted chunks should load again"

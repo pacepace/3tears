@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import numpy as np
 import pyarrow as pa
 import pytest
 
@@ -50,10 +51,16 @@ _POINT_QUERY_THREADS = 2
 def _table(value: int, rows: int = ROWS) -> pa.Table:
     """a table whose column ``a`` is ``value`` in every row, and a text column beside it.
 
+    built from buffers, never a Python object a row: two 200k-item lists converted on the loop held it 0.351 s on the
+    pool (the loop-stall guard)
+
     :return: the table
     :rtype: pa.Table
     """
-    return pa.table({"a": pa.array([value] * rows, pa.int64()), "s": pa.array([f"row-{value}"] * rows, pa.string())})
+    text = f"row-{value}".encode()
+    offsets = np.arange(0, (rows + 1) * len(text), len(text), dtype=np.int32)
+    strings = pa.StringArray.from_buffers(rows, pa.py_buffer(offsets), pa.py_buffer(text * rows))
+    return pa.table({"a": pa.array(np.full(rows, value, dtype=np.int64)), "s": strings})
 
 
 @pytest.fixture
@@ -141,11 +148,22 @@ def _hidden(store: SharedArrowStore) -> list[str]:
     ]
 
 
+@pytest.fixture
+def published(store: SharedArrowStore) -> SharedArrowStore:
+    """the store with ``v1`` published: :data:`ROWS` rows of 3, made and written off the loop (a sync fixture).
+
+    :return: the store
+    :rtype: SharedArrowStore
+    """
+    store.publish("v1", {TABLE: _table(3)})
+    return store
+
+
 class TestManyProcessesShareOneCopy:
     async def test_three_workers_read_one_mapping(
-        self, store: SharedArrowStore, pool: SharedArrowPool, where: Path
+        self, published: SharedArrowStore, pool: SharedArrowPool, where: Path
     ) -> None:
-        store.publish("v1", {TABLE: _table(3)})
+        store = published
         path = str(version_files(store.root, "v1")[f"{TABLE}.arrow"].path)
         signals = str(where / "signals")
         answers = [
