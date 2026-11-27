@@ -26,6 +26,11 @@ a reason. The authoritative check is the hub-side test that runs the same
 accounting against the schema the hub's real migrations build; it lands with the
 hub's 0.61.0 re-pin.
 
+The three ``ROW_STAMPED`` tables are stamped as the hub's v190 stamps them, by the
+helper it calls (:func:`~threetears.datasources.stamp_tables.datasource_tables_carry_their_epoch`):
+their epoch, gone flag, stored restore bucket and its index are the helper's, never
+transcribed here. Their natural-name indexes, live rows only (hub v191), are built after.
+
 The DDL carries the hub's primary keys, unique indexes, defaults and CHECK
 constraints. Foreign keys to tables outside this module (``customers``) are left
 out; the self-reference on ``table_templates.origin_template_id`` is kept.
@@ -47,6 +52,7 @@ from threetears.core.collections import DeclaredTableCollection, init_connection
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import BUCKET_COLUMN, EPOCH_COLUMN, GONE_COLUMN
 from threetears.core.testing.tier_parity import live_tier_parity_findings
 
 from threetears.datasources.collections import (
@@ -57,6 +63,7 @@ from threetears.datasources.collections import (
     DataSourceTableCollection,
     TableTemplateCollection,
 )
+from threetears.datasources.stamp_tables import datasource_tables_carry_their_epoch
 
 pytestmark = pytest.mark.integration
 
@@ -85,9 +92,7 @@ CREATE TABLE datasources (
     face_platform_tool boolean NOT NULL DEFAULT TRUE,
     knowledge_required boolean NOT NULL DEFAULT FALSE,
     geo jsonb,
-    require_documented_tables boolean DEFAULT FALSE NOT NULL,
-    epoch bigint NOT NULL,
-    gone boolean NOT NULL DEFAULT false
+    require_documented_tables boolean DEFAULT FALSE NOT NULL
 )
 """
 
@@ -111,9 +116,7 @@ CREATE TABLE datasource_tables (
     date_created timestamp with time zone NOT NULL,
     date_updated timestamp with time zone NOT NULL,
     column_hash text,
-    coverage_dimension text,
-    epoch bigint NOT NULL,
-    gone boolean NOT NULL DEFAULT false
+    coverage_dimension text
 )
 """
 
@@ -183,8 +186,6 @@ CREATE TABLE table_templates (
     origin_template_id uuid REFERENCES table_templates(id) ON DELETE SET NULL,
     date_created timestamp with time zone NOT NULL,
     date_updated timestamp with time zone NOT NULL,
-    epoch bigint NOT NULL,
-    gone boolean NOT NULL DEFAULT false,
     CONSTRAINT table_templates_visibility_check
         CHECK (visibility IN ('private', 'public', 'restricted')),
     CONSTRAINT table_templates_visibility_customer_check
@@ -209,24 +210,31 @@ CREATE TABLE datasource_schema_digests (
 )
 """
 
+#: each table as the hub's migrations left it before its v190 stamped the ``ROW_STAMPED`` ones
 _ALL_DDL: tuple[str, ...] = (
     _DATASOURCES_DDL,
-    *_DATASOURCES_INDEXES,
     _DATASOURCE_TABLES_DDL,
-    *_DATASOURCE_TABLES_INDEXES,
     _DATASOURCE_COLUMNS_DDL,
     _DATASOURCE_RELATIONS_DDL,
     *_DATASOURCE_RELATIONS_INDEXES,
     _TABLE_TEMPLATES_DDL,
-    *_TABLE_TEMPLATES_INDEXES,
     _DATASOURCE_SCHEMA_DIGESTS_DDL,
+)
+
+#: the stamped tables' natural-name indexes, live rows only as the hub's v191 left them: built after the stamp, which
+#: gives the tables the ``gone`` flag they name
+_LIVE_NAME_INDEXES: tuple[str, ...] = (
+    *_DATASOURCES_INDEXES,
+    *_DATASOURCE_TABLES_INDEXES,
+    *_TABLE_TEMPLATES_INDEXES,
 )
 
 #: columns a save stamps itself, so a case cannot choose their value
 _STAMPED: frozenset[str] = frozenset({"date_created", "date_updated"})
 
-#: the stamp a ``ROW_STAMPED`` table's every write carries (its epoch rising, its gone flag), the collection's own
-_ROW_STAMP: frozenset[str] = frozenset({"epoch", "gone"})
+#: the stamp a ``ROW_STAMPED`` table's every write carries (its epoch rising, its gone flag), the collection's own,
+#: and the restore bucket the L3 table derives from the key (stored, generated: no write names it)
+_ROW_STAMP: frozenset[str] = frozenset({EPOCH_COLUMN, GONE_COLUMN, BUCKET_COLUMN})
 
 
 def _when(days: int) -> datetime:
@@ -562,6 +570,43 @@ def test_every_collection_in_the_package_has_a_case() -> None:
     assert {case.collection for case in _CASES} == exported
 
 
+class _MigrationStore:
+    """the pool as a hub migration's ``DataStore`` reaches it: ``query`` and ``execute``, bound to the schema."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        """hold the pool.
+
+        :param pool: the pool, its connections bound to the test's schema
+        :ptype pool: asyncpg.Pool
+        """
+        self._pool = pool
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """run a statement.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: its status
+        :rtype: str
+        """
+        status: str = await self._pool.execute(sql, *params)
+        return status
+
+    async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """run a read.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: its rows
+        :rtype: list[dict[str, Any]]
+        """
+        return [dict(row) for row in await self._pool.fetch(sql, *params)]
+
+
 @dataclass
 class _Store:
     """the pool over a fresh schema holding every hub table, and replicas over it."""
@@ -622,6 +667,11 @@ async def store(db_container: str) -> AsyncIterator[_Store]:
     assert pool is not None
     try:
         for statement in _ALL_DDL:
+            await pool.execute(statement)
+        # the stamp the hub's v190 takes, by the helper it calls: the epoch, the gone flag, the stored bucket and its
+        # index, never a transcription of them that drifts from the helper
+        await datasource_tables_carry_their_epoch(_MigrationStore(pool))
+        for statement in _LIVE_NAME_INDEXES:
             await pool.execute(statement)
         yield _Store(pool)
     finally:
@@ -730,6 +780,10 @@ async def test_the_declared_schema_is_the_table(store: _Store, case: _Case) -> N
     assert live, f"no columns found for {case.table}, so this check would pass vacuously"
     schema = case.collection.schema  # type: ignore[attr-defined]
     declared = {column.name: (column.nullable, column.server_default is not None) for column in schema.columns}
+    if schema.row_epoch is not None and not schema.row_epoch.versions:
+        # the restore bucket is the L3 table's alone, rendered from the declaration (no L1, entity or write names it):
+        # stored NOT NULL, generated from the key, so no default
+        declared[BUCKET_COLUMN] = (False, False)
     assert declared == live
     assert schema.pk_columns == (case.pk,)
 
@@ -813,10 +867,12 @@ async def test_a_save_of_a_partial_row_writes_only_the_columns_it_carries(
     # a stamped row's epoch rises on every write: it is the write's, not a column the partial row leaves alone
     untouched = {name for name in before if name not in partial and name != "epoch"}
     assert {name: after[name] for name in untouched} == {name: before[name] for name in untouched}
-    # the handle holds the row as L3 holds it, not the partial row it sent (a live row's gone flag is no field of it)
+    # the handle holds the row as L3 holds it, not the partial row it sent (a live row's gone flag is no field of it,
+    # nor is the restore bucket, the L3 table's alone)
     assert after.get("gone") in (None, False)
-    assert {name: entity.to_dict()[name] for name in after if name != "gone"} == {
-        name: value for name, value in after.items() if name != "gone"
+    l3_only = {GONE_COLUMN, BUCKET_COLUMN}
+    assert {name: entity.to_dict()[name] for name in after if name not in l3_only} == {
+        name: value for name, value in after.items() if name not in l3_only
     }
 
 

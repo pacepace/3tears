@@ -45,13 +45,18 @@ pytestmark = pytest.mark.integration
 #: rows each table is seeded with; a hundredth of them expired
 _ROWS = 50_000
 
-#: a value of each column type a coordination table holds NOT NULL
+#: a value of each column type a coordination table holds NOT NULL with no database default
 _SEED_VALUES = {DATETIMETZ_TYPE: "now()", INT_TYPE: "0", BIGINT_TYPE: "0", STRING_TYPE: "'done'"}
 
 
 def _seed_sql(declared: TableSchema) -> str:
-    """seed ``declared`` with :data:`_ROWS` rows, a hundredth of them expired, every NOT NULL column given a value."""
-    required = [column for column in declared.columns if not column.nullable and column.name not in {"purpose", "key"}]
+    """seed ``declared`` with :data:`_ROWS` rows, a hundredth of them expired, every NOT NULL column the database gives
+    no default a value (a stamped table's ``gone`` flag is ``DEFAULT false``: every seeded row live)."""
+    required = [
+        column
+        for column in declared.columns
+        if not column.nullable and column.server_default is None and column.name not in {"purpose", "key"}
+    ]
     names = ", ".join(column.name for column in required)
     given = ", ".join(_SEED_VALUES[column.column_type] for column in required)
     return (

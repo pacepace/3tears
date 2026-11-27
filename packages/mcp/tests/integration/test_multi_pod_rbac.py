@@ -108,12 +108,13 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
-        register_epoch(runner)
-        register_mcp(runner)
+        registered = (register_epoch(runner), register_mcp(runner))
         store = _AsyncpgStore(conn)
         count = await runner.apply_for_platform_schema(store)
-        # epoch v001 + v002 (previous_epoch, da9e89fb) + mcp v001 = 3 migrations.
-        assert count == 3, f"expected 3 platform migrations, applied {count}"
+        # every version the two packages attach, as they attach them (mcp's held v002 is not, unasked): a fresh
+        # schema runs each once, so a new version is counted the release it lands
+        expected = sum(len(package.versions) for package in registered)
+        assert count == expected, f"expected {expected} platform migrations, applied {count}"
     finally:
         await conn.close()
 
