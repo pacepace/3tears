@@ -29,7 +29,7 @@ from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Final
 
 from threetears.core.keyed._filters import Const, Fragment, Selected
-from threetears.core.keyed._filters import refuse_versioned, sent_by, stamped_names
+from threetears.core.keyed._filters import one_statement_guards, sent_by
 from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.interfaces.keyed.filters import AnyOf, by_conditions, quote_identifier, quoted_table
@@ -171,7 +171,8 @@ async def read_reached(
         # every version); a stamped one is guarded in place, each level and each join its live rows alone
         # (NOT "gone"), so the walk reads no row a delete marked gone. A walk a level a read is keyed reads, each live
         named = [table, *(join.table for join in joins or ())]
-        refuse_versioned(conn, named, f"a walk of {table} in one statement")
+        # checked once a shape for each generation of the registrations (one_statement_guards: the why there)
+        guarded = one_statement_guards(conn, named, f"a walk of {table} in one statement")
         sql, params = _held_statement(
             table,
             start=start,
@@ -182,7 +183,7 @@ async def read_reached(
             follow=follow,
             depth=depth,
             joins=joins,
-            guarded=stamped_names(conn, named),
+            guarded=guarded,
         )
         return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     if joins:
@@ -268,6 +269,10 @@ def _statement_key(
     :return: the key, or None
     :rtype: Hashable | None
     """
+    joined = tuple(j.shape for j in joins)
+    if None in joined:
+        # a join whose pin is not hashable (Joined.shape None): its statement is written for the call
+        return None
     key = (
         table,
         on,
@@ -278,19 +283,8 @@ def _statement_key(
         tuple((type(c), c, _pin_shape(v)) for c, v in start.items()),
         _mapping_key(by),
         _mapping_key(follow),
-        tuple(
-            (
-                j.table,
-                tuple(j.on.items()),
-                tuple(j.columns.items()),
-                j.left,
-                _mapping_key(j.by),
-                j.matched,
-                tuple(j.casts.items()),
-                tuple(j.counts.items()),
-            )
-            for j in joins
-        ),
+        # each join's shape, computed once when it was built (Joined.shape), not rebuilt from its mappings a call
+        joined,
     )
     try:
         hash(key)
@@ -325,7 +319,7 @@ def _held_statement(
     shape = _statement_key(
         table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
     )
-    key = None if shape is None else (shape, tuple(sorted(guarded)))
+    key = None if shape is None else (shape, guarded)
     if key is None:
         return _reached_statement(
             table,

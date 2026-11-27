@@ -28,10 +28,9 @@ from threetears.core.keyed._filters import (
     Lock,
     Selected,
     live_read,
+    one_statement_guards,
     reads_l3,
-    refuse_versioned,
     sent_by,
-    stamped_names,
 )
 from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
@@ -311,8 +310,7 @@ async def read_nearest(
     # The pins inside bound its scope, and work_mem holds its sort
     sender = bounded_sent(conn, table)
     # a versioned table's every version is refused; a stamped one's lookups are guarded in place (NOT j."gone")
-    refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
-    guarded = stamped_names(conn, [join.table for join in joins])
+    guarded = one_statement_guards(conn, [join.table for join in joins], f"a ranked read of {table} joining")
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins, guarded)
         rows = list(await sender.fetch(sql, *params))
