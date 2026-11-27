@@ -299,6 +299,28 @@ ratio. A CPU clock skips the time a process waits for a core, yet the pool's ove
 of the same work 1.4-3x (2026-11-26). Each of those helpers refuses to start in a test not marked `loop_timing`
 (`tests/timing_suite.py`).
 
+**The loop-stall guard calibrates per host.** Every test, in every suite, fails when one turn of its
+event loop held the loop past 0.25 s of the loop thread's CPU (`threetears.core.testing.loop_stall`),
+naming the function that spent it. That 0.25 s is the reference host's: monad-1, quiet. In a shared
+suite (`default`, `integration`: batches beside other batches) the limit is 0.25 s x this host's
+factor, and so is a test's own `@pytest.mark.loop_stall_limit(seconds=...)`; in an exclusive suite (a
+test marked `loop_timing`) it is exactly 0.25 s.
+
+| | |
+|---|---|
+| the probe | ~4 ms: a Python pass over a dict of rows and two Arrow kernels, on the loop thread's CPU clock, before the first test and every 30 s, between tests (`threetears.core.testing.host_factor`) |
+| reference | 3.9 ms, monad-1 quiet (2026-11-26); 2.1 ms for the Python half alone, the probe of a process without pyarrow |
+| factor | max(1, median of the last 3 probes, each the best of 3 takes / 3.9 ms) |
+| cap | 4x: past it a turn over 1.0 s fails as "could not measure: this host spends N x the reference host's CPU...", never a pass and never a stall red |
+
+Why: a CPU clock skips the wait for a core, but the pool's oversubscribed runners (brooks-5950x, 30
+slots on 16 cores; brooks-nas, 12 on 6) still spent 1.4-3x the CPU of the quietest on the same
+tests (2026-11-26), so a turn of 0.08-0.25 s of reference work passed or failed by runner. A stall
+red says the limit it was held to: `the limit is 0.450 s on this host: 0.250 s x 1.80 (host factor
+1.80: the probe took 7.02 ms ...)`. `tests/enforcement/test_exclusive_suites_are_loop_timing.py`
+holds `.testament.toml` to it: every `exclusive = true` suite selects `loop_timing` tests, every
+other suite drops them.
+
 `platform` names its packages one by one rather than ending in a catch-all `packages/**`: a
 catch-all overlaps every area above it, and `areas check --strict` reports each overlap. A new
 package therefore needs its glob in `[suites.default.areas]` and the same in `[suites.loop_timing.areas]`;

@@ -662,6 +662,8 @@ module = [
     "threetears.core.collections.copy_stages",
     # and a test's copy that publishes each applied state as shared Arrow (testing.published_copy)
     "threetears.core.testing.published_copy",
+    # and the loop-stall guard's host probe, whose Arrow half is two of Arrow's kernels (testing.host_factor)
+    "threetears.core.testing.host_factor",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
     # and the writer's fold of a table's delta files into the full's parts (Arrow IPC)
