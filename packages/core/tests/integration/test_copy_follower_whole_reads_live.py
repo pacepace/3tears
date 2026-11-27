@@ -11,7 +11,8 @@ The whole reads the no-whole-reads ledger keeps, each held within 2x its bare op
 - ``CopyCheckpoints.stage`` (a start from a checkpoint): every part read back from the Object Store and staged, against
   the bare decode and copy-in of the same parts into DuckDB;
 - ``copy_checkpoint._batches`` (a checkpoint write at a table's cold start): the table read from the copy and stored
-  as parts, against the bare read of the same rows and their encoding.
+  as parts, against the bare read of the same rows and their encoding as the same parts at a query worker's share (one
+  thread), plus a trivial job's round trip to the worker.
 
 And the one keyed patch beside them: ``copy_checkpoint._patched_part`` (a checkpoint write of a table with no scope:
 its one part's untouched rows kept through ``keyed.anti``, the touched keys' rows read from the copy by key), against
@@ -236,13 +237,12 @@ def _checkpoints(backend: DuckDBBackend, store: _Store, pointers: _Pointers) -> 
     )
 
 
-def _reader(backend: DuckDBBackend) -> Any:
-    published = PublishedCopy(backend)
+def _reader(published: PublishedCopy) -> Any:
+    """the read a checkpoint write holds: the copy's version current now, pinned as its follower pins it (a leased
+    version, read in a query worker). The copy is published once, when made: a write publishes nothing."""
 
     @asynccontextmanager
     async def read() -> AsyncIterator[tuple[PinnedCopy, Any, Any]]:
-        # the copy's state now, published and pinned as its follower pins it (a leased version, read in a query worker)
-        await asyncio.to_thread(published.publish)
         state = await QueriedReads(published.queries).current()
         try:
             yield state, 1, {_TABLE: "inc:0"}
@@ -250,6 +250,17 @@ def _reader(backend: DuckDBBackend) -> Any:
             await state.close()
 
     return read
+
+
+async def _round_trip(published: PublishedCopy) -> None:
+    """a trivial job's round trip to a query worker over the pinned version: what a checkpoint write pays once beside
+    its read and its encoding (the pin, the hand-off, the answer)."""
+    version = await published.queries.current()  # what QueriedReads.current pins
+    try:
+        answer = await published.queries.run("SELECT 1 AS one", version=version.name, reader=False)
+        await answer.aclose()
+    finally:
+        await version.aclose()
 
 
 @pytest.mark.loop_timing
@@ -381,8 +392,9 @@ async def test_checkpoint_stage_speed_at_real_size() -> None:
     """CopyCheckpoints.stage (a start's load of every table from L2) within 2x the bare decode and copy-in of the same
     parts into DuckDB."""
     source = await asyncio.to_thread(_filled)
+    published = await asyncio.to_thread(PublishedCopy, source)
     store, pointers = _Store(), _Pointers()
-    assert await _checkpoints(source, store, pointers).write(_reader(source)) is not None
+    assert await _checkpoints(source, store, pointers).write(_reader(published)) is not None
     parts = [store.objects[name] for name in sorted(store.objects)]
 
     def copy_in() -> None:
@@ -416,30 +428,81 @@ async def test_checkpoint_stage_speed_at_real_size() -> None:
 async def test_checkpoint_whole_write_speed_at_real_size() -> None:
     """a checkpoint write at a table's cold start, whose whole read of the copy is copy_checkpoint._batches_cold_start
     (the same statement _batches_schema_change and _batches_rolling_upgrade run), within 2x the bare read of the same
-    rows and their encoding as parts."""
+    rows and their encoding as the same parts, at a query worker's share (one thread), plus a trivial job's round trip
+    to the worker.
+
+    Why the bare is a query worker's share and the round trip budgeted on its own (diagnosed 2026-11-26, 1M rows, 50
+    scopes): since 2026-11-25 (3tears f98a93deb, 80dbc80ee) the write's read and encoding run in a query worker, DuckDB
+    on one thread and pyarrow on one CPU (design-copy-worker-backend.md, decision 5), while the bare read and encoded
+    in-process on every core: 192.7 ms against a 27.1 ms bare. Of that, ~51 ms was the test's own fixture timed with the
+    write (a new PublishedCopy each run: two full publishes, and a new query pool whose first job started a worker).
+    The write itself, warm, over a published version: 64 ms (the worker round trip 7-8, DuckDB's read 9.6, the cut by
+    scope ~12 of which the dictionary encode 11.2 (copy_checkpoint._scope_runs, since cut to ~5.8 ms), the zstd
+    encoding of 52 parts 25.4, the hand-off of the parts ~2). So the copy is published once outside the timing, its
+    pool warmed by one untimed job, and each timed run pins the version and writes."""
     source = await asyncio.to_thread(_filled)
+    published = await asyncio.to_thread(PublishedCopy, source)
+    await _round_trip(published)  # the pool's first job starts its worker: never timed
+    rows = await asyncio.to_thread(_rows)
+    batch_rows = 250_000  # copy_checkpoint's default part_rows: the batches the write reads and cuts
+
+    def plain() -> Any:
+        con = duckdb.connect(":memory:", config={"threads": 1})
+        con.register("rows", rows)
+        con.execute(f"CREATE TABLE {_TABLE} AS SELECT * FROM rows")  # noqa: S608
+        con.unregister("rows")
+        return con
+
+    con = await asyncio.to_thread(plain)
+
+    def cuts() -> list[list[int]]:
+        # where the path cuts each batch (a scope's rows run together): found once, outside the timing
+        found = []
+        for batch in con.execute(f"SELECT * FROM {_TABLE}").fetch_record_batch(batch_rows):  # noqa: S608
+            scopes = batch.column(0)
+            changed = pc.not_equal(scopes.slice(1), scopes.slice(0, batch.num_rows - 1))
+            found.append([0, *(int(i) + 1 for i in pc.indices_nonzero(changed).to_pylist()), batch.num_rows])
+        return found
+
+    cut = await asyncio.to_thread(cuts)
+    one_thread = ipc.IpcWriteOptions(compression="zstd", use_threads=False)
 
     def read_and_encode() -> None:
-        with source.read_snapshot() as cursor:
-            reader = cursor.execute(f"SELECT * FROM {_TABLE}").fetch_record_batch(250_000)  # noqa: S608
-            for batch in reader:
+        reader = con.execute(f"SELECT * FROM {_TABLE}").fetch_record_batch(batch_rows)  # noqa: S608
+        for batch, starts in zip(reader, cut, strict=True):
+            for start, end in zip(starts, starts[1:], strict=False):
                 sink = pa.BufferOutputStream()
-                with ipc.new_stream(sink, batch.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
-                    writer.write_batch(batch)
+                with ipc.new_stream(sink, batch.schema, options=one_thread) as writer:
+                    writer.write_batch(batch.slice(start, end - start))
 
     async def bare() -> None:
         await asyncio.to_thread(read_and_encode)
 
-    async def write() -> None:
-        written = await _checkpoints(source, _Store(), _Pointers()).write(_reader(source))
-        assert written is not None and written.rows == _ROWS
+    async def trip() -> None:
+        await _round_trip(published)
 
-    baseline = await best_seconds(bare)
-    took = await best_seconds(write)
+    read = _reader(published)
+    parts = sum(len(starts) - 1 for starts in cut)
+
+    async def write() -> None:
+        written = await _checkpoints(source, _Store(), _Pointers()).write(read)
+        assert written is not None and written.rows == _ROWS
+        assert len(written.tables[_TABLE].parts) == parts
+
+    try:
+        baseline = await best_seconds(bare)
+        round_trip = await best_seconds(trip)
+        took = await best_seconds(write)
+    finally:
+        con.close()
     print(
-        f"cold-start write of {_ROWS} rows {took:.2f} s, bare read and encode {baseline:.2f} s, {took / baseline:.2f}x"
+        f"cold-start write of {_ROWS} rows ({parts} parts) {took * 1000:.1f} ms, bare read and encode at one thread "
+        f"{baseline * 1000:.1f} ms, worker round trip {round_trip * 1000:.1f} ms, "
+        f"{(took - round_trip) / baseline:.2f}x once that is taken off"
     )
-    problem = budget_problem(f"a cold-start checkpoint write (_batches_cold_start) of {_ROWS} rows", took, baseline)
+    problem = budget_problem(
+        f"a cold-start checkpoint write (_batches_cold_start) of {_ROWS} rows", took, baseline, plus=round_trip
+    )
     assert problem is None, problem
 
 
