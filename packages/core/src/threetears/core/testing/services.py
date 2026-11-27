@@ -68,6 +68,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Final, NoReturn
 
 import asyncpg
@@ -539,6 +540,47 @@ def _teardown(directory: Path, what: str) -> Iterator[None]:
             contain(exc, log=log, what=f"removing the {what} test service's directory {directory}")
 
 
+class _OffTheLoop[T](contextlib.AbstractContextManager[T]):
+    """a service's context manager whose start and stop run on a thread of its own, never the caller's.
+
+    An async fixture enters a service's block on its event loop's thread, and a start is work that thread would
+    otherwise do on the loop: forking the test process for ``initdb`` and each server (a copy of a large heap's page
+    tables), reading their output, copying the template cluster, polling the log. One Postgres start held a pool
+    test's loop 0.31 s of CPU in one turn (``_run_checked``, ``_postgres_process``; past
+    :mod:`threetears.core.testing.loop_stall`'s limit, 2026-11-26). On the thread the loop's thread only waits. A sync
+    caller (a session fixture) waits the same way, with nothing else to run.
+
+    One thread for the whole block, alive from the start to the end of the stop: the servers are forked on it, and
+    a server may end with the thread that forked it (Linux's parent-death signal names the forking thread, not the
+    process). A YugabyteDB cluster started on a thread that ended once the start returned was gone by the first
+    statement, every test's connection closed by an administrator command (pool, 2026-11-26).
+    """
+
+    def __init__(self, inner: contextlib.AbstractContextManager[T]) -> None:
+        self._inner = inner
+        self._thread: concurrent.futures.ThreadPoolExecutor | None = None
+
+    def __enter__(self) -> T:
+        self._thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-service")
+        try:
+            return self._thread.submit(self._inner.__enter__).result()
+        except BaseException:
+            self._thread.shutdown(wait=True)
+            self._thread = None
+            raise
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> bool | None:
+        thread = self._thread
+        assert thread is not None, "a service's block ends only after it began"
+        self._thread = None
+        try:
+            return thread.submit(self._inner.__exit__, exc_type, exc, tb).result()
+        finally:
+            thread.shutdown(wait=True)
+
+
 def _free_port() -> int:
     """a TCP port on 127.0.0.1 that nothing listens on at this moment.
 
@@ -783,8 +825,8 @@ def running_postgres(image: str) -> contextlib.AbstractContextManager[str]:
     :rtype: contextlib.AbstractContextManager[str]
     """
     if _services_mode() == _PROCESS:
-        return _postgres_process(image)
-    return _postgres_container(image)
+        return _OffTheLoop(_postgres_process(image))
+    return _OffTheLoop(_postgres_container(image))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1095,7 +1137,7 @@ def running_yugabyte() -> contextlib.AbstractContextManager[str]:
             f"{_SERVICES_ENV}={_PROCESS} starts one (the pool's integration_yugabyte suite)",
             returncode=2,
         )
-    return _yugabyte_process()
+    return _OffTheLoop(_yugabyte_process())
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1237,8 +1279,8 @@ def running_nats(config: str | None, *, image: str) -> contextlib.AbstractContex
     :rtype: contextlib.AbstractContextManager[RunningNats]
     """
     if _services_mode() == _PROCESS:
-        return _nats_process(config, image)
-    return _nats_container(config, image)
+        return _OffTheLoop(_nats_process(config, image))
+    return _OffTheLoop(_nats_container(config, image))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1411,5 +1453,5 @@ def running_s3(credentials: tuple[str, str]) -> contextlib.AbstractContextManage
     :rtype: contextlib.AbstractContextManager[tuple[str, str]]
     """
     if _services_mode() == _PROCESS:
-        return _s3_process(credentials)
-    return _s3_container(credentials)
+        return _OffTheLoop(_s3_process(credentials))
+    return _OffTheLoop(_s3_container(credentials))

@@ -213,7 +213,8 @@ def _backend() -> DuckDBBackend:
 
 
 def _filled() -> DuckDBBackend:
-    """a copy holding the rows, applied with mark 1 (a reader's stamp names it)."""
+    """a copy holding the rows, applied with mark 1 (a reader's stamp names it). Synchronous, a Python pass a row and the
+    in-process apply: a test runs it on a thread (asyncio.to_thread), never on the loop."""
     backend = _backend()
     stage = f"{STAGE_PREFIX}{_TABLE}__rows"
     backend.stage_rows(stage, _TABLE, _rows(), _KEY)
@@ -379,7 +380,7 @@ async def test_rebuild_speed_at_real_size(db: _Db, tmp_path: Path) -> None:
 async def test_checkpoint_stage_speed_at_real_size() -> None:
     """CopyCheckpoints.stage (a start's load of every table from L2) within 2x the bare decode and copy-in of the same
     parts into DuckDB."""
-    source = _filled()
+    source = await asyncio.to_thread(_filled)
     store, pointers = _Store(), _Pointers()
     assert await _checkpoints(source, store, pointers).write(_reader(source)) is not None
     parts = [store.objects[name] for name in sorted(store.objects)]
@@ -416,7 +417,7 @@ async def test_checkpoint_whole_write_speed_at_real_size() -> None:
     """a checkpoint write at a table's cold start, whose whole read of the copy is copy_checkpoint._batches_cold_start
     (the same statement _batches_schema_change and _batches_rolling_upgrade run), within 2x the bare read of the same
     rows and their encoding as parts."""
-    source = _filled()
+    source = await asyncio.to_thread(_filled)
 
     def read_and_encode() -> None:
         with source.read_snapshot() as cursor:
@@ -448,14 +449,8 @@ _PART_ROWS = 250_000
 _PART_TOUCHED = 25_000
 
 
-@pytest.mark.loop_timing
-async def test_checkpoint_patch_speed_at_real_size() -> None:
-    """a checkpoint write of a table with no scope (CopyCheckpoints.write patching its one part,
-    copy_checkpoint._patched_part: the part's untouched rows kept by keyed.anti over the part and the staged touched
-    keys, the touched keys' rows read from the copy by key) of a 250,000-row part with 25,000 keys touched, within 2x
-    the bare work of the same patch: the part decoded, the touched keys' keyed read of the copy, the part's untouched
-    rows by DuckDB's own ANTI JOIN to the keys, put together and encoded as a part."""
-    table = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)
+def _patch_rows() -> tuple[list[tuple[str, int]], list[tuple[str, int]], Any, Any]:
+    """the patch test's part before and after its change, with the keys changed in place and the keys added."""
     per = _PART_ROWS // _STATES
     states = [f"S{s:02d}" for s in range(_STATES) for _ in range(per)]
     geos = [g for _ in range(_STATES) for g in range(per)]
@@ -482,7 +477,22 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
             ),
         }
     )
-    backend = _backend()
+    return touched, added, before, after
+
+
+@pytest.mark.loop_timing
+async def test_checkpoint_patch_speed_at_real_size() -> None:
+    """a checkpoint write of a table with no scope (CopyCheckpoints.write patching its one part,
+    copy_checkpoint._patched_part: the part's untouched rows kept by keyed.anti over the part and the staged touched
+    keys, the touched keys' rows read from the copy by key) of a 250,000-row part with 25,000 keys touched, within 2x
+    the bare work of the same patch: the part decoded, the touched keys' keyed read of the copy, the part's untouched
+    rows by DuckDB's own ANTI JOIN to the keys, put together and encoded as a part."""
+    table = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)
+    # the setup's rows are built and applied on a thread, never on the loop: building them is a Python pass a row and
+    # their apply is the in-process DuckDB's (a follower's apply is its apply worker's, copy_stages.SharedCopyStages),
+    # either one a loop turn past threetears.core.testing.loop_stall's limit at this size
+    touched, added, before, after = await asyncio.to_thread(_patch_rows)
+    backend = await asyncio.to_thread(_backend)
     stage = f"{STAGE_PREFIX}{_TABLE}__rows"
     stamp = [1]
 
@@ -503,7 +513,7 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
         finally:
             await state.close()
 
-    put(before)
+    await asyncio.to_thread(put, before)
     store, pointers = _Store(), _Pointers()
     checkpoints = CopyCheckpoints(
         name="patch",
@@ -520,7 +530,7 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
     [(name, _, _)] = first.tables[_TABLE].parts
     part = store.objects[name]
     stamp[0] = 2
-    put(after)
+    await asyncio.to_thread(put, after)
     keys = [(s, str(g)) for s, g in touched + added]
     bound = [[s for s, _ in keys], [g for _, g in keys]]
     # the touched keys as the follower hands them to the checkpoint: one Arrow table of the key columns as text
@@ -564,7 +574,7 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
         stamp[0] += 1
         checkpoints.applied(len(keys), {_TABLE: frozenset()}, {_TABLE: touched_keys})
         written = await checkpoints.write(read)
-        assert written is not None and written.rows == _PART_ROWS + _PART_TOUCHED - changed
+        assert written is not None and written.rows == _PART_ROWS + len(added)
 
     baseline = await best_seconds(bare)
     took = await best_seconds(patched)
