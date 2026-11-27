@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -19,6 +20,12 @@ MAX_DIMENSION = 4096
 #: the byte size the module documents as its passthrough bound: a web-safe image at
 #: or under it is returned untouched.
 SIZE_THRESHOLD = 512 * 1024
+
+
+def _prepared(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    """:func:`prepare_image_for_vision` on a loop of its own: these tests build and read their images off the loop,
+    in the synchronous test body, and only the call runs on one."""
+    return asyncio.run(prepare_image_for_vision(data, mime_type))
 
 
 def _make_jpeg(width: int, height: int, quality: int = 95) -> bytes:
@@ -60,14 +67,14 @@ class TestPassthrough:
     def test_small_jpeg_passthrough(self) -> None:
         data = _make_jpeg(100, 100)
         assert len(data) < SIZE_THRESHOLD
-        result, mime = prepare_image_for_vision(data, "image/jpeg")
+        result, mime = _prepared(data, "image/jpeg")
         assert result is data  # exact same object
         assert mime == "image/jpeg"
 
     def test_small_png_passthrough(self) -> None:
         data = _make_png(100, 100)
         assert len(data) < SIZE_THRESHOLD
-        result, mime = prepare_image_for_vision(data, "image/png")
+        result, mime = _prepared(data, "image/png")
         assert result is data
         assert mime == "image/png"
 
@@ -83,7 +90,7 @@ class TestResize:
             # Solid-color compresses too well; use random noise
             data = _make_noisy_jpeg(8000, 4000)
         assert len(data) > SIZE_THRESHOLD
-        result, mime = prepare_image_for_vision(data, "image/jpeg")
+        result, mime = _prepared(data, "image/jpeg")
         assert mime == "image/jpeg"
 
         from PIL import Image
@@ -95,7 +102,7 @@ class TestResize:
     def test_oversized_height_resized(self) -> None:
         data = _make_noisy_jpeg(2000, 6000)
         assert len(data) > SIZE_THRESHOLD
-        result, mime = prepare_image_for_vision(data, "image/jpeg")
+        result, mime = _prepared(data, "image/jpeg")
 
         from PIL import Image
 
@@ -109,7 +116,7 @@ class TestResize:
         if len(data) <= SIZE_THRESHOLD:
             # Force it over threshold by padding (unlikely but defensive)
             data = data + b"\x00" * (SIZE_THRESHOLD + 1)
-        result, mime = prepare_image_for_vision(data, "image/jpeg")
+        result, mime = _prepared(data, "image/jpeg")
         assert mime == "image/jpeg"
         # Should be re-encoded (different bytes)
         assert result != data
@@ -122,13 +129,13 @@ class TestFormatConversion:
         data = _make_png(100, 100, rgba=True)
         # Make it larger than threshold so it triggers processing
         big_data = data + b"\x00" * (SIZE_THRESHOLD + 1)
-        result, mime = prepare_image_for_vision(big_data, "image/png")
+        result, mime = _prepared(big_data, "image/png")
         assert mime == "image/jpeg"
 
     def test_unknown_mime_processed(self) -> None:
         """HEIC or other non-web-safe types always trigger processing."""
         data = _make_jpeg(100, 100)  # valid JPEG bytes but labeled as heic
-        result, mime = prepare_image_for_vision(data, "image/heic")
+        result, mime = _prepared(data, "image/heic")
         assert mime == "image/jpeg"
 
 
@@ -137,13 +144,13 @@ class TestErrorHandling:
 
     def test_corrupt_data_returns_original(self) -> None:
         data = b"not an image at all"
-        result, mime = prepare_image_for_vision(data, "image/jpeg")
+        result, mime = _prepared(data, "image/jpeg")
         assert result is data
         assert mime == "image/jpeg"
 
     def test_empty_data_returns_original(self) -> None:
         data = b""
-        result, mime = prepare_image_for_vision(data, "image/png")
+        result, mime = _prepared(data, "image/png")
         assert result is data
         assert mime == "image/png"
 
@@ -154,7 +161,7 @@ class TestAFailedResizeIsReported:
     def test_corrupt_bytes_that_need_processing_raise_rather_than_come_back_as_prepared(self) -> None:
         data = b"not an image at all"
         with pytest.raises(ImagePrepError, match=r"image/heic, 19 bytes\) could not be resized") as caught:
-            prepare_image_for_vision(data, "image/heic")
+            _prepared(data, "image/heic")
         assert caught.value.mime_type == "image/heic"
         assert caught.value.size_bytes == len(data)
 
@@ -163,13 +170,14 @@ class TestAFailedResizeIsReported:
         big = _make_jpeg(100, 100) + b"\x00" * (SIZE_THRESHOLD + 1)
         probe = textwrap.dedent(
             """
+            import asyncio
             import json
             import sys
             sys.modules["PIL"] = None
             from threetears.agent.tools.builtin.image_prep import ImagePrepError, prepare_image_for_vision
             big = sys.stdin.buffer.read()
             try:
-                prepare_image_for_vision(big, "image/jpeg")
+                asyncio.run(prepare_image_for_vision(big, "image/jpeg"))
             except ImagePrepError as exc:
                 print(json.dumps({"refused": str(exc)}))
             else:
@@ -183,19 +191,15 @@ class TestAFailedResizeIsReported:
         assert "ModuleNotFoundError" in outcome["refused"]
 
     @pytest.mark.asyncio
-    async def test_no_exception_message_reaches_the_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from PIL import Image
-
-        def _planted(*args: object, **kwargs: object) -> None:
-            raise OSError("PLANTED-1a9f cannot identify image file")
-
-        monkeypatch.setattr(Image, "open", _planted)
+    async def test_no_exception_message_reaches_the_agent(self) -> None:
+        """the resize runs in a worker process, which nothing patched here reaches: Pillow's own words for bytes it
+        cannot read are the message that must stay out."""
         result = await ImagePrepTool().execute(
             image_data_base64=base64.b64encode(b"x" * (SIZE_THRESHOLD + 1)).decode(), mime_type="image/jpeg"
         )
         assert result.success is False
-        assert result.error is not None and "for a vision model: OSError;" in result.error
-        assert "PLANTED-1a9f" not in (result.error or "") + result.content
+        assert result.error is not None and "for a vision model: UnidentifiedImageError;" in result.error
+        assert "cannot identify image file" not in (result.error or "") + result.content
 
     @pytest.mark.asyncio
     async def test_the_tool_reports_the_failure_and_that_the_original_is_unchanged(self) -> None:

@@ -1092,7 +1092,7 @@ class AnalyzeMediaTool(TearsTool):
             data, mime_type = dl
             # Preprocess — resize large images, re-encode HEIC, etc.
             try:
-                processed_data, processed_mime = prepare_image_for_vision(
+                processed_data, processed_mime = await prepare_image_for_vision(
                     data,
                     mime_type,
                 )

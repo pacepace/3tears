@@ -21,6 +21,7 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 from datetime import UTC, datetime, timedelta
 
 from freezegun import freeze_time
+from freezegun.api import FrozenDateTimeFactory
 from threetears.core.coordination import ReplayGuard
 from threetears.core.security import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.testing.kv import FakeNatsClient
@@ -31,6 +32,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid7
@@ -74,6 +76,20 @@ _HOLDER_CNF = jwk_thumbprint(_HOLDER_KEY.public_key())
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
     set_default_namespace("test")
+
+
+@pytest.fixture
+def clock() -> Iterator[FrozenDateTimeFactory]:
+    """the clock frozen on a whole second, from before the test's loop runs to after it stops.
+
+    A sync fixture, so freezegun's start and stop run off the loop: the first freeze in a process walks every loaded
+    module's attributes (``freezegun.api._setup_module_cache``), which held a test's loop 1.9 s on the testament pool
+    (the loop-stall guard, 2026-11-26). A whole second, because a proof's iat is one: stopped mid-second, the truncated
+    issue time would trail the moment it was minted and an edge would move.
+    """
+    with freeze_time(datetime.now(UTC).replace(microsecond=0), real_asyncio=True) as frozen:
+        assert isinstance(frozen, FrozenDateTimeFactory)  # neither tick nor auto_tick_seconds: a stopped clock
+        yield frozen
 
 
 @pytest.fixture
@@ -1350,6 +1366,7 @@ class TestDispatchPopEnforcement:
         signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]
         assert guard.issued_at == [datetime.fromtimestamp(signed_iat, UTC)]
 
+    @pytest.mark.usefixtures("clock")
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ahead", [1, 4, 5])
     async def test_forwards_a_pop_stamped_a_few_seconds_ahead(
@@ -1358,13 +1375,13 @@ class TestDispatchPopEnforcement:
         # the agent's clock leads the proxy's as often as it lags; inside the future tolerance
         # that is a real call. the clock is frozen so the edge is exact.
         priv, jwks = hub
-        with freeze_time(datetime.now(UTC), real_asyncio=True):
-            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
-            guard = FakeReplayGuard(fresh=True)
-            nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
+        guard = FakeReplayGuard(fresh=True)
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_called_once()
         assert len(guard.seen) == 1
 
+    @pytest.mark.usefixtures("clock")
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ahead", [6, 55, 60])
     async def test_rejects_a_pop_stamped_further_ahead_than_the_future_tolerance(
@@ -1374,30 +1391,29 @@ class TestDispatchPopEnforcement:
         # ahead could be replayed past the guard's wipe check. a minute ahead was accepted once,
         # and cost every tool call for 65 seconds after a broker restart.
         priv, jwks = hub
-        with freeze_time(datetime.now(UTC), real_asyncio=True):
-            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
-            guard = FakeReplayGuard(fresh=True)
-            nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
+        guard = FakeReplayGuard(fresh=True)
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
         assert guard.seen == []  # refused before the guard: a stale-dated proof burns no nonce
 
+    @pytest.mark.usefixtures("clock")
     @pytest.mark.asyncio
     async def test_an_old_pop_inside_the_window_is_still_forwarded(self, hub: tuple[Any, dict[str, Any]]) -> None:
         # the past side keeps its minute: a slow call is not what the future tolerance is about.
         priv, jwks = hub
-        with freeze_time(datetime.now(UTC), real_asyncio=True):
-            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-55)
-            nc = await self._drive(lambda: jwks, req, pop_replay_guard=FakeReplayGuard(fresh=True))
-            stale = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-61)
-            stale_nc = await self._drive(lambda: jwks, stale, pop_replay_guard=FakeReplayGuard(fresh=True))
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-55)
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=FakeReplayGuard(fresh=True))
+        stale = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-61)
+        stale_nc = await self._drive(lambda: jwks, stale, pop_replay_guard=FakeReplayGuard(fresh=True))
         nc.request_raw.assert_called_once()
         stale_nc.request_raw.assert_not_called()
         assert self._reply(stale_nc).error_code == "TOOL_POP_UNVERIFIED"
 
     @pytest.mark.asyncio
     async def test_after_a_broker_restart_calls_are_refused_for_ten_seconds_not_sixty_five(
-        self, hub: tuple[Any, dict[str, Any]]
+        self, hub: tuple[Any, dict[str, Any]], clock: FrozenDateTimeFactory
     ) -> None:
         # a real guard, sized as the registry server sizes it, over the kv double: nine seconds
         # after the broker comes back a fresh proof is still refused; ten seconds after, it is
@@ -1407,19 +1423,17 @@ class TestDispatchPopEnforcement:
         guard = ReplayGuard(
             kv, bucket_name="pop_nonces", ttl_seconds=120, verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE
         )
-        # frozen on a whole second, because a proof's iat is one: stopped mid-second, the
-        # truncated issue time would trail the moment it was minted and the edge would move.
-        with freeze_time(datetime.now(UTC).replace(microsecond=0), real_asyncio=True) as clock:
-            await guard.bind()
-            await kv.restart_broker()
-            clock.tick(timedelta(seconds=9))
-            early = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-            early_nc = await self._drive(lambda: jwks, early, pop_replay_guard=guard)
-            await self._settled(early_nc)
-            clock.tick(timedelta(seconds=1))
-            later = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-            later_nc = await self._drive(lambda: jwks, later, pop_replay_guard=guard)
-            await self._settled(later_nc)
+        # the clock is frozen on a whole second (the fixture's docstring says why)
+        await guard.bind()
+        await kv.restart_broker()
+        clock.tick(timedelta(seconds=9))
+        early = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        early_nc = await self._drive(lambda: jwks, early, pop_replay_guard=guard)
+        await self._settled(early_nc)
+        clock.tick(timedelta(seconds=1))
+        later = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        later_nc = await self._drive(lambda: jwks, later, pop_replay_guard=guard)
+        await self._settled(later_nc)
         early_nc.request_raw.assert_not_called()
         assert self._reply(early_nc).error_code == "TOOL_POP_UNVERIFIED"
         later_nc.request_raw.assert_called_once()

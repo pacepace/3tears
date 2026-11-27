@@ -5,6 +5,7 @@ no Python object a row."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import threading
@@ -449,11 +450,21 @@ class TestArrowEndToEnd:
     async def test_an_apply_makes_no_python_object_a_row(
         self, by_state: SharedCopyBackend, store: SharedArrowStore
     ) -> None:
-        held = _rows(self._ROWS, 1)
+        # the rows are built, and the apply measured, on a thread: the apply is the worker's job (the backend runs it in
+        # its apply worker, never on a loop), called here in this process only so tracemalloc sees it; on the loop the
+        # 200k rows' build held it 0.33 s and the apply 0.45 s (the loop-stall guard, 2026-11-26)
+        held = await asyncio.to_thread(_rows, self._ROWS, 1)
         await by_state.apply([ChangePage(ROWS, "results", held)])
         some = held.take(pa.array(np.random.default_rng(3).choice(held.num_rows, 4_000, replace=False)))
         change = some.slice(0, 3_000).set_column(3, "votes", pa.array(np.zeros(3_000, np.int64)))
         pages = [ChangePage(ROWS, "results", change), ChangePage(KEYS, "results", some.slice(3_000).select(_KEY))]
+        peak = await asyncio.to_thread(self._apply_peak, store, pages)
+        # every part touched, each rewritten: the bound is the apply's own, not an idle one's
+        assert peak < 5 << 19, f"{peak} bytes of Python objects for {self._ROWS} held rows"
+
+    @staticmethod
+    def _apply_peak(store: SharedArrowStore, pages: list[ChangePage]) -> int:
+        """the peak bytes of Python objects :func:`apply_job` makes applying ``pages`` to the current version."""
         current = store.current
         assert current is not None
         plan = ApplyPlan(
@@ -472,8 +483,7 @@ class TestArrowEndToEnd:
         segment = store.claim(slot)
         assert segment is not None
         segment.close()
-        # every part touched, each rewritten: the bound is the apply's own, not an idle one's
-        assert peak < 5 << 19, f"{peak} bytes of Python objects for {self._ROWS} held rows"
+        return peak
 
 
 def _python_bytes(run: Callable[[], Any]) -> int:

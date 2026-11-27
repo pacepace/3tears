@@ -14,19 +14,13 @@ Limits applied:
 from __future__ import annotations
 
 import base64
-import io
 import json
-from typing import Any
+from typing import Any, Final
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.image_resize import HAS_PILLOW, resize_for_vision
+from threetears.core.process_workers import ProcessWorkers
 from threetears.observe import contain, get_logger
-
-try:
-    from PIL import Image
-
-    _HAS_PILLOW = True
-except ImportError:  # NOSILENT: the vision extra is optional; a resize raises naming it
-    _HAS_PILLOW = False
 
 __all__ = [
     "ImagePrepError",
@@ -46,6 +40,10 @@ _JPEG_QUALITY = 85
 # Size threshold: only re-encode if raw bytes exceed this (512KB).
 # Small images pass through untouched for exact fidelity.
 _SIZE_THRESHOLD = 512 * 1024
+
+#: the worker the decode, resize and encode run in. One: a tool pod prepares an image per vision call, each call then
+#: waits seconds on the provider, so images queue behind one another for far less than the call they feed
+_WORKERS: Final = ProcessWorkers(workers=1, name="vision image prep", process_name="3t-image-prep")
 
 
 class ImagePrepError(RuntimeError):
@@ -75,7 +73,7 @@ class ImagePrepError(RuntimeError):
         )
 
 
-def prepare_image_for_vision(
+async def prepare_image_for_vision(
     data: bytes,
     mime_type: str,
 ) -> tuple[bytes, str]:
@@ -83,7 +81,9 @@ def prepare_image_for_vision(
 
     Returns ``(processed_bytes, effective_mime_type)``.  Small images
     that are already within limits are returned as-is.  Large images
-    are resized and re-encoded as JPEG.
+    are resized and re-encoded as JPEG, in a worker process: the decode,
+    resize and encode are CPU that grows with the image, never the event
+    loop's (:mod:`threetears.agent.tools.image_resize`'s docstring).
 
     :param data: raw image bytes
     :ptype data: bytes
@@ -102,53 +102,42 @@ def prepare_image_for_vision(
     ):
         return data, mime_type
 
+    if not HAS_PILLOW:
+        # refused here, not in the worker: a worker is a fresh import, which may find a Pillow this process did not
+        missing = ModuleNotFoundError("image resizing needs Pillow: install 3tears-agent-tools[vision]")
+        raise ImagePrepError(mime_type, len(data), type(missing).__name__) from missing
+
+    # always in the worker, never inline for a small image: a small one is still decoded (a 19-byte corrupt HEIC held
+    # the loop 0.267 s, the first open importing Pillow's plugins), and the worker's round trip (about 0.4
+    # ms, keyed/binding.py's measure) is nothing beside the vision call that follows
     try:
-        if not _HAS_PILLOW:
-            raise ModuleNotFoundError("image resizing needs Pillow: install 3tears-agent-tools[vision]")
-        opened = Image.open(io.BytesIO(data))
+        result, w, h, new_w, new_h = await _WORKERS.run(resize_for_vision, data, _MAX_DIMENSION, _JPEG_QUALITY)
+    except Exception as exc:  # noqa: BLE001 -- any failure is refused by name; the caller decides whether to send the original
+        raise ImagePrepError(mime_type, len(data), type(exc).__name__) from exc
 
-        # Convert to RGB for JPEG output
-        img = opened.convert("RGB") if opened.mode != "RGB" else opened.copy()
-
-        # Resize if either dimension exceeds the limit
-        w, h = img.size
-        if max(w, h) > _MAX_DIMENSION:
-            ratio = _MAX_DIMENSION / max(w, h)
-            new_w = int(w * ratio)
-            new_h = int(h * ratio)
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            _log.info(
-                "Resized image for vision model",
-                extra={
-                    "extra_data": {
-                        "original_size": f"{w}x{h}",
-                        "new_size": f"{new_w}x{new_h}",
-                        "original_bytes": len(data),
-                    }
-                },
-            )
-
-        # Re-encode as JPEG
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
-        result = buf.getvalue()
-
-        _log.debug(
-            "Image prepared for vision",
+    if (new_w, new_h) != (w, h):
+        _log.info(
+            "Resized image for vision model",
             extra={
                 "extra_data": {
+                    "original_size": f"{w}x{h}",
+                    "new_size": f"{new_w}x{new_h}",
                     "original_bytes": len(data),
-                    "original_mime": mime_type,
-                    "output_bytes": len(result),
-                    "dimensions": f"{img.size[0]}x{img.size[1]}",
                 }
             },
         )
-
-        return result, "image/jpeg"
-
-    except Exception as exc:  # noqa: BLE001 -- any failure is refused by name; the caller decides whether to send the original
-        raise ImagePrepError(mime_type, len(data), type(exc).__name__) from exc
+    _log.debug(
+        "Image prepared for vision",
+        extra={
+            "extra_data": {
+                "original_bytes": len(data),
+                "original_mime": mime_type,
+                "output_bytes": len(result),
+                "dimensions": f"{new_w}x{new_h}",
+            }
+        },
+    )
+    return result, "image/jpeg"
 
 
 class ImagePrepTool(TearsTool):
@@ -214,7 +203,7 @@ class ImagePrepTool(TearsTool):
             return result
 
         try:
-            processed_bytes, effective_mime = prepare_image_for_vision(raw_bytes, mime_type)
+            processed_bytes, effective_mime = await prepare_image_for_vision(raw_bytes, mime_type)
         except ImagePrepError as exc:
             contain(exc, log=_log, what="image could not be prepared for a vision model")
             result = ToolResult(
