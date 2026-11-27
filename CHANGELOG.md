@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: many relations' column types in one catalogue statement (``warehouse_arrow_types_of``) (Pace 2026-11-27)
+
+**Added:** ``threetears.datasources.arrow_rows.warehouse_arrow_types_of(client, datasource, relations, *, dialect,
+extra=None)`` answers ``relation -> {column: Arrow type}`` for many relations from ONE catalogue statement
+(``svv_columns`` on Redshift, ``information_schema.columns`` elsewhere; their schemas and names as two IN lists,
+only the relations asked kept: the same relations' pairs ORed took 153.3 s on Redshift, as IN lists 16.2 s). Each
+relation's answer is exactly ``warehouse_arrow_types(..., relation, None, ...)``'s: the same Arrow types, the
+catalogue's order, ``extra`` after them, a column of no one JSON form left out, a relation the catalogue lacks
+answering ``extra`` alone. A batch splits only past the wire protocol's 32767 parameters (16383 relations a statement).
+``warehouse_arrow_types`` is now a batch of one: its statement selects ``table_schema`` and ``table_name`` too and orders
+by them, then ``ordinal_position``. ``relation_columns_sql`` is unchanged.
+
+**Why:** Redshift's leader answers each catalogue statement in about 5-50 s whatever its scope (the ots warehouse,
+2026-11-27: one relation's ``svv_columns`` read 26.6 s; 46 relations one by one, median 23.9 s each; all 46 in one
+statement, 16.2 s). A pod reading its report tables one statement each paid ~25 s a table at every cold start.
+
+**What a consumer must do:** reports' ``DatasourceWarehouse`` (``src/aibots_reports/pod/loader.py``) asks every
+relation it reads through ``warehouse_arrow_types_of`` at cold start, keeping its per-relation answers and re-asks; it
+does on ``work/reports-fold``. A stand-in answering the catalogue (reports' ``redshift_stand_in``, any test double)
+must answer ``table_schema`` and ``table_name`` with ``column_name`` and ``data_type``, for every relation of a schema
+in the statement's first IN list and a name in its second (the parameters: the schemas, then the names).
+
 ### core: every collection L2 entry carries a shape tag; no release needs a cache clear again (Pace 2026-11-26)
 
 **Added:** every entry a collection writes to the shared collections bucket opens with its shape tag

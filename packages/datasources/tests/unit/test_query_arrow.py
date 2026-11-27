@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import struct
 from datetime import timedelta
 from typing import Any
@@ -20,7 +21,7 @@ import pytest
 
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, arrow_schema_text
 from threetears.core.keyed import Dialect
-from threetears.datasources.arrow_rows import relation_columns_sql, warehouse_arrow_types
+from threetears.datasources.arrow_rows import relation_columns_sql, warehouse_arrow_types, warehouse_arrow_types_of
 from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
     REPLY_NOT_ARROW,
@@ -195,12 +196,15 @@ async def test_the_warehouse_types_are_the_forms_its_columns_reply_in() -> None:
         async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
             assert params == ["reporting", "results"]
             rows = [
-                {"column_name": "race", "data_type": "character varying"},
-                {"column_name": "candidate_id", "data_type": "integer"},
-                {"column_name": "margin", "data_type": "numeric"},
-                {"column_name": "share", "data_type": "double precision"},
-                {"column_name": "called_at", "data_type": "timestamp without time zone"},
-                {"column_name": "called", "data_type": "boolean"},
+                {"table_schema": "reporting", "table_name": "results", "column_name": name, "data_type": kind}
+                for name, kind in (
+                    ("race", "character varying"),
+                    ("candidate_id", "integer"),
+                    ("margin", "numeric"),
+                    ("share", "double precision"),
+                    ("called_at", "timestamp without time zone"),
+                    ("called", "boolean"),
+                )
             ]
             return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
 
@@ -242,9 +246,8 @@ async def test_every_column_s_type_is_read_in_one_ask_and_a_column_of_no_json_fo
         async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
             _Catalogue.asks += 1
             rows = [
-                {"column_name": "race", "data_type": "character varying"},
-                {"column_name": "payload", "data_type": "super"},
-                {"column_name": "margin", "data_type": "numeric"},
+                {"table_schema": "reporting", "table_name": "results", "column_name": name, "data_type": kind}
+                for name, kind in (("race", "character varying"), ("payload", "super"), ("margin", "numeric"))
             ]
             return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
 
@@ -265,7 +268,8 @@ class _TwoCatalogues:
     """a Redshift warehouse's two catalogues of one table and the late-binding view over it (``WITH NO SCHEMA
     BINDING``, as dbt's ``+bind: false`` makes every view): ``information_schema.columns`` holds the table's columns
     and none of the view's; ``SVV_COLUMNS`` holds both, spelling a table's ``timetz`` column ``timetz`` (both read
-    on the warehouse, 2026-11-19). Each statement is answered from the catalogue it names, and recorded."""
+    on the warehouse, 2026-11-19). Each statement is answered from the catalogue it names, for every relation its
+    parameters pair (schema, name), and recorded."""
 
     _TABLE = [
         {"column_name": "race", "data_type": "character varying"},
@@ -281,20 +285,49 @@ class _TwoCatalogues:
     async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
         self.asked.append((query, params))
         assert params is not None
-        relation = tuple(params)
-        if "information_schema.columns" in query:
-            rows = self._TABLE if relation == ("reporting", "results_20261119") else []
-        elif "svv_columns" in query.lower():
-            rows = {
-                ("reporting", "results_20261119"): [
-                    {**row, "data_type": "timetz"} if row["column_name"] == "polls_close" else row
-                    for row in self._TABLE
-                ],
-                ("reporting", "results"): self._TABLE,
-            }.get(relation, [])
-        else:
-            raise AssertionError(f"not a catalogue read: {query}")
+        rows: list[dict[str, Any]] = []
+        for relation in _asked_relations(query, params):
+            if "information_schema.columns" in query:
+                held = self._TABLE if relation == ("reporting", "results_20261119") else []
+            elif "svv_columns" in query.lower():
+                held = {
+                    ("reporting", "results_20261119"): [
+                        {**row, "data_type": "timetz"} if row["column_name"] == "polls_close" else row
+                        for row in self._TABLE
+                    ],
+                    ("reporting", "results"): self._TABLE,
+                }.get(relation, [])
+            else:
+                raise AssertionError(f"not a catalogue read: {query}")
+            rows += [{"table_schema": relation[0], "table_name": relation[1], **row} for row in held]
         return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
+
+
+#: the one-relation catalogue read on Redshift: a batch of one (:func:`warehouse_arrow_types_of`'s statement)
+_ONE_REDSHIFT_RELATION = (
+    "SELECT table_schema, table_name, column_name, data_type FROM svv_columns "
+    "WHERE table_schema IN ($1) AND table_name IN ($2) ORDER BY table_schema, table_name, ordinal_position"
+)
+
+#: the same, on every other engine
+_ONE_STANDARD_RELATION = (
+    "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns "
+    "WHERE table_schema IN ($1) AND table_name IN ($2) ORDER BY table_schema, table_name, ordinal_position"
+)
+
+
+def _asked_relations(query: str, params: list[Any]) -> list[tuple[str, str]]:
+    """every (schema, name) a batch catalogue statement's two IN lists pair, as the catalogue would match them.
+
+    :param query: the statement
+    :ptype query: str
+    :param params: its parameters: the schemas, then the names
+    :ptype params: list[Any]
+    :return: the pairs
+    :rtype: list[tuple[str, str]]
+    """
+    schemas = len(re.findall(r"\$\d+", query.split("table_schema IN (", 1)[1].split(")", 1)[0]))
+    return [(schema, name) for schema in params[:schemas] for name in params[schemas:]]
 
 
 _RESULTS_TYPES = {
@@ -328,7 +361,7 @@ async def test_a_redshift_late_binding_view_s_columns_are_read_from_the_catalogu
     assert len(catalogue.asked) == 1
     query, params = catalogue.asked[0]
     assert params == ["reporting", "results"]
-    assert "ORDER BY ordinal_position" in query
+    assert query == _ONE_REDSHIFT_RELATION
 
 
 async def test_a_redshift_table_s_timetz_column_is_text_as_its_view_s_is() -> None:
@@ -360,13 +393,7 @@ async def test_a_relation_on_another_engine_is_read_from_information_schema_as_b
     )
 
     assert types == _RESULTS_TYPES
-    assert catalogue.asked == [
-        (
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-            ["reporting", "results_20261119"],
-        )
-    ]
+    assert catalogue.asked == [(_ONE_STANDARD_RELATION, ["reporting", "results_20261119"])]
 
 
 @pytest.mark.parametrize(("dialect", "schema"), [(Dialect.DUCKDB, "main"), (Dialect.POSTGRES, "public")])
@@ -383,13 +410,71 @@ async def test_a_bare_name_is_asked_in_the_engines_own_default_schema(dialect: D
         dialect=dialect,
     )
 
+    assert catalogue.asked == [(_ONE_STANDARD_RELATION, [schema, "results_20261119"])]
+
+
+async def test_many_relations_types_are_read_in_one_catalogue_statement_each_as_it_would_be_alone() -> None:
+    """Flips if a batch of relations is asked one statement a relation (Redshift's leader answers each catalogue
+    statement in ~25 s whatever its scope: 46 relations one by one, median 23.9 s each; all 46 in one statement,
+    16.2 s; the ots warehouse, 2026-11-27), as pairs ORed (153.3 s for the same 46), if a relation its IN lists pair
+    but no one asked is answered (a schema of one relation with the name of another), or if any relation's answer
+    differs from the one-relation read's (the
+    late-binding view's columns, the table's timetz as text, a relation the catalogue lacks answering ``extra``
+    alone). A repeated relation is asked once; no relation is no ask."""
+    catalogue = _TwoCatalogues()
+    # "elsewhere.results_20261119" asked beside them: the IN lists pair "reporting" with "results_20261119", a
+    # relation the catalogue holds that no one asked
+    relations = ["reporting.results", "elsewhere.results_20261119", "reporting.absent", "reporting.results"]
+
+    many = await warehouse_arrow_types_of(
+        catalogue,  # type: ignore[arg-type]
+        "ds",
+        relations,
+        dialect=Dialect.REDSHIFT,
+        extra={"row_hash": pa.string()},
+    )
+
     assert catalogue.asked == [
         (
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-            [schema, "results_20261119"],
+            "SELECT table_schema, table_name, column_name, data_type FROM svv_columns "
+            "WHERE table_schema IN ($1, $2) AND table_name IN ($3, $4, $5) "
+            "ORDER BY table_schema, table_name, ordinal_position",
+            ["reporting", "elsewhere", "results", "results_20261119", "absent"],
         )
     ]
+    assert list(many) == ["reporting.results", "elsewhere.results_20261119", "reporting.absent"]
+    assert many["elsewhere.results_20261119"] == {"row_hash": pa.string()}, "no relation asked holds a column there"
+    for relation, types in many.items():
+        alone = await warehouse_arrow_types(
+            _TwoCatalogues(),  # type: ignore[arg-type]
+            "ds",
+            relation,
+            None,
+            dialect=Dialect.REDSHIFT,
+            extra={"row_hash": pa.string()},
+        )
+        assert types == alone and list(types) == list(alone), relation
+    assert many["reporting.absent"] == {"row_hash": pa.string()}
+    assert list(many["reporting.results"]) == [*_RESULTS_TYPES, "row_hash"]
+
+    nothing = _TwoCatalogues()
+    assert await warehouse_arrow_types_of(nothing, "ds", [], dialect=Dialect.REDSHIFT) == {}  # type: ignore[arg-type]
+    assert nothing.asked == []
+
+
+async def test_a_batch_past_the_wire_protocols_parameter_count_is_split_there_and_only_there() -> None:
+    """Flips if a batch binds more parameters than the wire protocol counts (32767: each distinct schema and name
+    once), so the statement is refused, or is split before that limit (one more ~25 s statement on Redshift for
+    nothing)."""
+    catalogue = _TwoCatalogues()
+    # one schema and 32767 names: 32767 parameters for the first 32766 relations, then one statement more
+    relations = [f"reporting.t{index}" for index in range(32767)]
+
+    many = await warehouse_arrow_types_of(catalogue, "ds", relations, dialect=Dialect.POSTGRES)  # type: ignore[arg-type]
+
+    assert [len(params or ()) for _, params in catalogue.asked] == [32767, 2]
+    assert catalogue.asked[1] == (_ONE_STANDARD_RELATION, ["reporting", "t32766"])
+    assert len(many) == len(relations)
 
 
 @pytest.mark.parametrize("named", ["redshift", "postgres", "unnamed"])

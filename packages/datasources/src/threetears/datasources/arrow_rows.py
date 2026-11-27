@@ -27,13 +27,14 @@ try:
 except ImportError:  # NOSILENT: the export extra is optional; an Arrow read says so without it
     _PYARROW = False
 
+from threetears.core.backends.schema_sql import MAX_STATEMENT_PARAMS
 from threetears.core.keyed import Dialect
 from threetears.datasources.export import sql_string_literal
 
 if TYPE_CHECKING:
     from threetears.datasources.query_client import DatasourceQueryClient
 
-__all__ = ["joined_arrow", "relation_columns_sql", "warehouse_arrow_types"]
+__all__ = ["joined_arrow", "relation_columns_sql", "warehouse_arrow_types", "warehouse_arrow_types_of"]
 
 #: each warehouse column type (the catalogue's ``data_type``: :func:`_columns_sql`'s, Redshift's and PostgreSQL's
 #: spelling) onto
@@ -107,6 +108,125 @@ def _columns_sql(dialect: Dialect) -> str:
     if dialect is Dialect.POSTGRES or dialect is Dialect.YUGABYTE or dialect is Dialect.DUCKDB:
         return _STANDARD_COLUMNS_SQL
     assert_never(dialect)
+
+
+#: the relations' columns of a batch read (:func:`warehouse_arrow_types_of`), each relation's in ordinal order: the
+#: catalogue :func:`_columns_sql` names (``svv_columns`` on Redshift, ``information_schema.columns`` elsewhere), asked
+#: for every relation of the batch in ONE statement. Why one: Redshift's leader answers each catalogue statement in
+#: roughly 5-50 s whatever its scope (the ots warehouse, 2026-11-27: one relation's svv_columns read 26.6 s, the
+#: catalogue's own pg_attribute rows keyed to one relation median 23.9 s and max 51.7 s over 46 relations, all 46
+#: relations' svv_columns in one statement 16.2 s), so a pod that read its relations one statement each paid ~25 s a
+#: relation at every cold start. The schemas and names are two IN lists, never the (schema, name) pairs ORed: the
+#: same 46 relations' pairs ORed took 153.3 s (2026-11-27), against 16.2 s as IN lists. The lists may pair a schema with
+#: a name of another relation; :func:`_held_columns` keeps only the rows of a relation asked
+_BATCH_COLUMNS_SQL: Final = (
+    "SELECT table_schema, table_name, column_name, data_type FROM {catalogue} "
+    "WHERE table_schema IN ({schemas}) AND table_name IN ({names}) "
+    "ORDER BY table_schema, table_name, ordinal_position"
+)
+
+
+def _catalogue_of(dialect: Dialect) -> str:
+    """the catalogue view holding every relation's columns in ``dialect`` (:func:`_columns_sql`'s).
+
+    :param dialect: the dialect the datasource's statements are spelled in
+    :ptype dialect: Dialect
+    :return: ``svv_columns`` on Redshift, ``information_schema.columns`` elsewhere
+    :rtype: str
+    :raises AssertionError: for anything not a :class:`Dialect` member
+    """
+    if dialect is Dialect.REDSHIFT:
+        return "svv_columns"
+    if dialect is Dialect.POSTGRES or dialect is Dialect.YUGABYTE or dialect is Dialect.DUCKDB:
+        return "information_schema.columns"
+    assert_never(dialect)
+
+
+def _batch_columns_sql(schemas: int, names: int, *, dialect: Dialect) -> str:
+    """the statement reading the columns and types of every relation of ``schemas`` schemas and ``names`` names in
+    one ask (``$1`` to ``$<schemas>`` the schemas, the names after them), each relation's in ordinal order.
+
+    :param schemas: the distinct schemas asked, at least one
+    :ptype schemas: int
+    :param names: the distinct names asked, at least one
+    :ptype names: int
+    :param dialect: the dialect the datasource's statements are spelled in
+    :ptype dialect: Dialect
+    :return: the statement, answering ``table_schema``, ``table_name``, ``column_name`` and ``data_type``
+    :rtype: str
+    :raises ValueError: for no schema or name, or more parameters than one statement binds
+    """
+    if schemas < 1 or names < 1 or schemas + names > MAX_STATEMENT_PARAMS:
+        raise ValueError(
+            f"a batch catalogue read binds 1 or more schemas and names, {MAX_STATEMENT_PARAMS} at most: "
+            f"not {schemas} and {names}"
+        )
+    return _BATCH_COLUMNS_SQL.format(
+        catalogue=_catalogue_of(dialect),
+        schemas=", ".join(f"${index + 1}" for index in range(schemas)),
+        names=", ".join(f"${schemas + index + 1}" for index in range(names)),
+    )
+
+
+def _statements(pairs: Sequence[tuple[str, str]]) -> list[tuple[list[str], list[str]]]:
+    """the batch's statements: each one's distinct schemas and names, as many relations a statement as the wire
+    protocol's 16-bit parameter count binds (:data:`~threetears.core.backends.schema_sql.MAX_STATEMENT_PARAMS`, a
+    schema and a name each bound once a statement), the one limit that splits a batch.
+
+    :param pairs: each relation's schema and name, each once
+    :ptype pairs: Sequence[tuple[str, str]]
+    :return: each statement's schemas and names, in the order first asked
+    :rtype: list[tuple[list[str], list[str]]]
+    """
+    statements: list[tuple[list[str], list[str]]] = []
+    schemas: dict[str, None] = {}
+    names: dict[str, None] = {}
+    for schema, name in pairs:
+        grown = len(schemas) + (schema not in schemas) + len(names) + (name not in names)
+        if grown > MAX_STATEMENT_PARAMS:
+            statements.append((list(schemas), list(names)))
+            schemas, names = {}, {}
+        schemas[schema] = None
+        names[name] = None
+    if schemas:
+        statements.append((list(schemas), list(names)))
+    return statements
+
+
+async def _held_columns(
+    client: DatasourceQueryClient, datasource_name: str, relations: Sequence[str], *, dialect: Dialect
+) -> dict[str, dict[str, str]]:
+    """each relation's columns and their catalogue types, in ordinal order, from one statement a batch
+    (:func:`_batch_columns_sql`): the one place :func:`warehouse_arrow_types` and :func:`warehouse_arrow_types_of`
+    read the catalogue.
+
+    :param client: the query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param relations: the relations, ``schema.table`` (the engine's default schema when one names none), TRUSTED
+        identifiers, each once
+    :ptype relations: Sequence[str]
+    :param dialect: the dialect the datasource's statements are spelled in
+    :ptype dialect: Dialect
+    :return: relation -> (column name -> its catalogue type), every relation asked, empty when the catalogue holds none
+    :rtype: dict[str, dict[str, str]]
+    """
+    named = {relation: _schema_and_name(relation, dialect) for relation in relations}
+    by_pair = {pair: relation for relation, pair in named.items()}
+    held: dict[str, dict[str, str]] = {relation: {} for relation in relations}
+    for schemas, names in _statements(list(named.values())):
+        result = await client.query(
+            datasource_name,
+            _batch_columns_sql(len(schemas), len(names), dialect=dialect),
+            params=[*schemas, *names],
+        )
+        for row in result.rows:
+            # a row of a schema and name the lists pair but no relation asked is not kept
+            relation = by_pair.get((str(row["table_schema"]), str(row["table_name"])))
+            if relation is not None:
+                held[relation][str(row["column_name"])] = str(row["data_type"])
+    return held
 
 
 def _schema_and_name(relation: str, dialect: Dialect) -> tuple[str, str]:
@@ -220,9 +340,69 @@ async def warehouse_arrow_types(
     """
     if not _PYARROW:
         raise ImportError("a datasource read as Arrow needs pyarrow: install 3tears-datasources[export]")
-    schema, table = _schema_and_name(relation, dialect)
-    result = await client.query(datasource_name, _columns_sql(dialect), params=[schema, table])
-    held = {str(row["column_name"]): str(row["data_type"]) for row in result.rows}
+    held = (await _held_columns(client, datasource_name, [relation], dialect=dialect))[relation]
+    return _types_of(relation, held, columns, extra)
+
+
+async def warehouse_arrow_types_of(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    relations: Sequence[str],
+    *,
+    dialect: Dialect,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """:func:`warehouse_arrow_types` of every column of many relations (``columns=None`` for each), from ONE catalogue
+    statement for them all (:data:`_BATCH_COLUMNS_SQL`'s why: on Redshift each catalogue statement costs ~25 s whatever
+    its scope), split only past the wire protocol's parameter count (a statement binds each distinct schema and name
+    once, :data:`~threetears.core.backends.schema_sql.MAX_STATEMENT_PARAMS` at most).
+
+    Each relation's answer is the one :func:`warehouse_arrow_types` gives it alone: its columns of one JSON form, in
+    the catalogue's order, ``extra``'s after them; a column of another type left out; a relation the catalogue holds
+    no column of answers ``extra`` alone.
+
+    :param client: the query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param relations: the relations, ``schema.table``, TRUSTED identifiers (a repeat is asked once)
+    :ptype relations: Sequence[str]
+    :param dialect: the dialect the datasource's statements are spelled in, from its declared engine
+    :ptype dialect: Dialect
+    :param extra: the types of selected expressions the catalogue does not hold (a row hash), by their names, after
+        each relation's columns
+    :ptype extra: Mapping[str, pyarrow.DataType] | None
+    :return: relation -> (column name -> its Arrow type, in order), every relation asked
+    :rtype: dict[str, dict[str, pyarrow.DataType]]
+    :raises AssertionError: when ``dialect`` is not a :class:`Dialect` member (a plain string)
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a datasource read as Arrow needs pyarrow: install 3tears-datasources[export]")
+    unique = list(dict.fromkeys(relations))
+    if not unique:
+        return {}
+    held = await _held_columns(client, datasource_name, unique, dialect=dialect)
+    return {relation: _types_of(relation, held[relation], None, extra) for relation in unique}
+
+
+def _types_of(
+    relation: str, held: Mapping[str, str], columns: Sequence[str] | None, extra: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """each column's Arrow type from the relation's catalogue rows (:func:`warehouse_arrow_types`' answer).
+
+    :param relation: the relation, for a refusal's message
+    :ptype relation: str
+    :param held: column name -> its catalogue type, in ordinal order
+    :ptype held: Mapping[str, str]
+    :param columns: the columns read, in order; None for every column of one JSON form
+    :ptype columns: Sequence[str] | None
+    :param extra: the types of selected expressions after them
+    :ptype extra: Mapping[str, pyarrow.DataType] | None
+    :return: column name -> its Arrow type, in order
+    :rtype: dict[str, pyarrow.DataType]
+    :raises ValueError: when a column is not in the catalogue, or its type has no one JSON form here
+    """
     types: dict[str, Any] = {}
     if columns is None:
         types = {name: _arrow_of(_JSON_FORMS[kind]) for name, kind in held.items() if kind in _JSON_FORMS}
