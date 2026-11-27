@@ -1692,7 +1692,7 @@ nobody had asked, and check 2 gave no reason to.
 which babel is 32 MB and lxml 19 MB, arriving `trafilatura -> courlan -> babel`.
 Phase 2 has no use for it -- museum JSON, no HTML-to-text -- and the leaf refuses
 correctly in its absence: importing `threetears.search.extract` succeeds because
-`_load_extractor` defers the import, and calling it raises `LocalCapExceeded`
+`threetears.search.page_read` guards the import, and `extract` calling `_require_extractor` raises `LocalCapExceeded`
 naming the extra and its remediation rather than an `ImportError` from the
 middle of a pipeline.
 

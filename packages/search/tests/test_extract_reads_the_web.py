@@ -9,7 +9,9 @@ which keeps the real transport's cap and content-type gate.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures.process import BrokenProcessPool
+from typing import Any
 
 import pytest
 
@@ -995,3 +997,97 @@ async def test_a_frame_address_is_carried_as_a_plain_url() -> None:
     reason = facet_text(result, EXTRACTION_REASON_FACET)
     assert " " not in reason.rsplit("the article is at ", 1)[1]
     assert "\n" not in reason
+
+
+# --- where the read runs ---------------------------------------------------
+
+
+class _RecordingWorkers:
+    """A host's pool, standing in: runs each job here, recording its name and refusing an argument that is not plain."""
+
+    def __init__(self) -> None:
+        self.jobs: list[str] = []
+
+    async def run(self, job: Callable[..., Any], *args: Any) -> Any:
+        assert all(isinstance(each, (bytes, str, bool, int)) for each in args), f"{job.__name__} was handed {args!r}"
+        self.jobs.append(job.__name__)
+        answer = job(*args)
+        assert isinstance(answer, tuple), f"{job.__name__} answered {answer!r}"
+        return answer
+
+
+class _DyingWorkers:
+    """A host's pool whose worker process dies on the job named ``dies``; others run here."""
+
+    def __init__(self, dies: str) -> None:
+        self.dies = dies
+
+    async def run(self, job: Callable[..., Any], *args: Any) -> Any:
+        if job.__name__ == self.dies:
+            raise BrokenProcessPool("a worker process died running it")
+        return job(*args)
+
+
+async def test_a_host_s_workers_read_the_page_and_its_frame_with_plain_data() -> None:
+    """The CPU of a read -- the page's article, its title and date, a thin page's frames -- runs where the host says."""
+    workers = _RecordingWorkers()
+    transport = RecordedFetchTransport(
+        {
+            _ROBOTS: _ALLOW,
+            _PAGE: RecordedPage(body=_MENU_WITH_FRAME),
+            f"{_SITE}/viewer/42.html": RecordedPage(body=_ARTICLE),
+        }
+    )
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000, workers=workers)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "South America" in result.content.text
+    assert result.title == "Capybara habitats"
+    assert result.published_at is not None and result.published_at.date().isoformat() == "2026-09-14"
+    assert workers.jobs == ["page_article", "page_facts", "page_pointer", "page_article", "page_facts"]
+
+
+async def test_text_read_as_written_is_read_in_the_host_s_workers() -> None:
+    workers = _RecordingWorkers()
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=b'{"a": [1]}', content_type="application/json")}
+    )
+
+    result = await extract(_candidate(), transport=transport, workers=workers)
+
+    assert result.content is not None and result.content.text == '{\n  "a": [\n    1\n  ]\n}'
+    assert workers.jobs == ["page_written"]
+
+
+@pytest.mark.parametrize("dies", ["page_article", "page_facts", "page_written"])
+async def test_a_read_whose_worker_died_is_recorded_failed_with_try_again(dies: str) -> None:
+    """A worker process dying is one candidate's failed read, never the set's: the pool is replaced at the next."""
+    body, content_type = (b"plain words", "text/plain") if dies == "page_written" else (_ARTICLE, "text/html")
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=body, content_type=content_type)})
+
+    result = await extract(_candidate(), transport=transport, workers=_DyingWorkers(dies))
+
+    assert result.content is None
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
+    assert result.facets[EXTRACTION_REASON_FACET] == (
+        "the page could not be read: the process reading it stopped before it finished"
+    )
+    assert result.facets[EXTRACTION_NEXT_STEP_FACET] == "try again"
+
+
+async def test_a_thin_page_whose_frame_scan_lost_its_worker_keeps_its_own_read() -> None:
+    short = b"<html><body><article><p>Closed on Monday for the holiday. Back on Tuesday.</p></article></body></html>"
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=short)})
+
+    result = await extract(
+        _candidate(), transport=transport, thin_page_chars=1000, workers=_DyingWorkers("page_pointer")
+    )
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "Closed on Monday" in result.content.text
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        "The page is thin, and its frames could not be looked for (the process reading them stopped); "
+        "this may be only its menu."
+    ]
+    assert transport.fetched == [_ROBOTS, _PAGE]

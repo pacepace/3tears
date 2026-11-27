@@ -2933,6 +2933,10 @@ class SharedArrowStore:
         #: counted, under ``_settling``, which :meth:`settle` and a write short of room wait on
         self._letting_go: frozenset[str] = frozenset()
         self._awaiting = 0
+        #: the let-go threads ended so far (their sweeps included), under ``_settling``: what a write short of room
+        #: read before its room check, so one that ended between the check and the look at what is in flight is seen
+        #: (:meth:`_let_go_for_room`)
+        self._let_gos_ended = 0
         with contextlib.suppress(FileNotFoundError):  # NOSILENT: nothing current is the start's state either way
             (self._versions / _CURRENT_FILE).unlink()
         self._load_manifests()
@@ -3821,6 +3825,7 @@ class SharedArrowStore:
         finally:
             with self._settling:
                 self._awaiting -= 1
+                self._let_gos_ended += 1
                 self._settling.notify_all()
 
     def _settle_soon(self) -> None:
@@ -4174,12 +4179,22 @@ class SharedArrowStore:
         :rtype: T | None
         """
         while True:
+            seen = self._let_gos_seen()
             with self._state:
                 made = reserved()
-            if made is not None or not self._let_go_for_room():
+            if made is not None or not self._let_go_for_room(seen):
                 return made
 
-    def _let_go_for_room(self) -> bool:
+    def _let_gos_seen(self) -> int:
+        """the let-go threads ended so far: read before a room check, for :meth:`_let_go_for_room`.
+
+        :return: the count
+        :rtype: int
+        """
+        with self._settling:
+            return self._let_gos_ended
+
+    def _let_go_for_room(self, seen: int) -> bool:
         """wait for every superseded version held only cached to be let go (:meth:`_await_let_go`) and retired, for a
         write short of room: a sweep first revokes any the store's thread has not swept yet. What is left is what a
         lease or a read holds, or the current version, none of which is let go.
@@ -4196,7 +4211,18 @@ class SharedArrowStore:
         onto the version published just before it (cobalt prod, 2026-11-04: every change refused from 14:16Z for room
         superseded versions held) waits for the let-go in flight instead of being refused.
 
-        :return: whether a version was retired meanwhile, so the room is worth asking again; False when none was
+        WHY it asks again after any wait, and after any let-go that ended since the room check, not only when a
+        version it named is gone: a let-go thread takes its version out of ``_letting_go`` and retires it (its
+        manifest dropped) under ``_state``, then removes its files and forgets their bytes after the lock. A write
+        whose room check landed in that window counted the files still; looking next, it found nothing named to
+        await -- only the thread's count, or, the thread done by then, nothing at all -- and was refused with the
+        room free: the leased-version eviction test, 12 of 60 runs on monad-1 (2026-11-26). The loop still ends: a
+        call with nothing in flight and nothing ended since ``seen`` returns False before any wait.
+
+        :param seen: the let-go threads ended before the caller's room check (:meth:`_let_gos_seen`)
+        :ptype seen: int
+        :return: whether a let-go was in flight or ended since ``seen``, so the room is worth asking again; False
+            when none was
         :rtype: bool
         """
         self.sweep()
@@ -4207,7 +4233,7 @@ class SharedArrowStore:
             # by what the sweep found cached, and waited for by the threads' count, which drops after their sweeps
             awaited = self._letting_go | frozenset(nbytes)
             if not awaited and not self._awaiting:
-                return False
+                return self._let_gos_ended != seen
         with self._state:
             awaited = frozenset(name for name in awaited if name in self._manifests)
         superseded_ns: dict[str, int] = {}
@@ -4235,7 +4261,7 @@ class SharedArrowStore:
                 "shared Arrow superseded version let go for room",
                 extra={"extra_data": {"version": name, "bytes": freed, "superseded_seconds": round(age, 3)}},
             )
-        return bool(gone)
+        return True
 
     def _only_named(self, name: str) -> int:
         """the bytes a version's eviction would free: its own directory's and the part files no other version names.
@@ -4403,9 +4429,12 @@ class SharedArrowStore:
             # what a publish left to the store's thread may not have gone yet: swept now, then counted again; then
             # the superseded versions idle workers are still letting go, waited for until the write fits or none is
             self.sweep()
-            counted()
-            while not fits() and self._let_go_for_room():
+            while True:
+                # read before the count, so a let-go that ends after it is seen (:meth:`_let_go_for_room`)
+                seen = self._let_gos_seen()
                 counted()
+                if fits() or not self._let_go_for_room(seen):
+                    break
 
         counted()
         done = False

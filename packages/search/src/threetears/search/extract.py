@@ -65,34 +65,16 @@ Rulings taken in this module, recorded here per the Gate A precedent:
 
 from __future__ import annotations
 
-import codecs
-import json
-import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
-from html.parser import HTMLParser
-from typing import Final, Literal
+from datetime import datetime
+from typing import Any, Final, Literal, Protocol
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 from pydantic import JsonValue
-
-try:
-    import trafilatura
-    import trafilatura.metadata
-
-    _TRAFILATURA = True
-except ImportError:  # NOSILENT: the extract extra is optional; extract() refuses with its name
-    _TRAFILATURA = False
-
-try:
-    import charset_normalizer
-
-    _CHARSET_DETECTOR = True
-except ImportError:  # NOSILENT: no detector; UTF-8 with replacement is the stated last resort
-    _CHARSET_DETECTOR = False
 
 from threetears.interfaces.media import (
     EXTRACTION_STATUS_COMPLETE,
@@ -110,6 +92,15 @@ from threetears.search.contracts.transport import (
     HeavyFetcher,
     TransportResponse,
     media_type_accepted,
+)
+from threetears.search.page_read import (
+    POINTER_UNREADABLE,
+    TRAFILATURA_INSTALLED,
+    WEB_SCHEMES,
+    page_article,
+    page_facts,
+    page_pointer,
+    page_written,
 )
 
 _logger = get_logger(__name__)
@@ -137,6 +128,7 @@ __all__ = [
     "CarrierReader",
     "CarrierText",
     "CarrierUnreadable",
+    "PageWorkers",
     "RobotsUnreadable",
     "extract",
     "robots_agent_token",
@@ -277,8 +269,51 @@ _SHOWN_URL_CHARS: Final[int] = 500
 #: The least time worth spending on a frame; less than this left and it is not followed.
 _FRAME_MINIMUM_SECONDS: Final[float] = 1.0
 
-#: Markup in, article text out, ``None`` when the extractor found nothing worth keeping.
-type _Extractor = Callable[[str], str | None]
+#: Why a read whose worker process died was not read, and what next: the worker is replaced at the next read.
+_READER_DIED_REASON: Final[str] = "the page could not be read: the process reading it stopped before it finished"
+_READER_DIED_NEXT_STEP: Final[str] = "try again"
+
+
+class PageWorkers(Protocol):
+    """Where Extract reads a fetched carrier's bytes to text: the CPU half, off the caller's event loop.
+
+    A host passes its worker pool (3tears-core's ``ProcessWorkers`` is one): each job is a module function of
+    :mod:`threetears.search.page_read`, the body's bytes and plain values in, plain values out. The fetch stays on
+    the caller's loop. Without one, the same functions run on the caller's thread, as an embedded host with no pool
+    reads.
+    """
+
+    async def run(self, job: Callable[..., Any], *args: Any) -> Any:
+        """``job(*args)`` in a worker; the caller's loop only waits.
+
+        :param job: a module function, importable by name in a fresh process
+        :ptype job: Callable[..., Any]
+        :param args: its arguments: plain data
+        :ptype args: Any
+        :return: its answer: plain data
+        :rtype: Any
+        :raises concurrent.futures.process.BrokenProcessPool: when its worker died; Extract records the read failed,
+            "try again"
+        :raises Exception: what the job raised, as the job raised it
+        """
+        ...
+
+
+async def _cpu(workers: PageWorkers | None, job: Callable[..., Any], *args: Any) -> Any:
+    """``job(*args)`` in ``workers``, or here when there are none.
+
+    :param workers: the host's pool, or None
+    :ptype workers: PageWorkers | None
+    :param job: a :mod:`threetears.search.page_read` function
+    :ptype job: Callable[..., Any]
+    :param args: its arguments
+    :ptype args: Any
+    :return: its answer
+    :rtype: Any
+    """
+    if workers is None:
+        return job(*args)
+    return await workers.run(job, *args)
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +414,7 @@ async def extract(
     readers: Sequence[CarrierReader] = (),
     thin_page_chars: int | None = None,
     source: bool = False,
+    workers: PageWorkers | None = None,
 ) -> Candidate:
     """Fill one candidate's content slot from its carrier.
 
@@ -426,6 +462,10 @@ async def extract(
         frame is not followed when its source is asked for; text and readers' carriers read as
         they always do
     :ptype source: bool
+    :param workers: where a fetched carrier is read to text (:class:`PageWorkers`), so the CPU of
+        decoding and extracting it never holds the caller's loop; None reads it on the caller's
+        thread
+    :ptype workers: PageWorkers | None
     :return: the candidate with content, fidelity and extraction facets recorded; on a
         per-candidate failure, the candidate with its status, reason and next step and no content
     :rtype: Candidate
@@ -443,7 +483,7 @@ async def extract(
     if url is None:
         return _marked(candidate, EXTRACTION_STATUS_FAILED, "it has no address to fetch")
 
-    extractor = _load_extractor()
+    _require_extractor()
     rules = _Rules(
         transport=transport,
         user_agent=user_agent,
@@ -460,7 +500,7 @@ async def extract(
         url,
         transport=transport,
         heavy_fetcher=heavy_fetcher,
-        extractor=extractor,
+        workers=workers,
         max_bytes=max_bytes,
         readers=readers,
         timeout_seconds=timeout_seconds,
@@ -485,7 +525,7 @@ async def extract(
             read,
             page_url=url,
             rules=rules,
-            extractor=extractor,
+            workers=workers,
             max_bytes=max_bytes,
             readers=readers,
             thin_page_chars=thin_page_chars,
@@ -602,55 +642,20 @@ def _carrier_url(candidate: Candidate) -> str | None:
     return candidate.locators[0].url if candidate.locators else None
 
 
-def _load_extractor() -> _Extractor:
-    """The installed HTML-to-text extractor, or a typed refusal.
+def _require_extractor() -> None:
+    """Refuse, typed, when the HTML-to-text extractor is not installed.
 
-    :return: trafilatura's ``extract`` callable
-    :rtype: _Extractor
+    :return: nothing
+    :rtype: None
     :raises threetears.search.contracts.errors.LocalCapExceeded: when the extra is not installed
     """
-    if not _TRAFILATURA:
+    if not TRAFILATURA_INSTALLED:
         raise LocalCapExceeded(
             f"extraction requires the {_EXTRACT_EXTRA} extra, which is not installed",
             spend=Spend(),
             remediation=f"install {_EXTRACT_EXTRA}",
             scope=EXTRACTOR_UNAVAILABLE_SCOPE,
         )
-    return trafilatura.extract
-
-
-def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
-    """A page's own title and publication date, as trafilatura reads them from its markup.
-
-    :param markup: the decoded page
-    :ptype markup: str
-    :return: the title and the date, each None when the page does not say
-    :rtype: tuple[str | None, datetime | None]
-    :raises Exception: whatever trafilatura raised reading the page's header; the caller reads
-        the page without them and says so, since "the page does not say" is a different answer
-    """
-    found = trafilatura.metadata.extract_metadata(markup)
-    if found is None:
-        return None, None
-    title = (getattr(found, "title", None) or "").strip() or None
-    return title, _day(getattr(found, "date", None))
-
-
-def _day(value: object) -> datetime | None:
-    """A ``YYYY-MM-DD`` string as midnight UTC on that day, or None.
-
-    :param value: what the page's metadata held
-    :ptype value: object
-    :return: the day, timezone-aware
-    :rtype: datetime | None
-    """
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.strptime(value.strip()[:10], "%Y-%m-%d").replace(tzinfo=UTC)
-    except ValueError:
-        # NOSILENT: a page date that is not a day is a page with no date, the documented None
-        return None
 
 
 def _conditional_headers(candidate: Candidate) -> dict[str, str]:
@@ -694,7 +699,7 @@ async def _read_carrier(
     *,
     transport: FetchTransport,
     heavy_fetcher: HeavyFetcher | None,
-    extractor: _Extractor,
+    workers: PageWorkers | None,
     max_bytes: int,
     readers: Sequence[CarrierReader],
     timeout_seconds: float | None,
@@ -709,8 +714,8 @@ async def _read_carrier(
     :ptype transport: FetchTransport
     :param heavy_fetcher: the caller's escalation, when they passed one
     :ptype heavy_fetcher: HeavyFetcher | None
-    :param extractor: markup to text
-    :ptype extractor: _Extractor
+    :param workers: where the carrier is read to text; None for here
+    :ptype workers: PageWorkers | None
     :param max_bytes: the most of a page this read takes
     :ptype max_bytes: int
     :param readers: readers for carriers that are not pages
@@ -767,24 +772,40 @@ async def _read_carrier(
             f"the page is {_size(len(response.body))}, past the {_size(max_bytes)} a page may be",
             "find a shorter copy of it, or the same facts elsewhere",
         )
-    markup, charset = _decode(response.body, response.headers.get("content-type", ""))
+    content_type = response.headers.get("content-type", "")
     is_page = media_type_accepted(declared, HTML_CONTENT_TYPES)
     if (source and is_page) or (not is_page and media_type_accepted(declared, _TEXT_CONTENT_TYPES)):
+        try:
+            written, charset, unparsed = await _cpu(
+                workers,
+                page_written,
+                response.body,
+                content_type,
+                media_type_accepted(declared, ("application/json", "application/*+json")),
+            )
+        except BrokenProcessPool as exc:
+            return _reader_died(exc, response)
         return _as_written(
-            markup,
+            written,
+            unparsed_json=unparsed,
             response=response,
             charset=charset,
             declared=declared,
             source=source and is_page,
             rendered=heavy_fetcher is not None,
         )
-    text = extractor(markup) or ""
+    try:
+        text, charset = await _cpu(workers, page_article, response.body, content_type)
+    except BrokenProcessPool as exc:
+        return _reader_died(exc, response)
     title: str | None = None
     published_at: datetime | None = None
     notes: tuple[str, ...] = ()
     if text:
         try:
-            title, published_at = _page_facts(markup)
+            title, day = await _cpu(workers, page_facts, response.body, content_type)
+        except BrokenProcessPool as exc:
+            return _reader_died(exc, response)
         except Exception as exc:  # noqa: BLE001 -- metadata is extra: the page is still read, and says it was read without it
             contain(exc, log=_logger, what="a page's metadata could not be read; the page is read without it")
             # the exception's type, not its message: a message can quote the page, and this
@@ -792,6 +813,8 @@ async def _read_carrier(
             notes = (
                 f"The page's own title and date could not be read ({type(exc).__name__}); it was read without them.",
             )
+        else:
+            published_at = None if day is None else datetime.fromisoformat(day)
     method = _METHOD_HEAVY if heavy_fetcher is not None else _METHOD_TRAFILATURA
     if not text:
         return _Unread(
@@ -811,16 +834,39 @@ async def _read_carrier(
     )
 
 
+def _reader_died(exc: BrokenProcessPool, response: TransportResponse) -> _Unread:
+    """The record for a carrier whose worker process died reading it: failed, "try again" (the pool is replaced).
+
+    :param exc: the pool's error
+    :ptype exc: BrokenProcessPool
+    :param response: the fetched carrier
+    :ptype response: TransportResponse
+    :return: the failure
+    :rtype: _Unread
+    """
+    contain(exc, log=_logger, what="a fetched page's reading process died; the read is recorded failed")
+    return _Unread(EXTRACTION_STATUS_FAILED, _READER_DIED_REASON, _READER_DIED_NEXT_STEP, response=response)
+
+
 def _as_written(
-    decoded: str, *, response: TransportResponse, charset: str, declared: str | None, source: bool, rendered: bool
+    text: str,
+    *,
+    unparsed_json: bool,
+    response: TransportResponse,
+    charset: str,
+    declared: str | None,
+    source: bool,
+    rendered: bool,
 ) -> _Read | _Unread:
     """A textual carrier, or a page's markup, handed back as it came.
 
     JSON that parses is shown indented, since an API's answer on one line is unreadable;
-    anything else is the decoded body unchanged.
+    anything else is the decoded body unchanged (:func:`~threetears.search.page_read.page_written`).
 
-    :param decoded: the decoded body
-    :ptype decoded: str
+    :param text: the decoded body, JSON indented
+    :ptype text: str
+    :param unparsed_json: whether it says it is JSON but does not parse
+    :ptype unparsed_json: bool
     :param response: the fetched carrier
     :ptype response: TransportResponse
     :param charset: the character set it was decoded with
@@ -834,14 +880,9 @@ def _as_written(
     :return: the text, or why there was none
     :rtype: _Read | _Unread
     """
-    text = decoded
     notes: tuple[str, ...] = ()
-    if media_type_accepted(declared, ("application/json", "application/*+json")):
-        try:
-            text = json.dumps(json.loads(decoded), indent=2, ensure_ascii=False)
-        except ValueError:
-            # NOSILENT: JSON that does not parse is still the text the site sent, and is shown as sent
-            notes = ("It says it is JSON but does not parse as JSON; it is shown as sent.",)
+    if unparsed_json:
+        notes = ("It says it is JSON but does not parse as JSON; it is shown as sent.",)
     if source:
         notes = (*notes, _SOURCE_RENDERED_NOTE if rendered else _SOURCE_FETCHED_NOTE)
     if not text.strip():
@@ -963,7 +1004,7 @@ def _web_address(address: str | None, *, base: str | None) -> str | None:
     except ValueError:
         # NOSILENT: an address that will not split is no address the reader can be sent to
         return None
-    if parts.scheme not in _WEB_SCHEMES or not parts.netloc:
+    if parts.scheme not in WEB_SCHEMES or not parts.netloc:
         return None
     return quote(absolute, safe=_URL_SAFE)[:_SHOWN_URL_CHARS]
 
@@ -1148,150 +1189,6 @@ def _declared_type(response: TransportResponse) -> str | None:
     return media_type or None
 
 
-#: ``charset=`` in a ``Content-Type`` header.
-_HEADER_CHARSET = re.compile(r"charset\s*=\s*[\"']?([A-Za-z0-9._:-]+)", re.I)
-#: ``<meta charset=...>`` or ``<meta http-equiv=content-type content="...; charset=...">``.
-_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?([A-Za-z0-9._:-]+)", re.I)
-#: How far into a page a ``<meta>`` charset is looked for (the HTML standard's prescan reads 1,024).
-_PRESCAN_BYTES: Final[int] = 4096
-
-
-def _decode(body: bytes, content_type: str) -> tuple[str, str]:
-    """Decode a page by what it says it is, then what it looks like.
-
-    The header's ``charset`` first, then a byte-order mark, then a ``<meta>``
-    charset near the top, then UTF-8 if the bytes are valid UTF-8, then the
-    detector trafilatura already depends on. Read as UTF-8 regardless, a page
-    in Windows-1252 or Shift JIS came back as replacement characters.
-
-    :param body: the page's bytes
-    :ptype body: bytes
-    :param content_type: the response's ``Content-Type`` header
-    :ptype content_type: str
-    :return: the text and the charset it was decoded with
-    :rtype: tuple[str, str]
-    """
-    for name in _declared_charsets(body, content_type):
-        try:
-            return body.decode(name), codecs.lookup(name).name
-        except LookupError, UnicodeDecodeError:
-            # NOSILENT: a charset the page names wrongly or that Python lacks; the next candidate is tried
-            continue
-    try:
-        return body.decode("utf-8"), "utf-8"
-    except UnicodeDecodeError:
-        # NOSILENT: not UTF-8, so the detector below decides
-        pass
-    if _CHARSET_DETECTOR:
-        best = charset_normalizer.from_bytes(body).best()
-        if best is not None and best.encoding:
-            return str(best), codecs.lookup(best.encoding).name
-    return body.decode("utf-8", errors="replace"), "utf-8"
-
-
-def _declared_charsets(body: bytes, content_type: str) -> list[str]:
-    """The charsets a page declares, most authoritative first.
-
-    :param body: the page's bytes
-    :ptype body: bytes
-    :param content_type: the response's ``Content-Type`` header
-    :ptype content_type: str
-    :return: candidate charset names
-    :rtype: list[str]
-    """
-    names: list[str] = []
-    header = _HEADER_CHARSET.search(content_type or "")
-    if header:
-        names.append(header.group(1))
-    for mark, name in (
-        (codecs.BOM_UTF8, "utf-8-sig"),
-        (codecs.BOM_UTF16_LE, "utf-16"),
-        (codecs.BOM_UTF16_BE, "utf-16"),
-    ):
-        if body.startswith(mark):
-            names.insert(0, name)
-    meta = _META_CHARSET.search(body[:_PRESCAN_BYTES])
-    if meta:
-        names.append(meta.group(1).decode("ascii", errors="ignore"))
-    return names
-
-
-class _FramesAndPointers(HTMLParser):
-    """Collects a page's ``iframe`` sources and its ``citation_pdf_url``."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.frames: list[str] = []
-        self.citation_pdf: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        named = {key.lower(): (value or "") for key, value in attrs}
-        if tag == "iframe" and named.get("src", "").strip():
-            self.frames.append(named["src"].strip())
-        elif tag == "meta" and named.get("name", "").lower() == "citation_pdf_url" and named.get("content"):
-            self.citation_pdf = self.citation_pdf or named["content"].strip()
-
-
-#: The schemes a frame or a pointer can be read at; any other is not an article's address.
-_WEB_SCHEMES: Final[tuple[str, ...]] = ("http", "https")
-
-#: what :func:`_pointer_of` raises on markup or an address it cannot read: the stdlib HTML parser's
-#: ``AssertionError`` on a declaration it cannot make sense of, and ``urljoin``'s ``ValueError``.
-#: Anything else is a bug in the frame scan and propagates.
-_POINTER_UNREADABLE: Final[tuple[type[Exception], ...]] = (AssertionError, ValueError)
-
-
-def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
-    """Where a thin page says its article is, how many frames it holds, and whether it said so outright.
-
-    ``citation_pdf_url`` is the page saying outright where its article is, so
-    it wins; otherwise the page's first ``iframe``, which is followed only
-    when it is the page's one frame. An address that is not a web address
-    (``about:blank``, ``javascript:``, ``data:``) holds no article: a frame with
-    one is a placeholder an ad or an embed fills in later, so it is neither the
-    pointer nor counted among the frames, and a ``citation_pdf_url`` with one is
-    passed over for the frames. A frame address that will not split is dropped the
-    same way, so it cannot hide a readable frame beside it; only when no frame
-    address on the page splits is that an answer of its own.
-
-    :param markup: the decoded page
-    :ptype markup: str
-    :param base: the URL the page answered from, to resolve relative addresses
-    :ptype base: str
-    :return: the absolute URL (None when the page points nowhere), the frame count, and
-        whether the URL came from ``citation_pdf_url``
-    :rtype: tuple[str | None, int, bool]
-    :raises AssertionError: from the stdlib HTML parser, which reports a declaration it cannot
-        make sense of that way; the caller says the frames could not be looked for, since
-        "points nowhere" is a different answer
-    :raises ValueError: from ``urljoin``, on a ``citation_pdf_url`` that will not split, or when
-        no frame address on the page splits (``http://[::1``)
-    """
-    parser = _FramesAndPointers()
-    parser.feed(markup)
-    parser.close()
-    frames: list[str] = []
-    resolved = False
-    unsplit: ValueError | None = None
-    for src in parser.frames:
-        try:
-            url = urljoin(base, src)
-        except ValueError as exc:
-            unsplit = unsplit or exc
-            continue
-        resolved = True
-        if urlsplit(url).scheme in _WEB_SCHEMES:
-            frames.append(url)
-    if unsplit is not None and not resolved:
-        raise unsplit
-    cited = urljoin(base, parser.citation_pdf) if parser.citation_pdf else None
-    if cited is not None and urlsplit(cited).scheme in _WEB_SCHEMES:
-        return cited, len(frames), True
-    if frames:
-        return frames[0], len(frames), False
-    return None, 0, False
-
-
 #: Second-level labels under a country code that are registries rather than sites
 #: (``example.co.uk``'s registrable part is three labels, not two).
 _REGISTRY_LABELS: Final[frozenset[str]] = frozenset({"ac", "co", "com", "edu", "gov", "net", "org", "or", "ne", "go"})
@@ -1335,7 +1232,7 @@ async def _follow_a_thin_page(
     *,
     page_url: str,
     rules: _Rules,
-    extractor: _Extractor,
+    workers: PageWorkers | None,
     max_bytes: int,
     readers: Sequence[CarrierReader],
     thin_page_chars: int,
@@ -1350,8 +1247,8 @@ async def _follow_a_thin_page(
     :ptype page_url: str
     :param rules: how permission is asked
     :ptype rules: _Rules
-    :param extractor: markup to text
-    :ptype extractor: _Extractor
+    :param workers: where the page and its frame are read; None for here
+    :ptype workers: PageWorkers | None
     :param max_bytes: a page's cap; the frame gets what the page left of the cap
     :ptype max_bytes: int
     :param readers: readers for carriers that are not pages
@@ -1376,11 +1273,18 @@ async def _follow_a_thin_page(
             return read
         response, thin_text = read.response, ""
 
-    markup, _ = _decode(response.body, response.headers.get("content-type", ""))
     page = response.final_url or page_url
     try:
-        pointed, frames, outright = _pointer_of(markup, page)
-    except _POINTER_UNREADABLE as exc:  # the page's own read stands, and says its frames were not looked for
+        pointed, frames, outright = await _cpu(
+            workers, page_pointer, response.body, response.headers.get("content-type", ""), page
+        )
+    except BrokenProcessPool as exc:  # the page's own read stands, and says its frames were not looked for
+        contain(exc, log=_logger, what="a thin page's frame scan lost its worker process")
+        unparsed = "its frames could not be looked for (the process reading them stopped)"
+        if isinstance(read, _Read):
+            return replace(read, notes=(*read.notes, f"The page is thin, and {unparsed}; this may be only its menu."))
+        return replace(read, reason=f"{read.reason}, and {unparsed}")
+    except POINTER_UNREADABLE as exc:  # the page's own read stands, and says its frames were not looked for
         contain(exc, log=_logger, what="a thin page's frames and pointers could not be parsed")
         # the exception's type, not its message: a message can quote the page
         unparsed = f"its frames could not be looked for (the HTML parser raised {type(exc).__name__})"
@@ -1426,7 +1330,7 @@ async def _follow_a_thin_page(
         target,
         transport=rules.transport,
         heavy_fetcher=None,
-        extractor=extractor,
+        workers=workers,
         max_bytes=max(max_bytes - used, 1),
         readers=frame_readers,
         timeout_seconds=budget.left(),

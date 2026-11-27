@@ -82,6 +82,7 @@ from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.config import PDF_PARSE_TIMEOUT_SECONDS as DEFAULT_PDF_PARSE_TIMEOUT_SECONDS
 from threetears.agent.tools.document import DocumentParseError, OcrConfig, parse_document
 from threetears.agent.tools.search_transport import build_fetch_transport
+from threetears.core.process_workers import ProcessWorkers
 from threetears.interfaces.media import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
 from threetears.search.bind import project_failure_metadata, project_metadata, shown_date
 from threetears.search.contracts import (
@@ -127,6 +128,13 @@ __all__ = [
     "create_web_fetch_tool",
     "pdf_reader",
 ]
+
+#: the worker a fetched page is read to text in (:mod:`threetears.search.page_read`: decoding, the article, its title
+#: and date, a thin page's frames), the fetch staying on the loop. On the loop the read held it 0.334 s for a small
+#: fixture page, most of it trafilatura's first read loading its stoplists (the loop-stall guard, 2026-11-26), and it
+#: grows with the page up to the 2 MiB cap. One worker: a read takes milliseconds to a few hundred, beside fetches of
+#: seconds, so pages queue behind one another for far less than the fetch they follow
+_PAGE_WORKERS: Final = ProcessWorkers(workers=1, name="web fetch page reads", process_name="3t-page-read")
 
 #: how much extracted text reaches the caller. A context bound, not a
 #: transport one: the byte cap that protects the *host* lives on the fetch
@@ -473,6 +481,7 @@ class WebFetchTool(TearsTool):
                 readers=(self._pdf,),
                 thin_page_chars=self._thin_page_chars,
                 source=kwargs.get("source") is True,
+                workers=_PAGE_WORKERS,
                 **extra,
             )
         except SearchFailure as failure:
