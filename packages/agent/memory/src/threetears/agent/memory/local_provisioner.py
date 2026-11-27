@@ -44,7 +44,17 @@ log = get_logger(__name__)
 
 
 class _Namespaces(Protocol):
-    """the two ``NamespaceCollection`` calls the provisioner makes."""
+    """the three ``NamespaceCollection`` calls the provisioner makes."""
+
+    async def get_by_name(self, name: str) -> NamespaceEntity | None:
+        """the live row of this name, or ``None`` (``NamespaceCollection.get_by_name``).
+
+        :param name: the namespace name
+        :ptype name: str
+        :return: the row
+        :rtype: NamespaceEntity | None
+        """
+        ...
 
     async def get_by_owner_and_customer(
         self, *, namespace_type: str, owner_agent_id: UUID | None, customer_id: UUID | None
@@ -71,6 +81,7 @@ class _Namespaces(Protocol):
         owner_agent_id: UUID | None,
         customer_id: UUID | None,
         owner_namespace: str | None = None,
+        owner_namespace_id: UUID | None = None,
         schema_name: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> NamespaceEntity:
@@ -88,6 +99,8 @@ class _Namespaces(Protocol):
         :ptype customer_id: UUID | None
         :param owner_namespace: the owning agent's own namespace name
         :ptype owner_namespace: str | None
+        :param owner_namespace_id: that namespace's row, by id
+        :ptype owner_namespace_id: UUID | None
         :param schema_name: backing schema name
         :ptype schema_name: str | None
         :param metadata: row metadata
@@ -129,14 +142,20 @@ class LocalMemoryNamespaceProvisioner:
         """
         row = await self._resolve(agent_id, customer_id)
         if row is None:
+            owner_name = build_agent_namespace_name(agent_id)
             try:
+                # the owner is stored by id (agent-acl v011, hub v199), as the hub's row stores it: the agent's own
+                # namespace row where the deployment holds one, NULL where it holds none. A row naming its owner only
+                # by name is one ``list_owned_by`` never finds, so tearing the agent down would leave it behind.
+                owner = await self._namespaces.get_by_name(owner_name)
                 await self._namespaces.ensure_namespace(
                     namespace_id=memory_namespace_id(agent_id, customer_id),
                     name=memory_namespace_name(agent_id, customer_id),
                     namespace_type=MEMORY_NAMESPACE_TYPE,
                     owner_agent_id=agent_id,
                     customer_id=customer_id,
-                    owner_namespace=build_agent_namespace_name(agent_id),
+                    owner_namespace=owner_name,
+                    owner_namespace_id=None if owner is None else owner.id,
                     schema_name=memory_namespace_schema_name(agent_id, customer_id),
                     metadata={},
                 )
