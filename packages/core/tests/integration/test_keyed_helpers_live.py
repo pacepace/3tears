@@ -963,6 +963,23 @@ class TestCountsByRelations:
         assert narrowed == {"a": dict.fromkeys(geos, _IDS), "p": dict.fromkeys(geos, _IDS // 3)}
 
 
+def _build_cached(local: sqlite3.Connection) -> None:
+    """the trim test's table: 300,000 rows written in one transaction.
+
+    :param local: the connection
+    :ptype local: sqlite3.Connection
+    :return: nothing
+    :rtype: None
+    """
+    local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
+    local.execute("BEGIN")
+    local.executemany(
+        "INSERT INTO cached VALUES (?, ?, ?, ?)",
+        ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
+    )
+    local.execute("COMMIT")
+
+
 class TestDeleteOldest:
     @pytest.mark.loop_timing
     async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:
@@ -976,13 +993,8 @@ class TestDeleteOldest:
         back, so every run deletes from the same 300,000 rows."""
         local = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
         try:
-            local.execute("CREATE TABLE cached (state TEXT, geo TEXT, id INTEGER, pad TEXT)")
-            local.execute("BEGIN")
-            local.executemany(
-                "INSERT INTO cached VALUES (?, ?, ?, ?)",
-                ((f"S{n % _STATES:02d}", f"{n % _GEOS:03d}", n, "x" * 40) for n in range(_STATES * _GEOS * _IDS)),
-            )
-            local.execute("COMMIT")
+            # the 300,000-row build is setup, held off the loop (it held it 0.379 s on the exclusive runner)
+            await asyncio.to_thread(_build_cached, local)
             plan = " ".join(
                 str(row[-1])
                 for row in local.execute(
