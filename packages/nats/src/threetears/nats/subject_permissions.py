@@ -1832,6 +1832,10 @@ def _agent_pod(
         # reason ``tools.internal.{a}.>`` is: the in-process pod-id is the ``{agent_id}.{instance}``
         # composite, and no agent may deliver a result under a peer's identity.
         str(Subjects.tools_result_agent_subtree(a)),
+        # the in-process tool server's updates (progress and log entries) for a call that asked for them: core
+        # publishes under the AUTHENTICATED agent's own subtree, for the reason its results are, and only the
+        # registry reads them
+        str(Subjects.tools_progress_agent_subtree(a)),
         # the in-process tool server emits the baseline ``tool.call`` audit envelope on every
         # dispatch (mirrors ``_tool_pod``); audit non-repudiation is required, so the grant is
         # mandatory -- without it an agent-served tool call's actor/audit row is silently dropped.
@@ -2109,6 +2113,10 @@ def _tool_pod(
         # tree (``_INBOX_registry_*.>``) was not: that one would have let any tool pod forge a reply
         # into any other pod's in-flight call.
         str(Subjects.tools_result_pod_wildcard(p)),
+        # the pod's updates (progress and log entries) for a call that asked for them, under its OWN id as its
+        # results are, so no pod can push an update into another pod's call. Core NATS and best effort; only the
+        # registry subscribes, and it relays to the caller
+        str(Subjects.tools_progress_pod_wildcard(p)),
         # a tool pod gets no hub handshake, so it learns its credential's lifetime from the server
         # that will end the connection at expiry. A pod that guessed longer than the hub minted
         # renewed after the server had already closed it, and crash-looped.
@@ -2132,6 +2140,9 @@ def _tool_pod(
         f"{inbox}.>",
         str(Subjects.tools_internal(p)),  # own pod's proxied calls only
         str(Subjects.tools_probe(p)),  # own pod's liveness probes only
+        # a call this pod makes through the registry (``ToolCallClient``) with updates asked for: the registry
+        # relays them here, onto the pod's OWN subtree, and refuses a subject naming anyone else
+        str(Subjects.tools_updates_caller_subtree(p)),
         CROSS_PLATFORM_CACHE_INVALIDATE,  # learns of a peer replica's write; see the publish half
         *hitl_sessions,  # own authorized tools' session control plane only
         *pipe_up,  # own authorized tools' streams, own pod id, caller's half only
@@ -2249,6 +2260,9 @@ def _registry(
         # primitive is enforced in the proxy, not here: it publishes only to a subject naming the
         # call's VERIFIED agent id (re-stamped from the identity token, never the claimed envelope).
         str(Subjects.tools_reply_wildcard()),
+        # a call's updates relayed to its caller. the same wildcard justification as the reply family above; the
+        # proxy relays only to a subject naming the call's VERIFIED caller
+        str(Subjects.tools_updates_wildcard()),
         # the hub's ``registry_identity`` factory, loaded into this process, takes a hub-minted token
         # for the registry's own reads; the RBAC stack and the hub's ``registry_auth`` factories then
         # read L3 through the broker (``NatsProxyL3Backend``), which checks that token at its door.
@@ -2267,6 +2281,9 @@ def _registry(
         str(Subjects.tools_discover()),  # queue-grouped: registry
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat_wildcard()),
+        # each forwarded call's updates, one exact subject per call that asked for them; the family, because one
+        # registry connection fronts every pod
+        str(Subjects.tools_progress_wildcard()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(

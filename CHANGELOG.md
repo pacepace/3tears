@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### registry, agent/tools, nats, core, mcp, tool-contract: a tool's progress and log entries travel over the mesh
+
+**Added:** a caller on the mesh can ask for a tool's updates while it runs, and an MCP face in front of it hands them
+to its own client. `ToolCallClient.call(..., updates=sink)` takes a sink shaped like `threetears.mcp.CallContext`
+(pass the MCP handler's own context): it subscribes `Subjects.tools_updates(caller, call)` and sends
+`ProxyCallRequest.updates` (`threetears.core.tool_wire.CallUpdates`: the subject, the sink's progress token, the least
+severe log level it takes). The registry refuses an updates subject that does not name the verified caller
+(`MALFORMED_REQUEST`), mints `Subjects.tools_progress(pod, call)` per forward, forwards it on `CallRequest.updates`, and
+relays each `CallUpdate` (progress or log entry, numbered by `seq`) from the pod to the caller, bounded per call. On the
+pod, `ToolServer` passes an `execute` that declares the MCP call context a context whose progress token and log levels
+are the caller's; its reports are queued and sent in order by `threetears.agent.tools.call_updates.CallUpdatePublisher`,
+never blocking the tool, and flushed for at most `UPDATE_FLUSH_SECONDS` before the answer. A call that asks for nothing
+is sent, forwarded and run exactly as before. `threetears.nats` adds the bounds (`POD_UPDATES_PER_SECOND`,
+`RELAY_UPDATES_PER_SECOND`, `MAX_UPDATE_BYTES`, `UpdateBudget`) and the ownership checks
+(`progress_subject_is_owned_by_pod`, `updates_subject_is_owned_by_caller`); `threetears.tool_contract.mcp_face` adds
+`mesh_context_parameter` and `mesh_call_context`; `threetears.mcp.CallContext` gains `log_levels`, and `log` sends
+nothing outside them.
+
+**Grants:** a tool pod publishes `{ns}.tools.progress.{pod}.>` and subscribes `{ns}.tools.updates.{pod}.*`; an agent
+pod publishes `{ns}.tools.progress.{agent}.>` (its in-process server); the registry subscribes `{ns}.tools.progress.>`
+and publishes `{ns}.tools.updates.*.*`. Deploy the registry and the auth callout before callers ask for updates; a
+registry or pod older than the field ignores it and the call runs without updates.
+
 ### core (shared Arrow): a reader's let-go no longer holds the serving loop
 
 **Fixed:** a `SharedArrowReader` letting a version or its lent files go held the event loop 19-33 ms past the host

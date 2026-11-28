@@ -167,6 +167,21 @@ class TestCallContextOnItsOwn:
         assert recorder.logs == [("info", {"phase": "clone"}, None), ("error", "failed", "builder.create")]
 
     @pytest.mark.asyncio
+    async def test_a_log_entry_outside_the_levels_the_client_takes_is_not_sent(self) -> None:
+        recorder = _Recorder()
+        ctx = CallContext(tool_name="t", log_sender=recorder.send_log, log_levels=frozenset(("error",)))
+        await ctx.log("info", "routine")
+        await ctx.log("error", "bad")
+        assert recorder.logs == [("error", "bad", None)]
+        assert ctx.log_levels == frozenset(("error",))
+
+    def test_a_context_with_a_log_sender_and_no_levels_given_takes_every_level(self) -> None:
+        assert len(_context().log_levels) == 8
+
+    def test_a_context_without_a_log_sender_takes_no_level(self) -> None:
+        assert CallContext(tool_name="t", log_levels=frozenset(("info",))).log_levels == frozenset()
+
+    @pytest.mark.asyncio
     async def test_a_context_without_senders_sends_nothing_and_does_not_fail(self) -> None:
         ctx = CallContext(tool_name="t", progress_token="tok")
         await ctx.report_progress(1)

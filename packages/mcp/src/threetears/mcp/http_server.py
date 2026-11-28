@@ -27,8 +27,9 @@ writes to stdout / stderr; all logging goes through
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
+from types import MappingProxyType
 from typing import Any
 
 import uvicorn
@@ -107,7 +108,7 @@ class _Drop:
     __slots__ = ("_callbacks", "complete", "fired")
 
     def __init__(self) -> None:
-        self._callbacks: dict[int, Callable[[], None]] = {}
+        self._callbacks: Mapping[int, Callable[[], None]] = MappingProxyType({})
         self.fired = False
         self.complete = False
 
@@ -123,10 +124,10 @@ class _Drop:
         if self.fired:
             callback()
         else:
-            self._callbacks = {**self._callbacks, key: callback}
+            self._callbacks = MappingProxyType({**self._callbacks, key: callback})
 
         def stop() -> None:
-            self._callbacks = {held: each for held, each in self._callbacks.items() if held != key}
+            self._callbacks = MappingProxyType({held: each for held, each in self._callbacks.items() if held != key})
 
         return stop
 
@@ -139,7 +140,7 @@ class _Drop:
         if self.fired or self.complete:
             return
         self.fired = True
-        callbacks, self._callbacks = self._callbacks, {}
+        callbacks, self._callbacks = self._callbacks, MappingProxyType({})
         for callback in callbacks.values():
             callback()
 

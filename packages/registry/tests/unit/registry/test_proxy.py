@@ -96,6 +96,9 @@ class _DurableNats:
     async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
         self.delivered_to.append((subject.path, payload))
 
+    async def publish_raw(self, *, subject: Subject, payload: bytes) -> None:
+        raise AssertionError(f"a call that asked for no updates relays none; got one on {subject.path}: {payload!r}")
+
     async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
         del reply_subject
         self.replies.append(message)

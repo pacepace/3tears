@@ -48,6 +48,23 @@ The canonical `name` shape is `tools.<sanitized-mcp>.<sanitized-version>` (per `
 
 `ToolServer` holds no `NamespaceCollection` and has no constructor parameter to take one: `register_tool` / `deregister_tool` publish the manifest and nothing else. The pod-side emitter that once wrote and deleted these rows is deleted -- its write could not land (the agent's L3 proxy resolves platform-scoped writes to the per-agent `agent_<hex>` schema, which has no `namespaces` table) and its delete raised on every call (it passed a bare `UUID` to a Collection keyed on the composite `(row_scope, namespace_id)`). `packages/agent/tools/tests/enforcement/test_no_agent_side_namespace_writes.py` fails a build that brings any of it back.
 
+## Updates on the mesh
+
+A call's caller can ask for the tool's progress and log entries while it runs (`CallRequest.updates`: the pod's own
+progress subject, the caller's progress token, the least severe log level it takes). When it has, and the tool's
+`execute` declares a parameter annotated `threetears.mcp.CallContext` (the MCP face's call context), `ToolServer`
+passes it a context whose progress token is the caller's and whose `log_levels` are the caller's; what the tool
+reports is published by a `CallUpdatePublisher` to the pod's progress subject, and the registry relays it to the
+caller. A call that asked for nothing, or a tool whose `execute` declares no context, is run with its arguments alone,
+as before. The context's cancellation signal is set when the call is cut short on the pod (its hard ceiling, a
+shutdown).
+
+A report never blocks the tool: it is queued and one task per call sends what is queued, in order, at most
+`POD_UPDATES_PER_SECOND` a second (`threetears.nats`); progress coalesces to the latest value while it waits, and past
+64 pending entries the oldest is dropped. Before the pod answers the call, what is pending gets
+`UPDATE_FLUSH_SECONDS` to leave, so the last progress precedes the result. An updates subject that is not the pod's
+own is logged and not published to. Finding the context needs the `mcp` extra of 3tears-tool-contract on the pod.
+
 ## Tool pod lifecycle: shutdown and owner process
 
 `ToolServerBootstrap` runs every tool pod's lifecycle. Two guarantees about how a pod stops:

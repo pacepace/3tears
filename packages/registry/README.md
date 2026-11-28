@@ -44,6 +44,27 @@ A TOOL POD is the one principal evaluated on its own grant alone. A pod acts on 
 
 `ToolCallClient` (in `threetears.registry.client`) is the pod's half of the wire: it publishes the registry's own `ProxyCallRequest` on `{ns}.tools.call` with the pod's hub-minted identity token read from a provider on every call and a proof of possession minted by a caller-supplied signer (`PopSignerProtocol`, the shape the SDK's `PopSigner` has), and returns the `ProxyCallResponse` or raises `ToolCallError` carrying the registry's or the tool's refusal code. It is synchronous on the pod's own inbox and requests no durable reply; its default deadline sits above the registry's forward budget so a slow tool comes back as the registry's `TOOL_TIMEOUT` rather than the client's own transport fault.
 
+### Updates while the call runs
+
+`call(..., updates=sink)` asks for the tool's progress and log entries while it runs. A `threetears.mcp.CallContext`
+is a sink, so an MCP face serving the call passes its own: its client gets `notifications/progress` for its own
+progress token and `notifications/message` at the levels it takes. The client asks for progress only when the sink
+holds a progress token and for log entries only at its levels; a sink that takes neither asks for nothing, and the
+call is sent exactly as it was before updates existed. Updates are best effort and travel in two hops on core NATS:
+
+| Hop | Subject | Who may publish | Containment |
+|---|---|---|---|
+| pod -> registry | `{ns}.tools.progress.{pod_id}.{call_id}`, minted by the proxy per forward | the pod, on its own id (`tools_progress_pod_wildcard`; an agent's in-process server under its agent's subtree) | the pod refuses (logs, sends nothing) a subject that is not its own |
+| registry -> caller | `{ns}.tools.updates.{caller_id}.{call_id}`, minted by the caller per call | the registry (`tools_updates_wildcard`); the caller subscribes its own subtree | the proxy refuses a call whose subject does not name its verified caller (`MALFORMED_REQUEST`, or a refused `ProxyCallAccepted` for a durable caller) |
+
+The pod sends at most `POD_UPDATES_PER_SECOND` a call (progress coalesces to the latest while it waits, the oldest
+of 64 pending entries is dropped first, and what is pending gets `UPDATE_FLUSH_SECONDS` to leave before the answer);
+the registry relays at most `RELAY_UPDATES_PER_SECOND` a call and drops anything over `MAX_UPDATE_BYTES` or
+unreadable; the caller drops an update whose `seq` does not exceed the last, and progress that does not increase. A
+tool never waits on the link. Both subscriptions are on their subject's per-call id alone (sender-posture rows N1 and
+N2): a forged update is a progress report or log entry shown to the caller, never an action. The agent SDK and the
+hub send no `updates` until they adopt it, and nothing changes for them.
+
 Platform-built-in tools land with `owner_agent_id=NULL, customer_id=NULL`. There is no implicit "anyone can call" behaviour for them. Grants are managed via explicit assignments on the platform-seeded `ToolCaller` role (same pattern as shared-type workspaces).
 
 `RbacEvaluatorAuthorizer` is the only authorizer the production server wires: no dual-enforcement window, no back-compat aliases. The declarative `access.tools` expression on `agent.yaml` stays as operator-facing syntax and is translated to RBAC assignments at bootstrap.

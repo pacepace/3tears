@@ -10,17 +10,23 @@ result with its code on the protocol result, and an ``execute`` that declares a 
 :class:`~threetears.mcp.context.CallContext` is passed the call's context -- ``run`` passes a keyword outside the
 input schema through unchanged, so ``run`` itself does not change. needs the ``mcp`` extra
 (``3tears-tool-contract[mcp]``).
+
+the same ``execute`` is given a context on the mesh too, when the call's caller asked for its updates: 3tears-agent-
+tools' ``ToolServer`` finds the parameter with :func:`mesh_context_parameter` and builds the context with
+:func:`mesh_call_context`, its progress and log entries published towards the caller. a tool reports progress the same
+way on both faces.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 try:
     import mcp.types as mcp_types
-    from threetears.mcp import CallContext, McpTool, McpToolAnnotations, tool_error
+    from threetears.mcp import CallContext, LogLevel, McpTool, McpToolAnnotations, tool_error
     from threetears.mcp.tool import context_parameter_of
     from threetears.mcp.errors import BUILTIN_ERROR_CODES, ErrorCode
 except ImportError as _exc:
@@ -31,7 +37,7 @@ except ImportError as _exc:
 
 from threetears.tool_contract.tool import TOOL_RESULT_ERROR_CODES, TearsTool, ToolResult
 
-__all__ = ["mcp_tool"]
+__all__ = ["mcp_tool", "mesh_call_context", "mesh_context_parameter"]
 
 #: a ToolResult's codes as 3tears-mcp's built-in codes, which hold each with the same meaning; built at import, so a
 #: code the contract adds and 3tears-mcp lacks fails here rather than on a call
@@ -100,6 +106,55 @@ def mcp_tool(
     )
 
 
+def mesh_context_parameter(tool: TearsTool) -> str | None:
+    """the name of the parameter of ``tool.execute`` that takes the call's context, found as the MCP face finds it.
+
+    :param tool: the tool
+    :ptype tool: TearsTool
+    :return: the parameter's name, or ``None`` when ``execute`` declares none
+    :rtype: str | None
+    :raises ValueError: when ``execute`` declares the context in a way the MCP face refuses
+    """
+    return context_parameter_of(tool.mcp_name(), tool.execute, tool.mcp_schema().input_schema)
+
+
+def mesh_call_context(
+    *,
+    tool_name: str,
+    progress_token: str | int | None,
+    progress_sender: Callable[[float, float | None, str | None], Awaitable[None]],
+    log_sender: Callable[[LogLevel, Any, str | None], Awaitable[None]],
+    log_levels: frozenset[LogLevel],
+    cancelled: asyncio.Event,
+) -> CallContext:
+    """the context a mesh call's ``execute`` is given: the caller's progress token and log levels, senders that
+    publish towards it.
+
+    :param tool_name: the tool being called
+    :ptype tool_name: str
+    :param progress_token: the caller's progress token; ``None`` when it asked for no progress, which is then not sent
+    :ptype progress_token: str | int | None
+    :param progress_sender: sends one progress update towards the caller
+    :ptype progress_sender: Callable[[float, float | None, str | None], Awaitable[None]]
+    :param log_sender: sends one log entry towards the caller
+    :ptype log_sender: Callable[[LogLevel, Any, str | None], Awaitable[None]]
+    :param log_levels: the levels the caller takes
+    :ptype log_levels: frozenset[LogLevel]
+    :param cancelled: set when the call is cut short on the pod
+    :ptype cancelled: asyncio.Event
+    :return: the context
+    :rtype: CallContext
+    """
+    return CallContext(
+        tool_name=tool_name,
+        progress_token=progress_token,
+        progress_sender=progress_sender,
+        log_sender=log_sender,
+        log_levels=log_levels,
+        cancelled=cancelled,
+    )
+
+
 def _call_result(result: ToolResult, *, structured: bool) -> mcp_types.CallToolResult:
     """a ToolResult as the call's result.
 
@@ -121,9 +176,9 @@ def _call_result(result: ToolResult, *, structured: bool) -> mcp_types.CallToolR
     # a structured tool's failure content, a JSON object, travels as structured content too, as its successes do; the
     # output schema binds successes only (the server's output check and the SDK's clients skip an isError result), so
     # the failure's shape need not fit it
-    text = result.content or result.error or ""
-    answered = tool_error(text, code=_failure_code(result), message=result.error or None)
-    failure = _json_object(text) if structured else None
+    failed_text = result.content or result.error or ""
+    answered = tool_error(failed_text, code=_failure_code(result), message=result.error or None)
+    failure = _json_object(failed_text) if structured else None
     # the text kept as the tool wrote it, as a success's is; the parsed object beside it
     return answered if failure is None else answered.model_copy(update={"structured_content": failure})
 

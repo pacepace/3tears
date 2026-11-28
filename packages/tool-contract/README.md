@@ -77,7 +77,8 @@ server = McpServer(..., registry=registry, error_codes=ErrorCodes([...]))
 
 The call context reaches `execute` the way it reaches a plain 3tears-mcp handler: an `execute` that declares a
 parameter annotated `CallContext` (from `threetears.mcp`) is passed the call's context in it, as a keyword that
-`run` passes through unchanged. Give it a default of `None` so the same tool runs on the mesh, where there is none:
+`run` passes through unchanged. Give it a default of `None`: on the mesh the tool is given a context only when its
+caller asked for updates, and is called without one otherwise:
 
 ```python
 async def execute(self, *, text: str, ctx: CallContext | None = None) -> ToolResult:
@@ -85,6 +86,13 @@ async def execute(self, *, text: str, ctx: CallContext | None = None) -> ToolRes
         await ctx.report_progress(1, 2, "echoing")
     ...
 ```
+
+On the mesh, 3tears-agent-tools' `ToolServer` gives that same `execute` a context when the call's caller asked for
+its updates (a progress token, a log level): one whose progress token is the caller's, whose `log_levels` are the
+ones the caller takes, and whose reports are published towards the caller, where its own MCP face hands them to its
+client (3tears-agent-tools' README, "Updates on the mesh"). It finds the parameter with `mesh_context_parameter(tool)`
+and builds the context with `mesh_call_context(...)`, both in this module, so a tool reports progress the same way on
+both faces. The pod needs this package's `mcp` extra for that; without it no `execute` can declare the context.
 
 `mcp_tool(..., prepare_arguments=fn)` passes `fn` to the `McpTool` it builds, which prepares each call's arguments
 before the schema checks them (3tears-mcp's README, "Preparing arguments").

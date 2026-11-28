@@ -117,6 +117,17 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         is_nats_error,
     )
 
+from threetears.nats.call_updates import (
+    MAX_UPDATE_BYTES,
+    POD_UPDATE_BURST,
+    POD_UPDATES_PER_SECOND,
+    RELAY_UPDATE_BURST,
+    RELAY_UPDATES_PER_SECOND,
+    UPDATE_FLUSH_SECONDS,
+    UpdateBudget,
+    progress_subject_is_owned_by_pod,
+    updates_subject_is_owned_by_caller,
+)
 from threetears.nats.credential_refusal import (
     CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE,
     CREDENTIAL_REFUSAL_ENVELOPE_OP,
@@ -500,6 +511,16 @@ __all__ = [
     "parse_tool_pod_audit_subject",
     "sanitize_subject_segment",
     "set_default_namespace",
+    # a call's updates while it runs (progress and log entries, best effort)
+    "MAX_UPDATE_BYTES",
+    "POD_UPDATE_BURST",
+    "POD_UPDATES_PER_SECOND",
+    "RELAY_UPDATE_BURST",
+    "RELAY_UPDATES_PER_SECOND",
+    "UPDATE_FLUSH_SECONDS",
+    "UpdateBudget",
+    "progress_subject_is_owned_by_pod",
+    "updates_subject_is_owned_by_caller",
     # asynchronous result delivery (answers that outlive their receiving connection)
     "RESULT_ACK_TIMEOUT_SECONDS",
     "RESULT_RETENTION_SECONDS",

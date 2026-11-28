@@ -841,6 +841,7 @@ class McpServer:
             progress_sender=_send_progress,
             log_sender=_send_log,
             cancelled=cancelled,
+            log_levels=allowed_levels,
         )
 
     def _note_undeliverable(self, tool_name: str, kind: str) -> None:

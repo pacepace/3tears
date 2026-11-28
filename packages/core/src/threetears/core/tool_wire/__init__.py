@@ -17,7 +17,9 @@ public surface:
 - the messages (``messages``): registration (:class:`ToolManifestEntry`,
   :class:`RegistrationManifest`, :class:`RefusedTool`,
   :class:`RegistrationResponse`), the call (:class:`CallRequest`,
-  :class:`CallAccepted`, :class:`CallResponse`), :class:`HeartbeatMessage`,
+  :class:`CallAccepted`, :class:`CallResponse`), a running call's updates
+  (:class:`CallUpdates`, :class:`CallUpdate`, :data:`UpdateLogLevel`,
+  :data:`UPDATE_LOG_LEVELS`), :class:`HeartbeatMessage`,
   the reachability probe's acknowledgement (:class:`ProbeAck`) and the
   discovery request (:class:`DiscoveryProbeRequest`,
   :class:`DiscoveryProbeToolEntry`).
@@ -38,6 +40,8 @@ from threetears.core.tool_wire.messages import (
     CallAccepted,
     CallRequest,
     CallResponse,
+    CallUpdate,
+    CallUpdates,
     DiscoveryProbeRequest,
     DiscoveryProbeToolEntry,
     HeartbeatMessage,
@@ -46,6 +50,8 @@ from threetears.core.tool_wire.messages import (
     RegistrationManifest,
     RegistrationResponse,
     ToolManifestEntry,
+    UPDATE_LOG_LEVELS,
+    UpdateLogLevel,
 )
 from threetears.core.tool_wire.rest import (
     CACHEABLE_METHODS,
@@ -66,6 +72,8 @@ __all__ = [
     "CallContext",
     "CallRequest",
     "CallResponse",
+    "CallUpdate",
+    "CallUpdates",
     "DiscoveryProbeRequest",
     "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
@@ -79,5 +87,7 @@ __all__ = [
     "RestAffordance",
     "RestAffordanceError",
     "ToolManifestEntry",
+    "UPDATE_LOG_LEVELS",
+    "UpdateLogLevel",
     "bind_log_context",
 ]

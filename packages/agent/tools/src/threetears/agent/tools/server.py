@@ -39,6 +39,7 @@ from threetears.core.tool_wire.messages import (
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
+from threetears.agent.tools.call_updates import CallUpdatePublisher, mesh_call_context
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
     build_call_scope,
@@ -107,6 +108,7 @@ from threetears.nats import (
     inbox_prefix_for,
     kv_key_scope_for,
     nats_user_jwt_ttl_seconds,
+    progress_subject_is_owned_by_pod,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
 )
@@ -3288,15 +3290,67 @@ class ToolServer:
         :raises HardCallTimeout: the call ran past ``max_call_seconds``
         """
 
+        publisher, arguments, cancelled = self._with_call_updates(tool, request)
+
         async def _run() -> ToolResult:
             async with enter_call_scope(scope):
-                return await tool.run(**request.arguments)
+                return await tool.run(**arguments)
 
         ceiling = _effective_ceiling(self._max_call_seconds, request.deadline_seconds)
-        if self._call_semaphore is None:
-            return await self._run_with_hard_timeout(_run, scope, ceiling)
-        async with self._call_semaphore:
-            return await self._run_with_hard_timeout(_run, scope, ceiling)
+        try:
+            if self._call_semaphore is None:
+                return await self._run_with_hard_timeout(_run, scope, ceiling)
+            async with self._call_semaphore:
+                return await self._run_with_hard_timeout(_run, scope, ceiling)
+        except BaseException:
+            # cut short on the pod (its hard ceiling, a shutdown) or failed: work the tool started outside its own
+            # task sees it through the context
+            cancelled.set()
+            raise
+        finally:
+            if publisher is not None:
+                # what the tool reported leaves before its answer does
+                await publisher.close()
+
+    def _with_call_updates(
+        self, tool: TearsTool, request: CallRequest
+    ) -> tuple[CallUpdatePublisher | None, dict[str, Any], asyncio.Event]:
+        """the call's arguments, with the call context added when its caller asked for updates and ``execute`` takes
+        one; the publisher that sends them; the context's cancellation signal.
+
+        a call that asked for nothing, or whose tool declares no context, is run with its arguments alone, exactly as
+        a mesh call was before updates existed. An updates subject that is not this pod's own is not published to:
+        the broker would refuse it without a word, so it is logged here and the call runs without updates.
+
+        :param tool: the tool
+        :ptype tool: TearsTool
+        :param request: the verified call request
+        :ptype request: CallRequest
+        :return: the publisher (or ``None``), the arguments to run with, the cancellation signal
+        :rtype: tuple[CallUpdatePublisher | None, dict[str, Any], asyncio.Event]
+        """
+        cancelled = asyncio.Event()
+        updates = request.updates
+        nc = self._nc
+        if updates is None or not updates.wants_any() or nc is None:
+            return None, request.arguments, cancelled
+        tool_key = f"{tool.mcp_name()}@{tool.mcp_version()}"
+        if not progress_subject_is_owned_by_pod(updates.subject, pod_id=self._pod_id, namespace=self._namespace):
+            log.warning(
+                "a call's updates subject is not this pod's own; the call runs without updates",
+                extra={"extra_data": {"tool_key": tool_key, "subject": updates.subject, "pod_id": self._pod_id}},
+            )
+            return None, request.arguments, cancelled
+
+        async def _publish(subject: Subject, payload: bytes) -> None:
+            await nc.publish_raw(subject=subject, payload=payload)
+
+        publisher = CallUpdatePublisher(_publish, updates, tool_key=tool_key)
+        passed = mesh_call_context(tool, updates, publisher, cancelled)
+        if passed is None:
+            return None, request.arguments, cancelled
+        parameter, context = passed
+        return publisher, {**request.arguments, parameter: context}, cancelled
 
     async def _run_with_hard_timeout(
         self,

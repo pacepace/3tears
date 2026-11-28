@@ -47,25 +47,37 @@ forward budget on purpose, so a tool that runs past that budget comes back as
 the registry's ``TOOL_TIMEOUT`` rather than as a transport fault; a tool whose
 own declared ``timeout_seconds`` exceeds the default needs ``timeout`` raised to
 match, or its slow answer reads as ``REQUEST_FAILED`` here.
+
+**Updates while the call runs.** ``call(updates=sink)`` asks for the tool's progress
+and log entries as it runs, and hands each to ``sink`` -- a
+``threetears.mcp.CallContext`` is one, so an MCP face serving the call passes its own
+context and its client gets ``notifications/progress`` for its own progress token.
+The client subscribes its own ``Subjects.tools_updates`` subject for the call (the
+registry relays there, and refuses one naming anyone else), asks for progress only
+when the sink holds a progress token and for log entries only at the levels it
+takes, drops what arrives out of order, and stops listening when the call answers.
+Updates are best effort: one lost or late loses only itself.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import UUID, uuid7
 
-from threetears.core.tool_wire import CallContext
-from threetears.nats.errors import RequestError
-from threetears.nats.subjects import Subjects
-from threetears.observe import get_logger, traced
+from pydantic import ValidationError
+
+from threetears.core.tool_wire import UPDATE_LOG_LEVELS, CallContext, CallUpdate, CallUpdates, UpdateLogLevel
+from threetears.nats.errors import NatsClientError, RequestError
+from threetears.nats.subjects import Subject, Subjects
+from threetears.observe import contain, get_logger, traced
 
 from threetears.registry.config import PLATFORM_DEFAULT_CALL_TIMEOUT
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
 if TYPE_CHECKING:
-    from threetears.nats.subjects import Subject
+    from threetears.nats.transport import IncomingMessage, RawMessageCallback
 
 __all__ = [
     "CALL_TIMEOUT_MARGIN_SECONDS",
@@ -115,6 +127,132 @@ class ProxyCallRequester(Protocol):
     ) -> ProxyCallResponse:
         """send ``message`` and return the registry's typed reply."""
         ...
+
+
+@runtime_checkable
+class UpdatesSubscriber(Protocol):
+    """what a call that asks for updates needs of the NATS client besides its request: a subscription for them.
+
+    :class:`~threetears.nats.NatsClient` satisfies it.
+    """
+
+    async def subscribe(self, subject: Subject | str | None = None, *, cb: RawMessageCallback | None = None) -> Any:
+        """subscribe ``cb`` to ``subject``; returns the handle :meth:`unsubscribe` takes."""
+        ...
+
+    async def unsubscribe(self, sub: Any) -> None:
+        """end a subscription."""
+        ...
+
+
+class _CallUpdateSink(Protocol):
+    """where a call's updates go: a ``threetears.mcp.CallContext`` is one.
+
+    the sink says what its own client takes -- a progress token, log levels -- and the call asks the tool for that
+    and no more.
+    """
+
+    @property
+    def progress_token(self) -> str | int | None:
+        """the client's progress token; ``None`` when it asked for no progress."""
+        ...
+
+    @property
+    def log_levels(self) -> frozenset[UpdateLogLevel]:
+        """the log levels the client takes; empty when it takes none."""
+        ...
+
+    async def report_progress(self, progress: float, total: float | None = None, message: str | None = None) -> None:
+        """hand on one progress report."""
+        ...
+
+    async def log(self, level: UpdateLogLevel, data: Any, *, logger: str | None = None) -> None:
+        """hand on one log entry."""
+        ...
+
+
+class _UpdateForwarder:
+    """hands one call's updates to its sink, in order, never raising into the subscription.
+
+    :param sink: the call's sink
+    :ptype sink: _CallUpdateSink
+    :param tool_name: the call's tool, for the log
+    :ptype tool_name: str
+    """
+
+    def __init__(self, sink: _CallUpdateSink, *, tool_name: str) -> None:
+        """bind the forwarder to one call.
+
+        :param sink: the call's sink
+        :ptype sink: _CallUpdateSink
+        :param tool_name: the call's tool
+        :ptype tool_name: str
+        :return: nothing
+        :rtype: None
+        """
+        self._sink = sink
+        self._tool_name = tool_name
+        self._last_seq = 0
+        self._last_progress: float | None = None
+
+    async def receive(self, msg: IncomingMessage) -> None:
+        """hand one update to the sink, or drop it when it is unreadable, late or not asked for.
+
+        :param msg: the relayed update
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            update = CallUpdate.model_validate_json(msg.data)
+        except ValidationError:
+            # NOSILENT: an update is best effort, and one a newer sender shaped differently loses only itself
+            return
+        if update.seq <= self._last_seq:
+            return
+        self._last_seq = update.seq
+        try:
+            if update.kind == "progress":
+                await self._progress(update)
+            elif update.level is not None and update.level in self._sink.log_levels:
+                await self._sink.log(update.level, update.data, logger=update.logger)
+        except Exception as exc:  # noqa: BLE001 -- the sink's failure (its client gone) loses this update only
+            contain(
+                exc,
+                log=log,
+                what="a call's update could not be handed on to its client",
+                extra={"tool_name": self._tool_name, "seq": update.seq, "kind": update.kind},
+            )
+
+    async def _progress(self, update: CallUpdate) -> None:
+        """hand on a progress report that exceeds the last, when the sink asked for progress.
+
+        :param update: the progress update
+        :ptype update: CallUpdate
+        :return: nothing
+        :rtype: None
+        """
+        progress = update.progress
+        if self._sink.progress_token is None or progress is None:
+            return
+        if self._last_progress is not None and progress <= self._last_progress:
+            return
+        self._last_progress = progress
+        await self._sink.report_progress(progress, update.total, update.message)
+
+
+def _least_level(levels: frozenset[UpdateLogLevel]) -> UpdateLogLevel | None:
+    """the least severe of ``levels``, or ``None`` when there are none.
+
+    :param levels: the levels a sink takes
+    :ptype levels: frozenset[UpdateLogLevel]
+    :return: the least severe
+    :rtype: UpdateLogLevel | None
+    """
+    for level in UPDATE_LOG_LEVELS:
+        if level in levels:
+            return level
+    return None
 
 
 class PopSignerProtocol(Protocol):
@@ -269,6 +407,7 @@ class ToolCallClient:
         arguments: dict[str, Any] | None = None,
         *,
         correlation_id: UUID | None = None,
+        updates: _CallUpdateSink | None = None,
     ) -> ProxyCallResponse:
         """call one tool through the registry and return its reply.
 
@@ -281,6 +420,10 @@ class ToolCallClient:
         :ptype arguments: dict[str, Any] | None
         :param correlation_id: trace id for this call; minted when omitted
         :ptype correlation_id: UUID | None
+        :param updates: where the tool's progress and log entries go while it runs; ``None`` asks for none, and so
+            does a sink with no progress token and no log level. The NATS client must also subscribe
+            (:class:`UpdatesSubscriber`) when one asks for anything
+        :ptype updates: _CallUpdateSink | None
         :return: the reply for a call the tool answered successfully, carrying
             the tool's ``content`` and ``metadata``; its ``context`` is whatever
             the answering side stamped, not a re-statement of the caller's
@@ -325,6 +468,79 @@ class ToolCallClient:
             ),
             pop=pop,
         )
+        subscription = await self._subscribe_updates(updates, tool_name)
+        if subscription is not None:
+            request = request.model_copy(update={"updates": subscription[1]})
+        try:
+            return await self._send(request, effective_correlation_id)
+        finally:
+            if subscription is not None:
+                await self._unsubscribe_updates(subscription[0])
+
+    async def _subscribe_updates(self, sink: _CallUpdateSink | None, tool_name: str) -> tuple[Any, CallUpdates] | None:
+        """subscribe this call's own updates subject when ``sink`` asks for anything.
+
+        :param sink: the call's sink
+        :ptype sink: _CallUpdateSink | None
+        :param tool_name: the call's tool
+        :ptype tool_name: str
+        :return: the subscription's handle and the request's ``updates``, or ``None`` when nothing is asked for or the
+            subscription could not be made (the call then runs without updates, which are best effort)
+        :rtype: tuple[Any, CallUpdates] | None
+        :raises TypeError: the NATS client cannot subscribe
+        """
+        if sink is None:
+            return None
+        log_level = _least_level(sink.log_levels)
+        if sink.progress_token is None and log_level is None:
+            return None
+        subscriber = self._nats_client
+        if not isinstance(subscriber, UpdatesSubscriber):
+            raise TypeError(f"a call that asks for updates needs a NATS client that subscribes; got {type(subscriber)}")
+        subject = Subjects.tools_updates(self._principal_id, uuid7())
+        forwarder = _UpdateForwarder(sink, tool_name=tool_name)
+        try:
+            # sender-posture: unauthenticated open N2 -- only the registry is granted the subject, whose per-call id
+            # only this caller and the registry hold; an update is checked for shape and order and acts on nothing
+            handle = await subscriber.subscribe(subject=subject, cb=forwarder.receive)
+        except NatsClientError as exc:
+            contain(
+                exc,
+                log=log,
+                what="a call's updates could not be subscribed; it runs without them",
+                extra={"tool_name": tool_name, "subject": subject.path},
+            )
+            return None
+        return handle, CallUpdates(subject=subject.path, progress_token=sink.progress_token, log_level=log_level)
+
+    async def _unsubscribe_updates(self, handle: Any) -> None:
+        """end a call's updates subscription; a failure is logged, the call's answer kept.
+
+        :param handle: the subscription
+        :ptype handle: Any
+        :return: nothing
+        :rtype: None
+        """
+        subscriber = self._nats_client
+        assert isinstance(subscriber, UpdatesSubscriber)  # held by _subscribe_updates
+        try:
+            await subscriber.unsubscribe(handle)
+        except NatsClientError as exc:
+            contain(exc, log=log, what="a call's updates subscription could not be ended", extra={})
+
+    async def _send(self, request: ProxyCallRequest, effective_correlation_id: UUID) -> ProxyCallResponse:
+        """send the call and read the registry's reply.
+
+        :param request: the call
+        :ptype request: ProxyCallRequest
+        :param effective_correlation_id: its correlation id
+        :ptype effective_correlation_id: UUID
+        :return: the reply for a call the tool answered successfully
+        :rtype: ProxyCallResponse
+        :raises ToolCallError: the registry or the tool refused, or the bus failed
+        """
+        tool_name = request.tool_name
+        tool_version = request.tool_version
         log.info(
             "tool call sent",
             extra={

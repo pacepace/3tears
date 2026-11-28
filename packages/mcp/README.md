@@ -183,6 +183,7 @@ async def build(*, target: str, ctx: CallContext) -> dict:
 | `report_progress(progress, total=None, message=None)` | Sends `notifications/progress` for this call. It sends nothing when the client sent no token. Each value must be finite and greater than the last, as the protocol requires; a value that isn't raises `ValueError`. |
 | `log(level, data, *, logger=None)` | Sends a `notifications/message` entry to the client on this call's stream. On protocol 2026-07-28 and later it is sent only when the request opted in at that level or below (the `io.modelcontextprotocol/logLevel` key of its `_meta`). |
 | `cancelled`, `wait_cancelled()` | Set when the call is cancelled: the client sent `notifications/cancelled` or went away. The handler itself sees the cancellation as `CancelledError` at its next `await`. The signal is for work the call started outside its own task, such as a worker thread or a task in a longer-lived group. `wait_cancelled()` returns only on cancellation; a call that ends normally never sets it, so whoever starts such a waiter stops it when the call returns. |
+| `log_levels` | The levels of log entry the client takes for this call (empty when it takes none); `log` sends nothing at any other. A handler that forwards the call elsewhere, over the 3tears mesh, asks for entries at these levels only. |
 | `tool_name`, `request_id` | The tool being called and the call's protocol request id. |
 
 The context holds no MCP SDK type, so a handler needs no SDK import to use it. Its parameter is
@@ -197,7 +198,13 @@ of it included, or the qualified `threetears.mcp.CallContext`, is the call conte
 logged as a warning, once per tool and parameter, instead of passing it nothing in silence. An argument with the context's name, admitted by a
 schema that allows extra properties, is refused as an input validation error before the handler runs.
 A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
-log_sender=...)` with senders that record what they are given.
+log_sender=..., log_levels=...)` with senders that record what they are given (every level when `log_levels` is not
+given).
+
+A handler that serves a tool running elsewhere on the 3tears mesh hands the call its own context, and its client gets
+the remote tool's progress for its own progress token and its log entries at the levels it takes:
+`await ToolCallClient.call(name, version, arguments, updates=ctx)` (3tears-registry's README, "Updates while the call
+runs").
 
 ### Progress, logging and cancellation over Streamable HTTP
 
