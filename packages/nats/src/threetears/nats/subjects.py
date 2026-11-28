@@ -1047,6 +1047,122 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.reply.*.*", kind="pattern")
 
     # ------------------------------------------------------------------
+    # tool call updates: progress and log entries while a call runs
+    #
+    # The same two-hop shape as the durable result pair above, for the same
+    # reasons: the reply inbox takes ONE response and dies with the connection
+    # that received the request, so a stream of updates cannot ride it.
+    #
+    # - ``tools.progress.{pod_id}.{call_id}`` -- pod -> registry, named with the
+    #   publishing pod's own id on a standing grant, so no pod can forge an update
+    #   into another pod's call.
+    # - ``tools.updates.{caller_id}.{call_id}`` -- registry -> caller, named with
+    #   the caller's verified id; each caller subscribes only its own subtree, and
+    #   the registry refuses a caller-supplied subject that names anyone else.
+    #
+    # Core NATS, not JetStream: an update is best effort and worth nothing once
+    # its call has answered.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def tools_progress(cls, pod_id: str | UUID, call_id: str | UUID) -> Subject:
+        """the subject one tool pod publishes ONE call's updates to.
+
+        ``pod_id`` is a single token for a Tool Pod or the ``{agent_id}.{instance}`` composite for an agent's
+        in-process tool server, as in :meth:`tools_result`.
+
+        :param pod_id: the publishing pod's routing identifier (single token or composite)
+        :ptype pod_id: str | UUID
+        :param call_id: per-forward identifier the registry mints
+        :ptype call_id: str | UUID
+        :return: subject ``{ns}.tools.progress.{pod_id}.{call_id}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.tools.progress.{_routing_token(pod_id)}.{sanitize_subject_segment(call_id)}",
+            kind="point",
+        )
+
+    @classmethod
+    def tools_progress_pod_wildcard(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
+        """standing publish-grant pattern for ONE tool pod's own call updates.
+
+        :param pod_id: the connecting pod's own routing identifier
+        :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the process's default when omitted
+        :ptype namespace: str | None
+        :return: subject ``{ns}.tools.progress.{pod_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns_or(namespace)}.tools.progress.{_routing_token(pod_id)}.>", kind="pattern")
+
+    @classmethod
+    def tools_progress_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """standing publish-grant pattern for an agent pod's OWN in-process tool updates.
+
+        mirrors :meth:`tools_result_agent_subtree`: the in-process server runs under the ``{agent_id}.{instance}``
+        composite, and the auth callout knows only the authenticated ``agent_id``.
+
+        :param agent_id: the authenticated agent identity
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.progress.{agent_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.progress.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
+
+    @classmethod
+    def tools_progress_wildcard(cls) -> Subject:
+        """pattern spanning EVERY pod's updates: the registry's subscribe grant.
+
+        the registry subscribes one exact subject per forwarded call that asked for updates; the grant is the
+        family because one registry connection fronts every pod.
+
+        :return: subject ``{ns}.tools.progress.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.progress.>", kind="pattern")
+
+    @classmethod
+    def tools_updates(cls, caller_id: str | UUID, call_id: str | UUID) -> Subject:
+        """the subject the registry relays ONE call's updates to, named with the calling principal's id.
+
+        :param caller_id: the calling principal's authenticated identity (an agent's id, a tool pod's id)
+        :ptype caller_id: str | UUID
+        :param call_id: per-call identifier the caller mints
+        :ptype call_id: str | UUID
+        :return: subject ``{ns}.tools.updates.{caller_id}.{call_id}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.tools.updates.{sanitize_subject_segment(caller_id)}.{sanitize_subject_segment(call_id)}",
+            kind="point",
+        )
+
+    @classmethod
+    def tools_updates_caller_subtree(cls, caller_id: str | UUID) -> Subject:
+        """the updates family belonging to ONE caller: its subscribe grant, and the prefix the registry checks.
+
+        a single ``*`` tail, as :meth:`tools_reply_agent_subtree` has.
+
+        :param caller_id: the calling principal's authenticated identity
+        :ptype caller_id: str | UUID
+        :return: subject ``{ns}.tools.updates.{caller_id}.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.updates.{sanitize_subject_segment(caller_id)}.*", kind="pattern")
+
+    @classmethod
+    def tools_updates_wildcard(cls) -> Subject:
+        """registry-side publish-grant pattern spanning EVERY caller's updates.
+
+        the containment is the registry's: it relays only to a subject naming the call's verified caller.
+
+        :return: subject ``{ns}.tools.updates.*.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.updates.*.*", kind="pattern")
+
+    # ------------------------------------------------------------------
     # gateway (AI model gateway)
     # ------------------------------------------------------------------
 

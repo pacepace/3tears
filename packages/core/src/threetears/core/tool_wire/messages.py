@@ -12,7 +12,8 @@ how a pod waits for readiness and when it answers a probe stay with the pod.
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
@@ -25,6 +26,8 @@ __all__ = [
     "CallAccepted",
     "CallRequest",
     "CallResponse",
+    "CallUpdate",
+    "CallUpdates",
     "DiscoveryProbeRequest",
     "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
@@ -33,6 +36,8 @@ __all__ = [
     "RegistrationManifest",
     "RegistrationResponse",
     "ToolManifestEntry",
+    "UPDATE_LOG_LEVELS",
+    "UpdateLogLevel",
 ]
 
 
@@ -226,6 +231,107 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
     {"conversation_id", "user_id", "customer_id", "agent_id", "correlation_id"}
 )
 
+type UpdateLogLevel = Literal["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]
+"""a log entry's severity on the wire: the MCP (RFC 5424) scale, which a caller's MCP face hands its client."""
+
+#: the levels, least severe first: a call that asks for entries at a level is sent that level and every one after it
+UPDATE_LOG_LEVELS: tuple[UpdateLogLevel, ...] = (
+    "debug",
+    "info",
+    "notice",
+    "warning",
+    "error",
+    "critical",
+    "alert",
+    "emergency",
+)
+
+
+class CallUpdates(TolerantWireModel):
+    """a call's request for updates while it runs: where to send them, and which.
+
+    a caller sets it when its own client asked for progress (it holds a progress token) or takes log entries; a call
+    without it is sent no update, and its tool is called exactly as a call was before updates existed. The same model
+    rides both hops: on the caller's request ``subject`` is the caller's own updates subject
+    (:meth:`threetears.nats.Subjects.tools_updates`), which the registry checks names the verified caller; on the
+    forward to a pod it is the pod's own (:meth:`threetears.nats.Subjects.tools_progress`), minted per forward.
+
+    :param subject: where this hop's updates are published
+    :ptype subject: str
+    :param progress_token: the caller's progress token, handed to the tool's context as its own; ``None`` when the
+        caller's client asked for no progress, and the tool's progress is then not sent
+    :ptype progress_token: str | int | None
+    :param log_level: the least severe log entry the caller takes; ``None`` when it takes none
+    :ptype log_level: UpdateLogLevel | None
+    """
+
+    subject: str
+    progress_token: str | int | None = None
+    log_level: UpdateLogLevel | None = None
+
+    def wants_any(self) -> bool:
+        """whether the caller asked for anything at all.
+
+        :return: ``True`` when it asked for progress or log entries
+        :rtype: bool
+        """
+        return self.progress_token is not None or self.log_level is not None
+
+
+class CallUpdate(TolerantWireModel):
+    """one update of a running call: a progress report or a log entry.
+
+    published by the pod on its progress subject and relayed unchanged by the registry to the caller's. ``seq`` counts
+    from one per call, so a receiver orders what it is given and drops what arrives late; a kind this model does not
+    know (a newer sender's) fails validation and is dropped, which loses only that update.
+
+    :param seq: the update's place in its call, from 1
+    :ptype seq: int
+    :param kind: ``progress`` or ``log``
+    :ptype kind: Literal["progress", "log"]
+    :param progress: how far the call has got (``progress`` only; finite, increasing within the call)
+    :ptype progress: float | None
+    :param total: what ``progress`` reaches when the call is done, when known
+    :ptype total: float | None
+    :param message: a human-readable description of the step
+    :ptype message: str | None
+    :param level: the entry's severity (``log`` only)
+    :ptype level: UpdateLogLevel | None
+    :param data: the entry, any JSON value (``log`` only)
+    :ptype data: Any
+    :param logger: the name of the logger the entry comes from
+    :ptype logger: str | None
+    """
+
+    seq: int
+    kind: Literal["progress", "log"]
+    progress: float | None = None
+    total: float | None = None
+    message: str | None = None
+    level: UpdateLogLevel | None = None
+    data: Any = None
+    logger: str | None = None
+
+    @model_validator(mode="after")
+    def _complete_for_its_kind(self) -> Self:
+        """refuse an update missing what its kind needs, or carrying a number that is not finite.
+
+        :return: the update
+        :rtype: CallUpdate
+        :raises ValueError: a progress update without a finite ``progress`` (or with a ``total`` that is not finite),
+            a log update without a ``level``, or a ``seq`` below one
+        """
+        if self.seq < 1:
+            raise ValueError(f"an update's seq counts from 1; got {self.seq}")
+        if self.kind == "progress":
+            if self.progress is None or not math.isfinite(self.progress):
+                raise ValueError("a progress update carries a finite progress")
+            if self.total is not None and not math.isfinite(self.total):
+                raise ValueError("a progress update's total is finite")
+        elif self.level is None:
+            raise ValueError("a log update carries its level")
+        return self
+
 
 class CallRequest(TolerantWireModel):
     """incoming tool call request from NATS.
@@ -287,6 +393,10 @@ class CallRequest(TolerantWireModel):
         unknown key, explicit ``null`` included, which is why the registry proxy prunes unset
         top-level optionals from the envelope
     :ptype deadline_seconds: float | None
+    :param updates: the call's updates, when its caller asked for them: the pod's OWN progress subject, which the
+        registry mints for this forward, and what to send there. ``None`` sends none, and a tool is called exactly as
+        before. The registry prunes it from the envelope when unset, as it does ``deadline_seconds``
+    :ptype updates: CallUpdates | None
     """
 
     tool_name: str
@@ -296,6 +406,7 @@ class CallRequest(TolerantWireModel):
     proxy_assertion: str | None = None
     result_subject: str | None = None
     deadline_seconds: float | None = None
+    updates: CallUpdates | None = None
 
     @model_validator(mode="before")
     @classmethod

@@ -27,5 +27,7 @@ packages/nats/src/threetears/nats/cross_worker_cancel.py :: S7 :: 1 :: backlog :
 packages/registry/src/threetears/registry/discovery.py :: R6 :: 1 :: backlog :: lists tools for the agent the body names
 packages/registry/src/threetears/registry/health.py :: R5 :: 1 :: backlog :: a heartbeat marks the pod_id in its body available
 packages/registry/src/threetears/registry/registration.py :: R4 :: 1 :: backlog :: the bootstrap JWT is not bound to the body and carries no jti
+packages/registry/src/threetears/registry/proxy.py :: N1 :: 1 :: mesh-progress plan :: a call's updates are relayed on the subject's per-forward id alone; a forged one is a progress report or log entry shown to the caller, never an action
+packages/registry/src/threetears/registry/client.py :: N2 :: 1 :: mesh-progress plan :: a call's updates are taken on the subject's per-call id alone; a forged one is a progress report or log entry handed to the caller's client, never an action
 packages/scrape/src/threetears/scrape/operator_control.py :: R7 :: 1 :: backlog :: a control message needs only the session id
 packages/scrape/src/threetears/scrape/operator_pipe.py :: R7 :: 1 :: backlog :: an attach to the display needs only the session id

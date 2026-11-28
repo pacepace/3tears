@@ -322,6 +322,17 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
             Principal.REGISTRY: (str(Subjects.tools_call()),),
         },
         "packages/registry/src/threetears/registry/proxy.py::CallProxy._forward_call_durable": _ON_THE_INBOX,
+        # a forwarded call's updates, one exact subject per forward, from a tool pod or an in-process server
+        "packages/registry/src/threetears/registry/proxy.py::CallProxy._relaying_updates": {
+            Principal.REGISTRY: (
+                str(Subjects.tools_progress(_TOOL_POD_ID, uuid.uuid4())),
+                str(Subjects.tools_progress(inprocess, uuid.uuid4())),
+            ),
+        },
+        # the updates of a call a tool pod makes through the registry, relayed to its own subtree
+        "packages/registry/src/threetears/registry/client.py::ToolCallClient._subscribe_updates": {
+            Principal.TOOL_POD: (str(Subjects.tools_updates(_TOOL_POD_ID, uuid.uuid4())),),
+        },
         "packages/registry/src/threetears/registry/registration.py::RegistrationHandler.start": {
             Principal.REGISTRY: (str(Subjects.tools_register()),),
         },
@@ -444,6 +455,8 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _here(server, "Subjects.tools_heartbeat(", str(Subjects.tools_heartbeat(inprocess))),
             # the in-process server's durable result, a JetStream publish
             _here(server, "jetstream_publish(", str(Subjects.tools_result(inprocess, uuid.uuid4()))),
+            # the in-process server's updates for a call that asked for them
+            _here(server, "nc.publish_raw(subject=subject", str(Subjects.tools_progress(inprocess, uuid.uuid4()))),
             _here(audit, "Subjects.audit_event(", str(Subjects.audit_event("tool.call"))),
             _here(
                 "packages/agent/knowledge/src/threetears/agent/knowledge/integration.py",
@@ -534,6 +547,8 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 str(Subjects.namespace_discover()),
             ),
             _here(server, "jetstream_publish(", str(Subjects.tools_result(_TOOL_POD_ID, uuid.uuid4()))),
+            # the pod's updates for a call that asked for them
+            _here(server, "nc.publish_raw(subject=subject", str(Subjects.tools_progress(_TOOL_POD_ID, uuid.uuid4()))),
             _here("packages/nats/src/threetears/nats/client.py", "SERVER_USER_INFO_SUBJECT", SERVER_USER_INFO_SUBJECT),
             invalidate,
             _here(
@@ -571,6 +586,12 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 "packages/registry/src/threetears/registry/proxy.py",
                 "jetstream_publish(",
                 str(Subjects.tools_reply(_AGENT, uuid.uuid4())),
+            ),
+            # a call's updates relayed to its verified caller
+            _here(
+                "packages/registry/src/threetears/registry/proxy.py",
+                "publish_raw(subject=self._caller_subject",
+                str(Subjects.tools_updates(_AGENT, uuid.uuid4())),
             ),
             # the hub's registry_identity factory, loaded into the registry process, handshakes
             _there("hub:src/aibots/hub/tools/registry_identity.py:281", str(Subjects.hub_handshake())),

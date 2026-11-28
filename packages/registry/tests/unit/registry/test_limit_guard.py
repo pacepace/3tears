@@ -162,6 +162,9 @@ class _StubNats:
     async def unsubscribe(self, sub: SubscriptionHandle) -> None:
         del sub
 
+    async def publish_raw(self, *, subject: Subject, payload: bytes) -> None:
+        raise AssertionError(f"a call that asked for no updates relays none; got one on {subject.path}: {payload!r}")
+
     async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
         assert isinstance(message, ProxyCallResponse), f"the guard answers with a call response, not {message!r}"
         self.published.append(message)

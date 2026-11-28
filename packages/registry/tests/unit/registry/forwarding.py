@@ -153,6 +153,9 @@ class _RecordingTransport:
         """
         del subject, payload
 
+    async def publish_raw(self, *, subject: Subject, payload: bytes) -> None:
+        raise AssertionError(f"a call that asked for no updates relays none; got one on {subject.path}: {payload!r}")
+
     async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
         """
         accepts the proxy's answer to its caller.

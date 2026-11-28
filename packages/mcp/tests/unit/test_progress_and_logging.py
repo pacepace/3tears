@@ -222,6 +222,22 @@ class TestTheLogOptIn:
         assert client.received == [("log", "error", "bad"), ("progress", 1.0, None, None)]
 
     @pytest.mark.asyncio
+    async def test_the_handlers_context_names_the_levels_the_request_takes(self, loopback_mcp: LoopbackMcp) -> None:
+        """what a handler forwarding the call elsewhere asks for: none without the opt-in, its level and up with it."""
+        seen: list[frozenset[str]] = []
+
+        async def build(*, ctx: CallContext) -> str:
+            seen.append(frozenset(ctx.log_levels))
+            return "built"
+
+        client = _Client()
+        async with loopback_mcp(_server(build), json_response=False) as url:
+            async with _session(url, client, modern=True) as session:
+                await session.call_tool("build", {})
+                await session.call_tool("build", {}, meta={LOG_LEVEL_META_KEY: "error"})
+        assert seen == [frozenset(), frozenset(("error", "critical", "alert", "emergency"))]
+
+    @pytest.mark.asyncio
     async def test_a_handshake_era_client_gets_every_level(self, loopback_mcp: LoopbackMcp) -> None:
         """before 2026-07-28 the protocol has no per-request opt-in."""
         client = _Client()

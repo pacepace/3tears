@@ -39,6 +39,10 @@ _ProgressSender = Callable[[float, float | None, str | None], Awaitable[None]]
 _LogSender = Callable[[LogLevel, Any, str | None], Awaitable[None]]
 """sends one log message to the client: ``(level, data, logger)``."""
 
+_ALL_LEVELS: frozenset[LogLevel] = frozenset(
+    ("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
+)
+
 
 class CallContext:
     """one tool call as its handler sees it: who to report progress to, a log channel, a cancel signal.
@@ -60,6 +64,9 @@ class CallContext:
     :param cancelled: set when the call is cancelled; the server that builds the context sets it.
         a fresh, unset event when not given
     :ptype cancelled: asyncio.Event | None
+    :param log_levels: the levels the client takes for this call; :meth:`log` sends nothing at any other. every
+        level when not given and there is a log sender, none when there is not
+    :ptype log_levels: frozenset[LogLevel] | None
     """
 
     def __init__(
@@ -71,6 +78,7 @@ class CallContext:
         progress_sender: _ProgressSender | None = None,
         log_sender: _LogSender | None = None,
         cancelled: asyncio.Event | None = None,
+        log_levels: frozenset[LogLevel] | None = None,
     ) -> None:
         """capture the call's identifiers and the channels back to the client.
 
@@ -86,6 +94,8 @@ class CallContext:
         :ptype log_sender: Callable[[LogLevel, Any, str | None], Awaitable[None]] | None
         :param cancelled: the call's cancellation event
         :ptype cancelled: asyncio.Event | None
+        :param log_levels: the levels the client takes for this call
+        :ptype log_levels: frozenset[LogLevel] | None
         :return: nothing
         :rtype: None
         """
@@ -96,6 +106,10 @@ class CallContext:
         self._log_sender = log_sender
         self._cancelled = cancelled if cancelled is not None else asyncio.Event()
         self._last_progress: float | None = None
+        if log_sender is None:
+            self._log_levels: frozenset[LogLevel] = frozenset()
+        else:
+            self._log_levels = log_levels if log_levels is not None else _ALL_LEVELS
 
     @property
     def tool_name(self) -> str:
@@ -123,6 +137,17 @@ class CallContext:
         :rtype: str | int | None
         """
         return self._progress_token
+
+    @property
+    def log_levels(self) -> frozenset[LogLevel]:
+        """the levels of log entry the client takes for this call; empty when it takes none.
+
+        a host that forwards the call elsewhere (over the mesh) asks for entries at these levels only.
+
+        :return: the levels
+        :rtype: frozenset[LogLevel]
+        """
+        return self._log_levels
 
     @property
     def cancelled(self) -> bool:
@@ -194,6 +219,6 @@ class CallContext:
         :return: nothing
         :rtype: None
         """
-        if self._log_sender is None:
+        if self._log_sender is None or level not in self._log_levels:
             return
         await self._log_sender(level, data, logger)

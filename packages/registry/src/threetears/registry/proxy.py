@@ -12,11 +12,13 @@ import asyncio
 import functools
 import json
 import warnings
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid7
 
+from threetears.core.frozen_state import frozen, with_entry
 from threetears.core.task_registry import KeyedTaskRegistry
 from threetears.core.wire import TolerantWireModel
 from pydantic import (
@@ -27,7 +29,7 @@ from pydantic import (
     model_validator,
 )
 
-from threetears.core.tool_wire import CallAccepted, CallContext, CallRequest, bind_log_context
+from threetears.core.tool_wire import CallAccepted, CallContext, CallRequest, CallUpdate, CallUpdates, bind_log_context
 from threetears.core.tool_wire import CallResponse as ProxyCallResponse
 from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import (
@@ -44,6 +46,9 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
 from threetears.core.security.proxy_assertion import TOOL_POP_LEDGER_UNAVAILABLE, TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 from threetears.nats import (
+    MAX_UPDATE_BYTES,
+    RELAY_UPDATE_BURST,
+    RELAY_UPDATES_PER_SECOND,
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
     NatsClientError,
@@ -54,10 +59,13 @@ from threetears.nats import (
     Subject,
     Subjects,
     SubscriptionHandle,
+    UpdateBudget,
+    UpdateDrain,
     reply_subject_is_owned_by_agent,
     reply_subject_prefix_for_agent,
     requires_async_result,
     result_stream_name,
+    updates_subject_is_owned_by_caller,
 )
 from threetears.observe import InflightRequestsGauge, clear_context, contain, counter, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
@@ -117,11 +125,10 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
     {"conversation_id", "user_id", "customer_id", "correlation_id", "agent_id"}
 )
 
-#: the optional ``ProxyCallRequest`` fields a registry older than the field refuses outright,
-#: because the model forbids unknown keys and an unknown ``null`` is as fatal as an unknown value.
-#: the model omits each of them from its serialized form when unset, so no sender -- whichever
-#: serializer it calls -- can put one on the wire as an explicit null.
-_OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest")
+#: the optional ``ProxyCallRequest`` fields the model omits from its serialized form when unset, so no sender --
+#: whichever serializer it calls -- puts one on the wire as an explicit null. A registry released while the model still
+#: forbade unknown keys refused a call carrying one outright; a tolerant reader ignores it.
+_OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest", "updates")
 
 
 class ProxyCallRequest(TolerantWireModel):
@@ -192,6 +199,12 @@ class ProxyCallRequest(TolerantWireModel):
         A registry older than this field ignores it, so the call routes as discovery would
         show. The model omits it from every serialized form when unset
     :ptype input_schema_digest: str | None
+    :param updates: the caller's request for the call's updates (progress and log entries) while it runs: its OWN
+        updates subject (:meth:`threetears.nats.Subjects.tools_updates`, named with its verified id; any other is
+        refused) and what it takes. The proxy relays the pod's updates there, bounded per call. ``None`` asks for
+        none. A registry older than the field ignores it and the call runs with no updates; the model omits it from
+        every serialized form when unset
+    :ptype updates: CallUpdates | None
     """
 
     tool_name: str
@@ -202,6 +215,7 @@ class ProxyCallRequest(TolerantWireModel):
     result_subject: str | None = None
     deadline_seconds: float | None = None
     input_schema_digest: str | None = None
+    updates: CallUpdates | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_rollout_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -333,6 +347,10 @@ class CallProxyTransport(Protocol):
 
     async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
         """answer a request's reply subject with a model."""
+        ...
+
+    async def publish_raw(self, *, subject: Subject, payload: bytes) -> None:
+        """publish raw bytes: a pod's update relayed to its caller."""
         ...
 
     async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
@@ -1153,6 +1171,14 @@ class CallProxy:
         # a two-token wildcard publish grant on the reply family (one connection fronts every agent,
         # so there is no per-connection list of literals to mint from); this refusal is what stops
         # that wildcard from being a way to redirect one agent's result onto a peer's in-flight call.
+        # The same containment for the subject this call's updates are relayed to, and checked first, so a refusal is
+        # answered on the inbox in the shape the caller is waiting for there.
+        if request.updates is not None and not updates_subject_is_owned_by_caller(
+            request.updates.subject, caller_id=agent_id_log
+        ):
+            await self._refuse_updates_subject(msg, request, agent_id_log)
+            return
+
         delivery_subject: Subject | None = None
         if request.result_subject is not None:
             if not reply_subject_is_owned_by_agent(request.result_subject, agent_id=agent_id_log):
@@ -1628,6 +1654,107 @@ class CallProxy:
                 )
                 await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
 
+    async def _refuse_updates_subject(self, msg: IncomingMessage, request: ProxyCallRequest, caller_id: str) -> None:
+        """refuse a call whose updates subject does not name its verified caller, before anything runs.
+
+        answered on the inbox: as a :class:`ProxyCallAccepted` refusal when the call asked for durable delivery (the
+        first thing such a caller reads there), else as a ``MALFORMED_REQUEST`` response.
+
+        :param msg: the inbound envelope
+        :ptype msg: IncomingMessage
+        :param request: the identity-verified request
+        :ptype request: ProxyCallRequest
+        :param caller_id: the verified caller's id
+        :ptype caller_id: str
+        :return: nothing
+        :rtype: None
+        """
+        assert self._nc is not None and request.updates is not None  # held by the caller
+        expected = str(Subjects.tools_updates_caller_subtree(caller_id)).removesuffix("*")
+        reason = (
+            f"updates subject {request.updates.subject!r} does not belong to the verified caller; "
+            f"expected one token under {expected!r}"
+        )
+        log.warning(
+            "rejecting an updates subject that does not name the verified caller",
+            extra={
+                "extra_data": {
+                    "requested_subject": request.updates.subject,
+                    "expected_prefix": expected,
+                    "agent_id": caller_id,
+                    "tool_name": request.tool_name,
+                    "correlation_id": _correlation_id_str(request),
+                }
+            },
+        )
+        if msg.reply_subject is None:
+            return
+        refusal: BaseModel
+        if request.result_subject is not None:
+            refusal = ProxyCallAccepted(accepted=False, result_subject=request.result_subject, error=reason)
+        else:
+            refusal = ProxyCallResponse(
+                success=False, content="", error=reason, error_code="MALFORMED_REQUEST", context=request.context
+            )
+        await self._nc.publish_reply(reply_subject=msg.reply_subject, message=refusal)
+
+    @asynccontextmanager
+    async def _relaying_updates(self, request: ProxyCallRequest, pod_id: str) -> AsyncIterator[CallUpdates | None]:
+        """relay one forward's updates from the pod to the caller while the forward runs.
+
+        yields what the forward asks the pod for -- the pod's own progress subject, minted for this forward, and what
+        the caller takes -- or ``None`` when the caller asked for nothing, or the subscription could not be made (the
+        call then runs without updates, which are best effort). A fresh subject per forward keeps a pod that failed
+        over from pushing late updates into the call.
+
+        :param request: the identity-verified request
+        :ptype request: ProxyCallRequest
+        :param pod_id: the pod this forward goes to
+        :ptype pod_id: str
+        :return: the pod's updates request, or ``None``
+        :rtype: AsyncIterator[CallUpdates | None]
+        """
+        assert self._nc is not None  # guarded by the caller
+        if request.updates is None or not request.updates.wants_any():
+            yield None
+            return
+        pod_subject = Subjects.tools_progress(pod_id, uuid7())
+        relay = _UpdateRelay(
+            self._nc,
+            caller_subject=Subject.raw(request.updates.subject),
+            tool_name=request.tool_name,
+            correlation_id=_correlation_id_str(request),
+        )
+        try:
+            # sender-posture: unauthenticated open N1 -- only the pod is granted the subject, whose per-forward id
+            # only the pod and this proxy hold; the relay checks shape, size and rate, and an update acts on nothing
+            handle = await self._nc.subscribe(subject=pod_subject, cb=relay.relay)
+        except NatsClientError as exc:
+            contain(
+                exc,
+                log=log,
+                what="the call's updates could not be subscribed; it runs without them",
+                extra={"pod_id": pod_id, "tool_name": request.tool_name, "subject": pod_subject.path},
+            )
+            yield None
+            return
+        try:
+            yield request.updates.model_copy(update={"subject": pod_subject.path})
+        finally:
+            # the pod sent its updates before its answer, but they are dispatched apart from it: relay what is still
+            # on its way, within a bound, before the call answers
+            await relay.settled()
+            try:
+                await self._nc.unsubscribe(handle)
+            except NatsClientError as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="the call's updates subscription could not be ended",
+                    extra={"pod_id": pod_id, "subject": pod_subject.path},
+                )
+            relay.finish()
+
     def _resolve_timeout(self, definition: ToolDefinition) -> float:
         """resolve the effective timeout for a call routed to one copy.
 
@@ -1677,12 +1804,41 @@ class CallProxy:
             raise RuntimeError("_forward_call invoked before NATS connected")
         effective_timeout = self._resolve_timeout(definition)
         if requires_async_result(effective_timeout):
-            return await self._forward_call_durable(request, pod_id, effective_timeout, principal)
+            async with self._relaying_updates(request, pod_id) as updates:
+                return await self._forward_call_durable(request, pod_id, effective_timeout, principal, updates)
+        async with self._relaying_updates(request, pod_id) as updates:
+            return await self._forward_call_sync(request, pod_id, principal, effective_timeout, updates)
+
+    async def _forward_call_sync(
+        self,
+        request: ProxyCallRequest,
+        pod_id: str,
+        principal: VerifiedPrincipal,
+        effective_timeout: float,
+        updates: CallUpdates | None,
+    ) -> ProxyCallResponse:
+        """forward a SHORT call on the request/reply path and read the pod's answer.
+
+        :param request: the identity-verified call request
+        :ptype request: ProxyCallRequest
+        :param pod_id: identifier of target tool pod
+        :ptype pod_id: str
+        :param principal: the principal the verified token named, for the proxy assertion
+        :ptype principal: VerifiedPrincipal
+        :param effective_timeout: how long the tool is allowed to take
+        :ptype effective_timeout: float
+        :param updates: the pod's updates request for this forward, or ``None``
+        :ptype updates: CallUpdates | None
+        :return: response from tool pod or error response on timeout
+        :rtype: ProxyCallResponse
+        """
+        assert self._nc is not None  # guarded by the caller
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(
             self._with_delegation(request, pod_id, principal, effective_timeout),
             self._mint_proxy_assertion(request, pod_id, principal),
             effective_timeout=effective_timeout,
+            updates=updates,
         )
         correlation_id_log = _correlation_id_str(request)
 
@@ -1795,6 +1951,7 @@ class CallProxy:
         pod_id: str,
         effective_timeout: float,
         principal: VerifiedPrincipal,
+        updates: CallUpdates | None = None,
     ) -> ProxyCallResponse:
         """forward a LONG call: subscribe, dispatch, and collect the answer off a durable subject.
 
@@ -1818,6 +1975,8 @@ class CallProxy:
         :ptype effective_timeout: float
         :param principal: the principal the verified token named, for the proxy assertion
         :ptype principal: VerifiedPrincipal
+        :param updates: the pod's updates request for this forward, or ``None``
+        :ptype updates: CallUpdates | None
         :return: the pod's answer, or a well-typed error response
         :rtype: ProxyCallResponse
         """
@@ -1829,6 +1988,7 @@ class CallProxy:
             self._mint_proxy_assertion(request, pod_id, principal),
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
+            updates=updates,
         )
         try:
             # sender-posture: own-consumer -- the waiter takes a result only with its own consumer's ack reply
@@ -2133,6 +2293,125 @@ class CallProxy:
         return result
 
 
+class _UpdateRelay:
+    """relays one forward's updates from the pod to the caller, bounded, never raising.
+
+    each update is checked (its size, that it parses) and spent against the call's relay budget before it is
+    relayed as the pod sent it, so a newer pod's fields reach a newer caller. What is over the budget, too large or
+    unreadable is dropped and counted; :meth:`finish` logs the count once. A pod is a tenant's code, so its own bound
+    is not taken on trust.
+
+    :param nc: the proxy's transport
+    :ptype nc: CallProxyTransport
+    :param caller_subject: the caller's verified updates subject
+    :ptype caller_subject: Subject
+    :param tool_name: the call's tool, for the log
+    :ptype tool_name: str
+    :param correlation_id: the call's correlation id, for the log
+    :ptype correlation_id: str
+    """
+
+    def __init__(self, nc: CallProxyTransport, *, caller_subject: Subject, tool_name: str, correlation_id: str) -> None:
+        """bind the relay to one call.
+
+        :param nc: the proxy's transport
+        :ptype nc: CallProxyTransport
+        :param caller_subject: where updates are relayed
+        :ptype caller_subject: Subject
+        :param tool_name: the call's tool
+        :ptype tool_name: str
+        :param correlation_id: the call's correlation id
+        :ptype correlation_id: str
+        :return: nothing
+        :rtype: None
+        """
+        self._nc = nc
+        self._caller_subject = caller_subject
+        self._tool_name = tool_name
+        self._correlation_id = correlation_id
+        self._budget = UpdateBudget(rate=RELAY_UPDATES_PER_SECOND, burst=RELAY_UPDATE_BURST)
+        self._dropped: Mapping[str, int] = frozen()
+        self._relayed = 0
+        self._drain = UpdateDrain()
+
+    def _drop(self, why: str) -> None:
+        """count one update not relayed, by why.
+
+        :param why: the reason
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        self._dropped = with_entry(self._dropped, why, self._dropped.get(why, 0) + 1)
+
+    async def relay(self, msg: IncomingMessage) -> None:
+        """relay one update, or count why not.
+
+        :param msg: the pod's update
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
+        """
+        with self._drain:
+            await self._relay(msg)
+
+    async def settled(self) -> None:
+        """wait, within a bound, until the updates still on their way have been relayed.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not await self._drain.settled():
+            self._drop("still_arriving_at_answer")
+
+    async def _relay(self, msg: IncomingMessage) -> None:
+        """relay one update, or count why not.
+
+        :param msg: the pod's update
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
+        """
+        if len(msg.data) > MAX_UPDATE_BYTES:
+            self._drop("too_large")
+            return
+        try:
+            CallUpdate.model_validate_json(msg.data)
+        except ValidationError:
+            # NOSILENT: counted, and the count is logged by finish(); an update is best effort
+            self._drop("unreadable")
+            return
+        if not self._budget.take():
+            self._drop("over_rate")
+            return
+        try:
+            await self._nc.publish_raw(subject=self._caller_subject, payload=msg.data)
+        except PublishError:
+            # NOSILENT: counted, and the count is logged by finish(); a lost update loses only itself
+            self._drop("publish_failed")
+            return
+        self._relayed += 1
+
+    def finish(self) -> None:
+        """log what was not relayed, once, when anything was not.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._dropped:
+            log.warning(
+                "some of a call's updates were not relayed to its caller",
+                extra={
+                    "extra_data": {
+                        "tool_name": self._tool_name,
+                        "correlation_id": self._correlation_id,
+                        "relayed": self._relayed,
+                        "dropped": dict(self._dropped),
+                    }
+                },
+            )
+
+
 def _published_kids(jwks: Mapping[str, Any]) -> set[str]:
     """the key ids a JWKS publishes.
 
@@ -2228,6 +2507,7 @@ def _build_internal_payload(
     *,
     result_subject: str | None = None,
     effective_timeout: float,
+    updates: CallUpdates | None = None,
 ) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
@@ -2252,6 +2532,9 @@ def _build_internal_payload(
     :param effective_timeout: how long THIS proxy will wait for the pod, used as the ceiling the
         caller's deadline is clamped to
     :ptype effective_timeout: float
+    :param updates: the pod's own updates request for this forward (never the caller's, whose subject the pod holds
+        no grant on), or ``None``
+    :ptype updates: CallUpdates | None
     :return: serialized internal call request bytes
     :rtype: bytes
     """
@@ -2263,6 +2546,7 @@ def _build_internal_payload(
         proxy_assertion=proxy_assertion,
         result_subject=result_subject,
         deadline_seconds=_forwarded_deadline(request.deadline_seconds, effective_timeout),
+        updates=updates,
     )
     # Dropping unset TOP-LEVEL optionals keeps the envelope to what the caller set.
     # :class:`CallRequest` is a tolerant reader, so a pod predating a field ignores it; a pod
