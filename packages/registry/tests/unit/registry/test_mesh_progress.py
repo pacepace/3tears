@@ -288,6 +288,19 @@ class _Stalling(_Building):
         return ToolResult(success=True, content="never")
 
 
+class _Slow(_Building):
+    """reports, waits longer than the drain's quiet, reports its last step and answers at once."""
+
+    async def execute(self, *, ctx: CallContext | None = None, **kwargs: Any) -> ToolResult:
+        del kwargs
+        self.contexts.append(ctx)
+        assert ctx is not None
+        await ctx.report_progress(1, 2, "started")
+        await asyncio.sleep(0.2)
+        await ctx.report_progress(2, 2, "finished")
+        return ToolResult(success=True, content="built")
+
+
 class _Plain(TearsTool):
     """an execute that declares no context."""
 
@@ -438,6 +451,17 @@ class TestUpdatesCrossTheMesh:
         # the tool was given the caller's own progress token
         [ctx] = tool.contexts
         assert ctx is not None and ctx.progress_token == "tok-1"
+
+    @pytest.mark.asyncio
+    async def test_a_long_calls_last_progress_still_arrives(self) -> None:
+        """a call longer than the drain's quiet, end to end. The in-memory bus hands the last update on promptly, so the
+        rule this guards (the quiet runs from the answer) is pinned by the drain's own test in 3tears-nats."""
+        mesh = await _mesh(_Slow(), bus=_QueuedBus())
+        sink = _Sink(progress_token="tok", log_levels=frozenset())
+
+        await mesh.client.call(_TOOL, _VERSION, {}, updates=sink)
+
+        assert sink.received == [("progress", 1.0, 2.0, "started"), ("progress", 2.0, 2.0, "finished")]
 
     @pytest.mark.asyncio
     async def test_a_call_cut_short_on_the_pod_sets_the_contexts_cancel_signal(self) -> None:
@@ -857,6 +881,7 @@ class TestTheCallersHop:
             ("log", "info", {"done": True}),
         ]
         [warning] = [record for record in caplog.records if "not handed on" in record.getMessage()]
+        assert warning.__dict__["extra_data"]["correlation_id"] == str(nats.sent[0].context.correlation_id)
         dropped = warning.__dict__["extra_data"]["dropped"]
         assert dropped == {
             "out_of_order": 2,

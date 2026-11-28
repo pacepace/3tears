@@ -183,20 +183,25 @@ class _UpdateForwarder:
     :ptype sink: _CallUpdateSink
     :param tool_name: the call's tool, for the log
     :ptype tool_name: str
+    :param correlation_id: the call's correlation id, for the log, as the registry's and the pod's lines carry it
+    :ptype correlation_id: str
     """
 
-    def __init__(self, sink: _CallUpdateSink, *, tool_name: str) -> None:
+    def __init__(self, sink: _CallUpdateSink, *, tool_name: str, correlation_id: str) -> None:
         """bind the forwarder to one call.
 
         :param sink: the call's sink
         :ptype sink: _CallUpdateSink
         :param tool_name: the call's tool
         :ptype tool_name: str
+        :param correlation_id: the call's correlation id
+        :ptype correlation_id: str
         :return: nothing
         :rtype: None
         """
         self._sink = sink
         self._tool_name = tool_name
+        self._correlation_id = correlation_id
         self._last_seq = 0
         self._last_progress: float | None = None
         self._handed_on = 0
@@ -256,7 +261,12 @@ class _UpdateForwarder:
                 exc,
                 log=log,
                 what="a call's update could not be handed on to its client",
-                extra={"tool_name": self._tool_name, "seq": update.seq, "kind": update.kind},
+                extra={
+                    "tool_name": self._tool_name,
+                    "correlation_id": self._correlation_id,
+                    "seq": update.seq,
+                    "kind": update.kind,
+                },
             )
 
     async def _progress(self, update: CallUpdate) -> None:
@@ -299,6 +309,7 @@ class _UpdateForwarder:
                 extra={
                     "extra_data": {
                         "tool_name": self._tool_name,
+                        "correlation_id": self._correlation_id,
                         "handed_on": self._handed_on,
                         "dropped": dict(self._dropped),
                     }
@@ -534,7 +545,7 @@ class ToolCallClient:
             ),
             pop=pop,
         )
-        subscription = await self._subscribe_updates(updates, tool_name)
+        subscription = await self._subscribe_updates(updates, tool_name, str(effective_correlation_id))
         if subscription is not None:
             request = request.model_copy(update={"updates": subscription[2]})
         try:
@@ -545,11 +556,11 @@ class ToolCallClient:
                 # the registry relayed them before its answer, but they are dispatched apart from it: hand on what is
                 # still on its way, within a bound, before the call returns
                 await forwarder.settled()
-                await self._unsubscribe_updates(handle)
+                await self._unsubscribe_updates(handle, str(effective_correlation_id))
                 forwarder.finish()
 
     async def _subscribe_updates(
-        self, sink: _CallUpdateSink | None, tool_name: str
+        self, sink: _CallUpdateSink | None, tool_name: str, correlation_id: str
     ) -> tuple[Any, _UpdateForwarder, CallUpdates] | None:
         """subscribe this call's own updates subject when ``sink`` asks for anything.
 
@@ -557,6 +568,8 @@ class ToolCallClient:
         :ptype sink: _CallUpdateSink | None
         :param tool_name: the call's tool
         :ptype tool_name: str
+        :param correlation_id: the call's correlation id, for the log
+        :ptype correlation_id: str
         :return: the subscription's handle, its forwarder and the request's ``updates``, or ``None`` when nothing is
             asked for, the NATS client cannot subscribe or the subscription could not be made (the call then runs
             without updates, which are best effort, and the reason is logged)
@@ -571,11 +584,17 @@ class ToolCallClient:
         if not isinstance(subscriber, _UpdatesSubscriber):
             log.warning(
                 "a call asked for updates, but the NATS client cannot subscribe; it runs without them",
-                extra={"extra_data": {"tool_name": tool_name, "client": type(subscriber).__name__}},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "correlation_id": correlation_id,
+                        "client": type(subscriber).__name__,
+                    }
+                },
             )
             return None
         subject = Subjects.tools_updates(self._principal_id, uuid7())
-        forwarder = _UpdateForwarder(sink, tool_name=tool_name)
+        forwarder = _UpdateForwarder(sink, tool_name=tool_name, correlation_id=correlation_id)
         try:
             # sender-posture: unauthenticated open N2 -- only the registry is granted the subject, whose per-call id
             # only this caller and the registry hold; an update is checked for shape and order and acts on nothing
@@ -585,17 +604,19 @@ class ToolCallClient:
                 exc,
                 log=log,
                 what="a call's updates could not be subscribed; it runs without them",
-                extra={"tool_name": tool_name, "subject": subject.path},
+                extra={"tool_name": tool_name, "correlation_id": correlation_id, "subject": subject.path},
             )
             return None
         asked = CallUpdates(subject=subject.path, progress_token=sink.progress_token, log_level=log_level)
         return handle, forwarder, asked
 
-    async def _unsubscribe_updates(self, handle: Any) -> None:
+    async def _unsubscribe_updates(self, handle: Any, correlation_id: str) -> None:
         """end a call's updates subscription; a failure is logged, the call's answer kept.
 
         :param handle: the subscription
         :ptype handle: Any
+        :param correlation_id: the call's correlation id, for the log
+        :ptype correlation_id: str
         :return: nothing
         :rtype: None
         """
@@ -604,7 +625,12 @@ class ToolCallClient:
         try:
             await subscriber.unsubscribe(handle)
         except NatsClientError as exc:
-            contain(exc, log=log, what="a call's updates subscription could not be ended", extra={})
+            contain(
+                exc,
+                log=log,
+                what="a call's updates subscription could not be ended",
+                extra={"correlation_id": correlation_id},
+            )
 
     async def _send(self, request: ProxyCallRequest, effective_correlation_id: UUID) -> ProxyCallResponse:
         """send the call and read the registry's reply.

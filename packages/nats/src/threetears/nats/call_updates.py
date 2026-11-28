@@ -189,7 +189,11 @@ class UpdateDrain:
         :return: ``True`` when it settled, ``False`` when the limit ended the wait
         :rtype: bool
         """
-        deadline = self._clock() + limit
+        start = self._clock()
+        deadline = start + limit
+        # the quiet runs from the answer at the earliest: an update read off the wire but not yet handed to its
+        # handler moves nothing here, so a quiet measured from an update long before the answer would end at once
+        self._last = max(self._last, start)
         while True:
             now = self._clock()
             idle_for = now - self._last

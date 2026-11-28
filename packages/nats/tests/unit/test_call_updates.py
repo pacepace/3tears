@@ -148,3 +148,15 @@ class TestTheDrain:
 
         assert await drain.settled(quiet=0.05, limit=0.5) is False
         assert time.now == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_the_quiet_runs_from_the_answer_however_long_the_call_took(self) -> None:
+        """an update still queued at the answer moves nothing until handled, so the quiet cannot start before it."""
+        time = _ManualTime()
+        drain = UpdateDrain(clock=time.clock, sleep=time.sleep)
+        with drain:
+            pass
+        time.now += 30.0  # a long call: the last update handled long ago
+
+        assert await drain.settled(quiet=0.05, limit=1.0) is True
+        assert time.now >= 30.05
