@@ -12,8 +12,9 @@ on the link: the bounds here are what a sender drops or coalesces to, never what
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from threetears.nats.subjects import Subjects
@@ -26,6 +27,7 @@ __all__ = [
     "RELAY_UPDATES_PER_SECOND",
     "UPDATE_FLUSH_SECONDS",
     "UpdateBudget",
+    "UpdateDrain",
     "progress_subject_is_owned_by_pod",
     "updates_subject_is_owned_by_caller",
 ]
@@ -48,6 +50,14 @@ MAX_UPDATE_BYTES = 16 * 1024
 #: how long a pod spends sending what is still pending before it answers the call. An MCP client ignores progress
 #: after the result, so the last progress leaves first; the bound keeps a dead link from delaying the answer.
 UPDATE_FLUSH_SECONDS = 1.0
+
+#: once a call has answered, how long a receiving hop (the registry's relay, the caller) keeps listening for updates
+#: still on their way: until none has arrived for :data:`_DRAIN_QUIET_SECONDS`, and no longer than
+#: :data:`_DRAIN_SECONDS` in all. A subscription's messages are dispatched from a task of their own, apart from
+#: the reply's, so an update the pod sent before its answer can still be queued when the answer is read; ending the
+#: subscription then would drop exactly the last progress.
+_DRAIN_QUIET_SECONDS = 0.05
+_DRAIN_SECONDS = 0.5
 
 
 class UpdateBudget:
@@ -115,6 +125,79 @@ class UpdateBudget:
         """
         self._refill()
         return 0.0 if self._tokens >= 1.0 else (1.0 - self._tokens) / self._rate
+
+
+class UpdateDrain:
+    """when a receiving hop may stop listening for a call's updates: after it has gone quiet, within a bound.
+
+    the hop's handler handles each update inside ``with drain:``; once the call has answered the hop awaits
+    :meth:`settled` and then ends its subscription.
+
+    :param clock: monotonic seconds; ``time.monotonic`` when not given
+    :ptype clock: Callable[[], float] | None
+    :param sleep: awaits a number of seconds; ``asyncio.sleep`` when not given
+    :ptype sleep: Callable[[float], Awaitable[None]] | None
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        """start with nothing received.
+
+        :param clock: monotonic seconds
+        :ptype clock: Callable[[], float] | None
+        :param sleep: awaits a number of seconds
+        :ptype sleep: Callable[[float], Awaitable[None]] | None
+        :return: nothing
+        :rtype: None
+        """
+        self._clock = clock if clock is not None else time.monotonic
+        self._sleep = sleep if sleep is not None else asyncio.sleep
+        self._busy = 0
+        self._last = self._clock()
+
+    def __enter__(self) -> None:
+        """one update is being handled.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._busy += 1
+        self._last = self._clock()
+
+    def __exit__(self, *exc: object) -> None:
+        """the update has been handled.
+
+        :param exc: the exception the block raised, if any
+        :ptype exc: object
+        :return: nothing
+        :rtype: None
+        """
+        self._busy -= 1
+        self._last = self._clock()
+
+    async def settled(self, *, quiet: float = _DRAIN_QUIET_SECONDS, limit: float = _DRAIN_SECONDS) -> bool:
+        """wait until no update is being handled and none has arrived for ``quiet``, or ``limit`` has passed.
+
+        :param quiet: the quiet that means nothing more is on its way
+        :ptype quiet: float
+        :param limit: the most this waits
+        :ptype limit: float
+        :return: ``True`` when it settled, ``False`` when the limit ended the wait
+        :rtype: bool
+        """
+        deadline = self._clock() + limit
+        while True:
+            now = self._clock()
+            idle_for = now - self._last
+            if self._busy == 0 and idle_for >= quiet:
+                return True
+            if now >= deadline:
+                return False
+            await self._sleep(min(max(quiet - idle_for, quiet / 5), max(deadline - now, 0.0)))
 
 
 def progress_subject_is_owned_by_pod(subject: str, *, pod_id: str | UUID, namespace: str | None = None) -> bool:

@@ -44,11 +44,19 @@ from threetears.core.security import (
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.core.tool_wire import CallAccepted, CallRequest, CallUpdate, CallUpdates, UpdateLogLevel
 from threetears.mcp import CallContext, Identity, McpServer, McpTool, ToolRegistry
-from threetears.nats import RELAY_UPDATE_BURST, IncomingMessage, Subject, Subjects, set_default_namespace
+from threetears.nats import (
+    RELAY_UPDATE_BURST,
+    IncomingMessage,
+    PublishError,
+    Subject,
+    Subjects,
+    SubscribeError,
+    set_default_namespace,
+)
 
 from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
-from threetears.registry.client import ToolCallClient
+from threetears.registry.client import ToolCallClient, ToolCallError
 from threetears.registry.proxy import CallProxy, ProxyCallAccepted, ProxyCallResponse
 
 from .copy_entries import uniform_entry
@@ -88,6 +96,43 @@ class _Bus:
         for path, cb in list(self.subscriptions.values()):
             if path == subject.path:
                 await cb(IncomingMessage(data=payload, reply_subject=None, subject=path))
+
+
+class _QueuedBus(_Bus):
+    """the same bus, dispatched as the real client dispatches: each subscription's messages queue for a task of
+    its own, apart from any request's reply, and ending a subscription drops what is still queued."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._queues: dict[int, asyncio.Queue[IncomingMessage]] = {}
+        self._tasks: dict[int, asyncio.Task[None]] = {}
+
+    async def subscribe(self, subject: Subject | str, cb: Callable[[IncomingMessage], Awaitable[None]]) -> int:
+        handle = await super().subscribe(subject, cb)
+        queue: asyncio.Queue[IncomingMessage] = asyncio.Queue()
+        self._queues[handle] = queue
+
+        async def dispatch() -> None:
+            while True:
+                msg = await queue.get()
+                await asyncio.sleep(0)  # the client's read loop and dispatch are separate turns
+                await cb(msg)
+
+        self._tasks[handle] = asyncio.create_task(dispatch())
+        return handle
+
+    async def unsubscribe(self, handle: int) -> None:
+        await super().unsubscribe(handle)
+        self._queues.pop(handle, None)
+        task = self._tasks.pop(handle, None)
+        if task is not None:
+            task.cancel()
+
+    async def publish_raw(self, subject: Subject, payload: bytes) -> None:
+        self.published.append((subject.path, payload))
+        for handle, (path, _cb) in list(self.subscriptions.items()):
+            if path == subject.path:
+                self._queues[handle].put_nowait(IncomingMessage(data=payload, reply_subject=None, subject=path))
 
 
 # parity-exempt: subset stand-in for NatsClient: the pod's replies, its audit publish and its core publishes
@@ -179,10 +224,10 @@ class _CallerNats:
                 data=message.model_dump_json().encode("utf-8"), reply_subject="_INBOX.c", subject=subject.path
             )
         )
-        for _ in range(200):
-            if len(self._proxy_nats.replies) > before:
-                break
-            await asyncio.sleep(0)
+        # the proxy answers from a task of its own, after its relay has settled
+        async with asyncio.timeout(5):
+            while len(self._proxy_nats.replies) <= before:
+                await asyncio.sleep(0.005)
         reply = self._proxy_nats.replies[before]
         return response_type.model_validate_json(reply.model_dump_json())
 
@@ -231,6 +276,16 @@ class _Building(TearsTool):
 
     def mcp_version(self) -> str:
         return _VERSION
+
+
+class _Stalling(_Building):
+    """reports once, then outlives the pod's hard ceiling."""
+
+    async def execute(self, *, ctx: CallContext | None = None, **kwargs: Any) -> ToolResult:
+        del kwargs
+        self.contexts.append(ctx)
+        await asyncio.sleep(10)
+        return ToolResult(success=True, content="never")
 
 
 class _Plain(TearsTool):
@@ -310,17 +365,18 @@ class _Mesh:
         self.hop = hop
 
 
-async def _mesh(tool: TearsTool) -> _Mesh:
+async def _mesh(tool: TearsTool, *, bus: _Bus | None = None, max_call_seconds: float | None = None) -> _Mesh:
     hub_priv, hub_pub = generate_signing_keypair()
     seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
     proxy_signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
     combined = {"keys": [*build_jwks({"kid-1": hub_pub})["keys"], *proxy_signer.public_jwks()["keys"]]}
-    bus = _Bus()
+    bus = bus if bus is not None else _Bus()
     pod_nats = _PodNats(bus)
     server = ToolServer(
         nats_client=pod_nats,  # type: ignore[arg-type]
         pod_id=_SERVING_POD,
         namespace=_NS,
+        max_call_seconds=max_call_seconds,
         jwks_provider=lambda: combined,
         assertion_replay_guard=FakeReplayGuard(),
     )
@@ -362,9 +418,12 @@ async def _mesh(tool: TearsTool) -> _Mesh:
 
 class TestUpdatesCrossTheMesh:
     @pytest.mark.asyncio
-    async def test_progress_and_log_entries_reach_the_caller_in_order_before_the_answer(self) -> None:
+    @pytest.mark.parametrize("bus", [_Bus, _QueuedBus], ids=["inline", "queued-like-the-client"])
+    async def test_progress_and_log_entries_reach_the_caller_in_order_before_the_answer(self, bus: type[_Bus]) -> None:
+        """the queued bus is the one that can lose the last updates: each hop must hand on what is still queued
+        before it stops listening."""
         tool = _Building()
-        mesh = await _mesh(tool)
+        mesh = await _mesh(tool, bus=bus())
         sink = _Sink(progress_token="tok-1", log_levels=_INFO_AND_UP)
 
         reply = await mesh.client.call(_TOOL, _VERSION, {}, updates=sink)
@@ -379,6 +438,17 @@ class TestUpdatesCrossTheMesh:
         # the tool was given the caller's own progress token
         [ctx] = tool.contexts
         assert ctx is not None and ctx.progress_token == "tok-1"
+
+    @pytest.mark.asyncio
+    async def test_a_call_cut_short_on_the_pod_sets_the_contexts_cancel_signal(self) -> None:
+        tool = _Stalling()
+        mesh = await _mesh(tool, max_call_seconds=0.05)
+
+        with pytest.raises(ToolCallError):
+            await mesh.client.call(_TOOL, _VERSION, {}, updates=_Sink(progress_token=1, log_levels=frozenset()))
+
+        [ctx] = tool.contexts
+        assert ctx is not None and ctx.cancelled is True
 
     @pytest.mark.asyncio
     async def test_each_hop_uses_its_own_partys_subject(self) -> None:
@@ -661,6 +731,186 @@ class TestTheRegistryRelay:
         assert all(request.updates is not None and request.updates.log_level == "info" for request in nats.forwarded)
 
 
+class TestTheRelayWhenTheBusFails:
+    @pytest.mark.asyncio
+    async def test_a_relay_publish_that_fails_loses_that_update_and_the_call_is_answered(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        nats = _proxy_nats_double()
+        own = Subjects.tools_updates(DEFAULT_AGENT_ID, uuid7())
+        received: list[bytes] = []
+        failing = {own.path}
+
+        async def caller(msg: IncomingMessage) -> None:
+            received.append(msg.data)
+
+        await nats.bus.subscribe(own, caller)
+        inner = nats.publish_raw
+
+        async def publish_raw(*, subject: Subject, payload: bytes) -> None:
+            if subject.path in failing and payload == _update(1):
+                raise PublishError("the bus said no")
+            await inner(subject=subject, payload=payload)
+
+        nats.publish_raw = publish_raw
+        nats.updates_to_send = [_update(1), _update(2)]
+        request = make_authed_request().model_copy(update={"updates": CallUpdates(subject=own.path, progress_token=1)})
+
+        await _dispatch(nats, request)
+
+        assert received == [_update(2)]
+        assert nats.replies[-1].content == "ok"
+        assert any("not relayed" in record.getMessage() for record in caplog.records)
+
+
+class _ScriptedCaller:
+    """the caller's NATS client: its subscriptions on a bus, and a request answered by a script that first publishes
+    the given updates to the call's own updates subject, as the registry would relay them."""
+
+    def __init__(self, updates: list[bytes], *, subscribe_fails: bool = False) -> None:
+        self.bus = _QueuedBus()
+        self.updates = updates
+        self.subscribe_fails = subscribe_fails
+        self.sent: list[Any] = []
+
+    async def subscribe(self, subject: Subject | str | None = None, *, cb: Any = None) -> Any:
+        if self.subscribe_fails:
+            raise SubscribeError("permissions violation")
+        assert subject is not None
+        return await self.bus.subscribe(subject, cb)
+
+    async def unsubscribe(self, sub: Any) -> None:
+        await self.bus.unsubscribe(sub)
+
+    async def request(self, *, subject: Subject, message: Any, response_type: Any, timeout: timedelta) -> Any:
+        del subject, timeout
+        self.sent.append(message)
+        if message.updates is not None:
+            for update in self.updates:
+                await self.bus.publish_raw(Subject.raw(message.updates.subject), update)
+        return response_type(success=True, content="ok")
+
+
+class _RequestOnly:
+    """a caller's client that sends requests and cannot subscribe."""
+
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+
+    async def request(self, *, subject: Subject, message: Any, response_type: Any, timeout: timedelta) -> Any:
+        del subject, timeout
+        self.sent.append(message)
+        return response_type(success=True, content="ok")
+
+
+class _AnySigner:
+    def sign(self, *, access_token: str, tool_name: str, arguments: dict[str, Any], correlation_id: str | None) -> str:
+        del access_token, tool_name, arguments, correlation_id
+        return "pop"
+
+
+def _client(nats: Any) -> ToolCallClient:
+    return ToolCallClient(nats, principal_id=uuid7(), identity_token=lambda: "token", pop_signer=_AnySigner())
+
+
+def _progress(seq: int, value: float) -> bytes:
+    return CallUpdate(seq=seq, kind="progress", progress=value).model_dump_json().encode("utf-8")
+
+
+def _log(seq: int, level: UpdateLogLevel, data: Any) -> bytes:
+    return CallUpdate(seq=seq, kind="log", level=level, data=data).model_dump_json().encode("utf-8")
+
+
+class _RaisingSink(_Sink):
+    """a sink whose client has gone for the first progress report only."""
+
+    async def report_progress(self, progress: float, total: float | None = None, message: str | None = None) -> None:
+        if progress == 1.0:
+            raise ConnectionError("the client went away")
+        await super().report_progress(progress, total, message)
+
+
+class TestTheCallersHop:
+    @pytest.mark.asyncio
+    async def test_late_repeated_and_non_increasing_updates_are_dropped_and_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        nats = _ScriptedCaller(
+            [
+                _progress(1, 1.0),
+                _progress(1, 1.0),  # repeated
+                _progress(3, 2.0),
+                _progress(2, 1.5),  # late
+                _progress(4, 2.0),  # does not increase
+                b"not an update",
+                _log(5, "debug", "below what the sink takes"),
+                _log(6, "info", {"done": True}),
+            ]
+        )
+        sink = _Sink(progress_token="tok", log_levels=_INFO_AND_UP)
+
+        await _client(nats).call(_TOOL, _VERSION, {}, updates=sink)
+
+        assert sink.received == [
+            ("progress", 1.0, None, None),
+            ("progress", 2.0, None, None),
+            ("log", "info", {"done": True}),
+        ]
+        [warning] = [record for record in caplog.records if "not handed on" in record.getMessage()]
+        dropped = warning.__dict__["extra_data"]["dropped"]
+        assert dropped == {
+            "out_of_order": 2,
+            "progress_not_increasing": 1,
+            "unreadable": 1,
+            "level_not_taken": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_sink_that_raises_loses_that_update_only(self) -> None:
+        nats = _ScriptedCaller([_progress(1, 1.0), _progress(2, 2.0)])
+        sink = _RaisingSink(progress_token="tok", log_levels=frozenset())
+
+        reply = await _client(nats).call(_TOOL, _VERSION, {}, updates=sink)
+
+        assert reply.content == "ok"
+        assert sink.received == [("progress", 2.0, None, None)]
+
+    @pytest.mark.asyncio
+    async def test_the_updates_still_queued_at_the_answer_are_handed_on(self) -> None:
+        """the scripted registry publishes and answers at once; the queued bus has not dispatched any of them yet."""
+        nats = _ScriptedCaller([_progress(seq, float(seq)) for seq in range(1, 6)])
+        sink = _Sink(progress_token="tok", log_levels=frozenset())
+
+        await _client(nats).call(_TOOL, _VERSION, {}, updates=sink)
+
+        assert [entry[1] for entry in sink.received] == [1.0, 2.0, 3.0, 4.0, 5.0]
+        assert nats.bus.subscriptions == {}
+
+    @pytest.mark.asyncio
+    async def test_a_subscription_that_fails_runs_the_call_without_updates(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        nats = _ScriptedCaller([_progress(1, 1.0)], subscribe_fails=True)
+
+        reply = await _client(nats).call(_TOOL, _VERSION, {}, updates=_Sink(progress_token=1, log_levels=frozenset()))
+
+        assert reply.content == "ok"
+        assert nats.sent[0].updates is None
+        assert any("could not be subscribed" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_client_that_cannot_subscribe_runs_the_call_without_updates(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        nats = _RequestOnly()
+
+        reply = await _client(nats).call(_TOOL, _VERSION, {}, updates=_Sink(progress_token=1, log_levels=frozenset()))
+
+        assert reply.content == "ok"
+        assert nats.sent[0].updates is None
+        assert any("cannot subscribe" in record.getMessage() for record in caplog.records)
+
+
 def _caller_face(client: ToolCallClient) -> McpServer:
     """an MCP server whose tool ``build`` forwards to the mesh, handing the call its own context."""
 
@@ -692,11 +942,11 @@ class TestTheCallersMcpFace:
     async def test_an_mcp_client_gets_notifications_for_its_own_progress_token(self) -> None:
         mesh = await _mesh(_Building())
         server = _caller_face(mesh.client)
-        progress: list[tuple[float, float | None, str | None]] = []
+        seen: list[tuple[float, float | None, str | None]] = []
         logs: list[tuple[str, Any]] = []
 
-        async def on_progress(value: float, total: float | None, message: str | None) -> None:
-            progress.append((value, total, message))
+        async def on_progress(progress: float, total: float | None, message: str | None) -> None:
+            seen.append((progress, total, message))
 
         async def on_log(params: mcp_types.LoggingMessageNotificationParams) -> None:
             logs.append((params.level, params.data))
@@ -709,13 +959,14 @@ class TestTheCallersMcpFace:
                 async with streamable_http_client("http://mcp.test/mcp", http_client=http) as (read, write):
                     async with ClientSession(read, write, logging_callback=on_log) as session:
                         await session.initialize()
-                        result = await session.call_tool("build", {}, progress_callback=on_progress)
+                        arguments: dict[str, Any] = {}
+                        result = await session.call_tool("build", arguments, progress_callback=on_progress)
         finally:
             await server.stop()
 
         assert result.is_error is False
         block = result.content[0]
         assert isinstance(block, mcp_types.TextContent) and block.text == "built"
-        assert progress == [(1.0, 3.0, "cloning"), (3.0, 3.0, "done")]
+        assert seen == [(1.0, 3.0, "cloning"), (3.0, 3.0, "done")]
         # a handshake-era client with no logging/setLevel takes every level; the tool's debug entry is sent too
         assert ("info", {"phase": "clone"}) in logs

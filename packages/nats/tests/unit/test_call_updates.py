@@ -9,6 +9,7 @@ from threetears.nats import (
     Principal,
     Subjects,
     UpdateBudget,
+    UpdateDrain,
     build_permissions,
     progress_subject_is_owned_by_pod,
     set_default_namespace,
@@ -113,3 +114,37 @@ class TestTheGrants:
         permissions = build_permissions(Principal.REGISTRY, conn_id="registry-1")
         assert str(Subjects.tools_progress_wildcard()) in permissions.subscribe
         assert str(Subjects.tools_updates_wildcard()) in permissions.publish
+
+
+class _ManualTime:
+    """a clock and a sleep that advances it."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestTheDrain:
+    @pytest.mark.asyncio
+    async def test_it_settles_once_nothing_has_arrived_for_the_quiet(self) -> None:
+        time = _ManualTime()
+        drain = UpdateDrain(clock=time.clock, sleep=time.sleep)
+        with drain:
+            pass
+
+        assert await drain.settled(quiet=0.05, limit=1.0) is True
+        assert 0.05 <= time.now < 0.1
+
+    @pytest.mark.asyncio
+    async def test_an_update_being_handled_holds_it_until_the_limit(self) -> None:
+        time = _ManualTime()
+        drain = UpdateDrain(clock=time.clock, sleep=time.sleep)
+        drain.__enter__()
+
+        assert await drain.settled(quiet=0.05, limit=0.5) is False
+        assert time.now == pytest.approx(0.5)

@@ -125,6 +125,7 @@ from threetears.nats.call_updates import (
     RELAY_UPDATES_PER_SECOND,
     UPDATE_FLUSH_SECONDS,
     UpdateBudget,
+    UpdateDrain,
     progress_subject_is_owned_by_pod,
     updates_subject_is_owned_by_caller,
 )
@@ -519,6 +520,7 @@ __all__ = [
     "RELAY_UPDATES_PER_SECOND",
     "UPDATE_FLUSH_SECONDS",
     "UpdateBudget",
+    "UpdateDrain",
     "progress_subject_is_owned_by_pod",
     "updates_subject_is_owned_by_caller",
     # asynchronous result delivery (answers that outlive their receiving connection)

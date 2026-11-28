@@ -60,8 +60,11 @@ call is sent exactly as it was before updates existed. Updates are best effort a
 The pod sends at most `POD_UPDATES_PER_SECOND` a call (progress coalesces to the latest while it waits, the oldest
 of 64 pending entries is dropped first, and what is pending gets `UPDATE_FLUSH_SECONDS` to leave before the answer);
 the registry relays at most `RELAY_UPDATES_PER_SECOND` a call and drops anything over `MAX_UPDATE_BYTES` or
-unreadable; the caller drops an update whose `seq` does not exceed the last, and progress that does not increase. A
-tool never waits on the link. Both subscriptions are on their subject's per-call id alone (sender-posture rows N1 and
+unreadable; the caller drops an update whose `seq` does not exceed the last, and progress that does not increase, and
+logs what it dropped once per call. Once the call has answered, the relay and the caller each keep listening until no
+update has arrived for 50 ms (at most 0.5 s, `threetears.nats.UpdateDrain`), so the last progress is not lost
+to a subscription ended on the answer. A NATS client that cannot subscribe runs the call without updates and logs why.
+A tool never waits on the link. Both subscriptions are on their subject's per-call id alone (sender-posture rows N1 and
 N2): a forged update is a progress report or log entry shown to the caller, never an action. The agent SDK and the
 hub send no `updates` until they adopt it, and nothing changes for them.
 

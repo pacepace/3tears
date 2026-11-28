@@ -14,7 +14,8 @@ to its own client. `ToolCallClient.call(..., updates=sink)` takes a sink shaped 
 `ProxyCallRequest.updates` (`threetears.core.tool_wire.CallUpdates`: the subject, the sink's progress token, the least
 severe log level it takes). The registry refuses an updates subject that does not name the verified caller
 (`MALFORMED_REQUEST`), mints `Subjects.tools_progress(pod, call)` per forward, forwards it on `CallRequest.updates`, and
-relays each `CallUpdate` (progress or log entry, numbered by `seq`) from the pod to the caller, bounded per call. On the
+relays each `CallUpdate` (progress or log entry, numbered by `seq`) from the pod to the caller, bounded per call; the
+relay and the caller drain what is still arriving for a bounded quiet (`UpdateDrain`) before they stop listening. On the
 pod, `ToolServer` passes an `execute` that declares the MCP call context a context whose progress token and log levels
 are the caller's; its reports are queued and sent in order by `threetears.agent.tools.call_updates.CallUpdatePublisher`,
 never blocking the tool, and flushed for at most `UPDATE_FLUSH_SECONDS` before the answer. A call that asks for nothing

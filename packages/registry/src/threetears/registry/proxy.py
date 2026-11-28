@@ -60,6 +60,7 @@ from threetears.nats import (
     Subjects,
     SubscriptionHandle,
     UpdateBudget,
+    UpdateDrain,
     reply_subject_is_owned_by_agent,
     reply_subject_prefix_for_agent,
     requires_async_result,
@@ -124,10 +125,9 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
     {"conversation_id", "user_id", "customer_id", "correlation_id", "agent_id"}
 )
 
-#: the optional ``ProxyCallRequest`` fields a registry older than the field refuses outright,
-#: because the model forbids unknown keys and an unknown ``null`` is as fatal as an unknown value.
-#: the model omits each of them from its serialized form when unset, so no sender -- whichever
-#: serializer it calls -- can put one on the wire as an explicit null.
+#: the optional ``ProxyCallRequest`` fields the model omits from its serialized form when unset, so no sender --
+#: whichever serializer it calls -- puts one on the wire as an explicit null. A registry released while the model still
+#: forbade unknown keys refused a call carrying one outright; a tolerant reader ignores it.
 _OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest", "updates")
 
 
@@ -1741,8 +1741,9 @@ class CallProxy:
         try:
             yield request.updates.model_copy(update={"subject": pod_subject.path})
         finally:
-            # one turn for an update already received to be relayed before the call answers
-            await asyncio.sleep(0)
+            # the pod sent its updates before its answer, but they are dispatched apart from it: relay what is still
+            # on its way, within a bound, before the call answers
+            await relay.settled()
             try:
                 await self._nc.unsubscribe(handle)
             except NatsClientError as exc:
@@ -2331,6 +2332,7 @@ class _UpdateRelay:
         self._budget = UpdateBudget(rate=RELAY_UPDATES_PER_SECOND, burst=RELAY_UPDATE_BURST)
         self._dropped: Mapping[str, int] = frozen()
         self._relayed = 0
+        self._drain = UpdateDrain()
 
     def _drop(self, why: str) -> None:
         """count one update not relayed, by why.
@@ -2343,6 +2345,26 @@ class _UpdateRelay:
         self._dropped = with_entry(self._dropped, why, self._dropped.get(why, 0) + 1)
 
     async def relay(self, msg: IncomingMessage) -> None:
+        """relay one update, or count why not.
+
+        :param msg: the pod's update
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
+        """
+        with self._drain:
+            await self._relay(msg)
+
+    async def settled(self) -> None:
+        """wait, within a bound, until the updates still on their way have been relayed.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not await self._drain.settled():
+            self._drop("still_arriving_at_answer")
+
+    async def _relay(self, msg: IncomingMessage) -> None:
         """relay one update, or count why not.
 
         :param msg: the pod's update

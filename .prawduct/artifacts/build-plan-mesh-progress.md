@@ -66,6 +66,24 @@ signal when the call is cut short on the pod; a caller's cancel does not cross t
 - [DECISION: before the pod answers, it flushes what is pending for at most 1 s | progress after the result is
   ignored by an MCP client, so the last progress must leave first; the bound keeps a dead link from delaying the
   answer]
+- [DECISION: once a call has answered, the registry's relay and the caller keep listening until no update has arrived
+  for 50 ms, at most 0.5 s, before they end their subscriptions | a subscription's messages are dispatched from a task
+  apart from the reply's, so ending it on the answer dropped the pod's last progress, the one that matters most; the
+  bound keeps a dead link from holding the answer. It adds up to that quiet to a call that asked for updates, and
+  nothing to one that did not]
+- [DECISION: both new receivers (the registry's relay, the caller's subscription) trust an update on its subject
+  alone, sender-posture rows N1 and N2 | only the pod (hop 1) and the registry (hop 2) are granted to publish there,
+  and the subject's per-call id is held only by the two ends of its hop; an update acts on nothing (a progress report
+  or log entry shown to a client), and each hop checks shape, size, order and rate. Signing each update (a
+  per-forward key, or the pod's registration key) would close the rows; it is not built, because what it protects is
+  a display. The rows are this plan's to close, not the hub repo's fix plan's]
+- [DECISION: the caller's sink type stays private (`_CallUpdateSink`), and a NATS client that cannot subscribe runs
+  the call without updates (logged) rather than failing it | a `threetears.mcp.CallContext` satisfies the sink
+  structurally, so no consumer needs to name it, and a public name with no caller in the repo is refused; updates are
+  best effort, so their absence must not fail the call]
+- [DECISION: an agent pod is granted no subscribe on its own `tools.updates` subtree yet | the grants gate refuses a
+  grant with no receive site, and the agent SDK's caller lives in its own repo; the grant lands with the SDK's adoption,
+  in the same release. Until then an agent's calls ask for no updates]
 - [DECISION: `CallContext` gains `log_levels` (the levels the client takes; the server passes its rule's set) and
   `log` sends nothing outside it | the caller has to tell the pod which levels to send, and must not ask for entries
   its client refuses]
@@ -85,6 +103,9 @@ signal when the call is cut short on the pod; a caller's cancel does not cross t
   the context passed to `execute`.
 - `packages/tool-contract/src/threetears/tool_contract/mcp_face.py`: `mesh_context_parameter`, `mesh_call_context`.
 - `packages/mcp/src/threetears/mcp/context.py`, `server.py`: `CallContext.log_levels`.
+- Also: `packages/mcp/src/threetears/mcp/http_server.py` (`_Drop` holds a read-only mapping) and
+  `packages/tool-contract/src/threetears/tool_contract/mcp_face.py` (`_call_result`'s failure text renamed), two gate
+  failures already on the base (the dict-state gate, mypy), fixed here as found.
 - Tests: `packages/nats/tests/unit/test_call_updates.py`, `packages/agent/tools/tests/unit/tools/test_call_updates.py`,
   `packages/registry/tests/unit/registry/test_mesh_progress.py` (caller -> real registry -> real pod over an
   in-memory bus, and a real MCP client in front of the caller), `packages/mcp/tests/unit` (log levels),
